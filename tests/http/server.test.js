@@ -97,3 +97,63 @@ test('participant can register, receive inbox items, ack them, and respond to ap
   assert.equal(approvalResponse.status, 200);
   assert.equal(approvalBody.approval.status, 'approved');
 });
+
+test('query endpoints return task view, thread timeline, and replay slices', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: ['frontend.react'] })
+  });
+
+  await fetch(`http://127.0.0.1:${port}/intents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intentId: 'int-task-2',
+      kind: 'request_task',
+      fromParticipantId: 'human.song',
+      taskId: 'task-2',
+      threadId: 'thread-2',
+      to: { mode: 'participant', participants: ['agent.a'] },
+      payload: { body: { summary: 'build api' } }
+    })
+  });
+
+  await fetch(`http://127.0.0.1:${port}/intents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intentId: 'int-progress-2',
+      kind: 'report_progress',
+      fromParticipantId: 'agent.a',
+      taskId: 'task-2',
+      threadId: 'thread-2',
+      to: { mode: 'participant', participants: ['human.song'] },
+      payload: { stage: 'started' }
+    })
+  });
+
+  const taskResponse = await fetch(`http://127.0.0.1:${port}/tasks/task-2`);
+  const taskBody = await taskResponse.json();
+  assert.equal(taskResponse.status, 200);
+  assert.equal(taskBody.task.taskId, 'task-2');
+  assert.equal(taskBody.task.status, 'in_progress');
+
+  const threadResponse = await fetch(`http://127.0.0.1:${port}/threads/thread-2`);
+  const threadBody = await threadResponse.json();
+  assert.equal(threadResponse.status, 200);
+  assert.equal(threadBody.thread.threadId, 'thread-2');
+  assert.equal(threadBody.thread.events.length, 2);
+  assert.equal(threadBody.thread.events[0].intentId, 'int-task-2');
+
+  const replayResponse = await fetch(`http://127.0.0.1:${port}/events/replay?taskId=task-2&after=0`);
+  const replayBody = await replayResponse.json();
+  assert.equal(replayResponse.status, 200);
+  assert.equal(replayBody.items.length, 2);
+  assert.equal(replayBody.items[1].intentId, 'int-progress-2');
+});

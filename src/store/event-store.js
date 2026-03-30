@@ -71,12 +71,30 @@ export function createEventStore({ dbPath }) {
       `).get(participantId);
       return row ? row.cursor_event_id : 0;
     },
-    listEvents() {
-      return db.prepare(`
+    listEvents({ after = 0, taskId = null, threadId = null, limit = 100 } = {}) {
+      const conditions = ['event_id > ?'];
+      const params = [after];
+
+      if (taskId) {
+        conditions.push('task_id = ?');
+        params.push(taskId);
+      }
+      if (threadId) {
+        conditions.push('thread_id = ?');
+        params.push(threadId);
+      }
+
+      params.push(limit);
+
+      const sql = `
         SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
         FROM events
+        WHERE ${conditions.join(' AND ')}
         ORDER BY event_id ASC
-      `).all().map(mapEventRow);
+        LIMIT ?
+      `;
+
+      return db.prepare(sql).all(...params).map(mapEventRow);
     }
   };
 }

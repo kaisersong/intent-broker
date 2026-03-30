@@ -73,6 +73,27 @@ export function createServer({ broker } = {}) {
         return;
       }
 
+      if (req.method === 'GET' && pathname.startsWith('/tasks/')) {
+        const taskId = pathname.split('/')[2];
+        writeJson(res, 200, { task: broker.getTaskView(taskId) });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname.startsWith('/threads/')) {
+        const threadId = pathname.split('/')[2];
+        writeJson(res, 200, { thread: broker.getThreadView(threadId) });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/events/replay') {
+        const after = Number(requestUrl.searchParams.get('after') || '0');
+        const limit = Number(requestUrl.searchParams.get('limit') || '100');
+        const taskId = requestUrl.searchParams.get('taskId');
+        const threadId = requestUrl.searchParams.get('threadId');
+        writeJson(res, 200, broker.replayEvents({ after, limit, taskId, threadId }));
+        return;
+      }
+
       if (req.method === 'POST' && pathname.startsWith('/approvals/') && pathname.endsWith('/respond')) {
         const approvalId = pathname.split('/')[2];
         const body = await readJson(req);

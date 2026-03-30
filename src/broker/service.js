@@ -5,6 +5,22 @@ function unique(values) {
   return Array.from(new Set(values));
 }
 
+function toReducerEvent(event) {
+  return {
+    kind: event.kind,
+    taskId: event.taskId,
+    threadId: event.threadId,
+    participantId: event.payload.participantId,
+    assignmentMode: event.payload.assignmentMode,
+    submissionId: event.payload.submissionId,
+    approvalId: event.payload.approvalId,
+    approvalScope: event.payload.approvalScope,
+    decision: event.payload.decision,
+    completesTask: event.payload.completesTask,
+    stage: event.payload.stage
+  };
+}
+
 export function createBrokerService({ dbPath }) {
   const participants = new Map();
   const store = createEventStore({ dbPath });
@@ -40,21 +56,7 @@ export function createBrokerService({ dbPath }) {
   }
 
   function buildState() {
-    return reduceEventStream(
-      store.listEvents().map((event) => ({
-        kind: event.kind,
-        taskId: event.taskId,
-        threadId: event.threadId,
-        participantId: event.payload.participantId,
-        assignmentMode: event.payload.assignmentMode,
-        submissionId: event.payload.submissionId,
-        approvalId: event.payload.approvalId,
-        approvalScope: event.payload.approvalScope,
-        decision: event.payload.decision,
-        completesTask: event.payload.completesTask,
-        stage: event.payload.stage
-      }))
-    );
+    return reduceEventStream(store.listEvents().map(toReducerEvent));
   }
 
   return {
@@ -107,6 +109,17 @@ export function createBrokerService({ dbPath }) {
     },
     getTaskView(taskId) {
       return buildState().tasks[taskId] ?? null;
+    },
+    getThreadView(threadId) {
+      return {
+        threadId,
+        events: store.listEvents({ threadId })
+      };
+    },
+    replayEvents(options) {
+      return {
+        items: store.listEvents(options)
+      };
     }
   };
 }
