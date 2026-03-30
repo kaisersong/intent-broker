@@ -1,0 +1,10 @@
+{
+  "name": "intent-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-test-isolation=none --test",
+    "start": "node src/cli.js"
+  }
+}

@@ -1,0 +1,99 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from '../../src/http/server.js';
+import { createBrokerService } from '../../src/broker/service.js';
+import { createTempDbPath } from '../fixtures/temp-dir.js';
+
+async function startServer() {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  return { broker, server, port: server.address().port };
+}
+
+test('GET /health returns ok payload', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const response = await fetch(`http://127.0.0.1:${port}/health`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body, { ok: true });
+});
+
+test('participant can register, receive inbox items, ack them, and respond to approval', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const registerAgent = await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: ['frontend.react'] })
+  });
+  assert.equal(registerAgent.status, 200);
+
+  const registerHuman = await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] })
+  });
+  assert.equal(registerHuman.status, 200);
+
+  const sendTask = await fetch(`http://127.0.0.1:${port}/intents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intentId: 'int-1',
+      kind: 'request_task',
+      fromParticipantId: 'human.song',
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      to: { mode: 'participant', participants: ['agent.a'] },
+      payload: { body: { summary: 'fix it' } }
+    })
+  });
+  const sendTaskBody = await sendTask.json();
+  assert.equal(sendTask.status, 202, JSON.stringify(sendTaskBody));
+
+  const inboxResponse = await fetch(`http://127.0.0.1:${port}/inbox/agent.a?after=0`);
+  const inboxBody = await inboxResponse.json();
+  assert.equal(inboxResponse.status, 200);
+  assert.equal(inboxBody.items.length, 1);
+  assert.equal(inboxBody.items[0].intentId, 'int-1');
+
+  const ackResponse = await fetch(`http://127.0.0.1:${port}/inbox/agent.a/ack`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ eventId: inboxBody.items[0].eventId })
+  });
+  assert.equal(ackResponse.status, 200);
+
+  await fetch(`http://127.0.0.1:${port}/intents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intentId: 'int-approval',
+      kind: 'request_approval',
+      fromParticipantId: 'agent.a',
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      to: { mode: 'participant', participants: ['human.song'] },
+      payload: { approvalId: 'app-1', approvalScope: 'submit_result' }
+    })
+  });
+
+  const approvalResponse = await fetch(`http://127.0.0.1:${port}/approvals/app-1/respond`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ taskId: 'task-1', fromParticipantId: 'human.song', decision: 'approved' })
+  });
+  const approvalBody = await approvalResponse.json();
+
+  assert.equal(approvalResponse.status, 200);
+  assert.equal(approvalBody.approval.status, 'approved');
+});
