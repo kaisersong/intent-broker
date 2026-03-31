@@ -1,74 +1,76 @@
 # Intent Broker
 
-本地优先的多 Agent 协作 broker。它不是聊天服务器，也不是工作流平台，而是一层可靠的协作协议中间层：先持久化事件，再进行投递；让 Codex、Claude Code、OpenCode 这类 agent 与人类参与方围绕同一任务对象协作。
+[中文版本](./README.zh-CN.md)
 
-当前发布版本：`0.1.0`
+Local-first collaboration broker for multi-agent workflows. It is not a chat server and not a workflow platform. It is a reliable protocol layer that persists events before delivery, so agents like Codex, Claude Code, and OpenCode can collaborate with human participants around the same task object.
 
-## 设计思想
+Current release version: `0.1.0`
 
-`Intent Broker` 的设计重点不是“让多个窗口能互相发消息”，而是把协作从临时复制粘贴提升为一套可恢复、可重放、可审计的协议。
+## Design Principles
 
-核心思路有四个：
+The focus of `Intent Broker` is not "letting multiple windows send messages to each other". The goal is to upgrade collaboration from ad hoc copy-paste into a recoverable, replayable, auditable protocol.
 
-- 事件优先：所有意图先写入 SQLite 事件日志，再做 inbox 投递和状态聚合。
-- 协议优先：用少量稳定的结构字段承载任务语义，用自然语言正文承载具体工作意图。
-- 本地优先：第一版只解决单机协作，不依赖远程服务，不要求 agent 常驻连接。
-- 可靠优先：`HTTP pull + ack cursor` 是主消费路径，连接断开不会丢关键任务上下文。
+There are four core ideas:
 
-这意味着 broker 真正负责的是：任务、线程、审批、路由和重放；而不是代替各家 agent 做推理或执行工具。
+- Event-first: every intent is written to a SQLite event log before inbox delivery and state aggregation.
+- Protocol-first: a small set of stable structural fields carries task semantics, while natural language bodies carry the concrete work intent.
+- Local-first: v1 solves single-machine collaboration without requiring remote services or permanently connected agents.
+- Reliability-first: `HTTP pull + ack cursor` is the primary consumption path, so losing a connection does not lose critical task context.
 
-## 应用场景
+That means the broker is responsible for tasks, threads, approvals, routing, and replay. It does not replace the reasoning or tool execution done by each agent.
 
-这个项目适合以下场景：
+## Use Cases
 
-- 同一台机器上开多个 Codex / Claude Code / OpenCode 窗口，需要围绕同一任务协作。
-- 人类参与者希望能插话、审批、接管或确认交付，而不是只看 agent 自己跑。
-- 需要让 agent 在 hook、空闲点、任务结束时主动拉取待办，而不是常驻 websocket 连接。
-- 需要保留任务时间线，支持重连后补拉、按 task/thread 重放、按事件追溯问题。
-- 需要做更高层的 adapter、手机审批面板、局域网协作前，先把本地协议底座跑起来。
+This project is a good fit when:
 
-## 当前能力
+- You run multiple Codex / Claude Code / OpenCode windows on the same machine and need them to collaborate on the same task.
+- Human participants need to interrupt, approve, take over, or confirm delivery instead of only watching agents run.
+- Agents should actively pull pending work at hooks, idle points, or task boundaries instead of staying on a permanent websocket connection.
+- You need a task timeline that supports reconnect replay, task/thread event playback, and event-level debugging.
+- You want a reliable local protocol layer before building higher-level adapters, mobile approval panels, or LAN collaboration.
 
-当前原型已经支持：
+## Current Capabilities
 
-- participant 注册
-- `request_task`、`report_progress`、`request_approval`、`respond_approval`
-- 按 `participant`、`role`、`broadcast` 路由
-- inbox pull 与 ack cursor
+The current prototype supports:
+
+- participant registration
+- `request_task`, `report_progress`, `request_approval`, `respond_approval`
+- routing by `participant`, `role`, and `broadcast`
+- inbox pull and ack cursor
 - `GET /tasks/:taskId`
 - `GET /threads/:threadId`
 - `GET /events/replay`
-- SQLite 持久化事件存储
-- WebSocket 实时通知通道
-- 云之家 adapter 的真实入站 / 出站联调
+- SQLite-backed persistent event storage
+- WebSocket real-time notification channel
+- verified Yunzhijia adapter inbound and outbound integration
 
-## 技术选型
+## Tech Stack
 
 - Node 22
-- 原生 ESM
+- native ESM
 - `node:http`
 - `node:sqlite`
 - `node:test`
 
-这样做的目的很直接：今天就能跑起来，不引第三方运行时依赖，把协议和可靠性路径先验证掉。
+The goal is straightforward: get the system running today, avoid unnecessary runtime dependencies, and validate the protocol and reliability path first.
 
-## 快速开始
+## Quick Start
 
-### 1. 安装环境
+### 1. Requirements
 
-需要 Node 22 或更新版本。
+Use Node 22 or newer.
 
-### 2. 启动服务
+### 2. Start the broker
 
 ```bash
 npm start
 ```
 
-默认监听：
+Default listen address:
 
 - `http://127.0.0.1:4318`
 
-可以通过环境变量覆盖：
+You can override it with environment variables:
 
 ```bash
 PORT=4321
@@ -83,24 +85,24 @@ $env:INTENT_BROKER_DB='D:\projects\intent-broker\.tmp\intent-broker.db'
 npm start
 ```
 
-## 测试
+## Tests
 
 ```bash
 npm test
 ```
 
-当前测试覆盖：
+Current test coverage includes:
 
-- reducer 任务/审批状态推进
-- SQLite store 的 append / inbox / ack / replay
-- broker service 路由与审批聚合
-- HTTP API 端到端流程
-- Yunzhijia adapter 配置回归测试
-- Yunzhijia adapter 入站 / 出站集成测试
+- reducer task / approval state transitions
+- SQLite store append / inbox / ack / replay
+- broker service routing and approval aggregation
+- HTTP API end-to-end flow
+- Yunzhijia adapter config regression test
+- Yunzhijia adapter inbound / outbound integration test
 
-说明：测试脚本使用了 `node --experimental-test-isolation=none --test`，因为当前沙箱环境下默认 `node --test` 会触发子进程 `EPERM`。
+Note: the test script uses `node --experimental-test-isolation=none --test` because, in the current sandbox environment, plain `node --test` can trigger child-process `EPERM`.
 
-## API 概览
+## API Overview
 
 ### Health
 
@@ -114,7 +116,7 @@ GET /health
 POST /participants/register
 ```
 
-示例：
+Example:
 
 ```json
 {
@@ -131,7 +133,7 @@ POST /participants/register
 POST /intents
 ```
 
-示例：
+Example:
 
 ```json
 {
@@ -146,7 +148,7 @@ POST /intents
   },
   "payload": {
     "body": {
-      "summary": "请修复导出字体问题"
+      "summary": "Please fix the export font issue"
     }
   }
 }
@@ -181,7 +183,7 @@ GET /events/replay?after=0&taskId=task-1
 POST /approvals/:approvalId/respond
 ```
 
-示例：
+Example:
 
 ```json
 {
@@ -191,60 +193,63 @@ POST /approvals/:approvalId/respond
 }
 ```
 
-## 项目结构
+## Project Structure
 
 ```text
 src/
-  broker/        协调层，负责 participant、路由、聚合查询
-  domain/        纯状态推进逻辑
-  http/          HTTP server 与路由
-  store/         SQLite schema 与事件存储
-  cli.js         本地 broker 启动入口
+  broker/        coordination layer for participants, routing, and aggregate queries
+  domain/        pure state transition logic
+  http/          HTTP server and routes
+  store/         SQLite schema and event storage
+  cli.js         local broker entry point
 
 tests/
-  broker/        service 测试
-  domain/        reducer 测试
-  http/          API 集成测试
-  store/         SQLite store 测试
+  broker/        service tests
+  domain/        reducer tests
+  http/          API integration tests
+  store/         SQLite store tests
 ```
 
-## 扩展能力
+## Extensions
 
-### 手机连接
+### Mobile Connectivity
 
-手机可以作为 `kind: "mobile"` 的 participant 连接，支持：
-- WebSocket 实时通知
-- 简化的 inbox（只显示需要确认的事件）
-- 审批和确认操作
+A phone can connect as a `kind: "mobile"` participant and support:
 
-详见 [MOBILE.md](./MOBILE.md)
+- WebSocket real-time notifications
+- simplified inboxes that only show actionable items
+- approval and confirmation actions
 
-### 消息平台集成
+See [MOBILE.md](./MOBILE.md).
 
-通过独立的 adapter 进程接入云之家、飞书、钉钉、Telegram、Discord 等平台：
+### Messaging Platform Integration
 
+Use standalone adapter processes to connect Yunzhijia, Feishu, DingTalk, Telegram, Discord, and other platforms:
+
+```text
+Messaging Platform → Platform Adapter → Intent Broker → Agents
 ```
-消息平台 → Platform Adapter → Intent Broker → Agents
-```
 
-详见：
-- [docs/ADAPTERS.md](./docs/ADAPTERS.md) - Adapter 架构设计
-- [docs/adapter-example.js](./docs/adapter-example.js) - 最小实现示例
-- [docs/platform-adapters.md](./docs/platform-adapters.md) - 各平台接入指南
+See:
 
-当前仓库已包含一个可运行的云之家 adapter：
-- [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md) - 配置与运行说明
-- [adapters/yunzhijia/QUICKSTART.md](./adapters/yunzhijia/QUICKSTART.md) - 快速联调步骤
+- [docs/ADAPTERS.md](./docs/ADAPTERS.md) - adapter architecture
+- [docs/adapter-example.js](./docs/adapter-example.js) - minimal implementation example
+- [docs/platform-adapters.md](./docs/platform-adapters.md) - platform integration guide
 
-## 下一步
+This repository already includes a working Yunzhijia adapter:
 
-当前仓库还是原型阶段，下一步最值得继续做的是：
+- [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md) - configuration and runtime details
+- [adapters/yunzhijia/QUICKSTART.md](./adapters/yunzhijia/QUICKSTART.md) - quick integration steps
 
-- `capability` 路由的更完整测试覆盖
-- 更完整的 task / approval / thread 投影视图
-- 飞书 / 钉钉 / Telegram / Discord adapter
-- 局域网 / 远程部署模式
+## Next Steps
+
+The repository is still in the prototype stage. The most valuable next steps are:
+
+- fuller `capability` routing coverage
+- richer task / approval / thread projection views
+- Feishu / DingTalk / Telegram / Discord adapters
+- LAN / remote deployment mode
 
 ## License
 
-暂未声明，默认按仓库所有者后续决定处理。
+Not declared yet. Follow the repository owner's later decision.
