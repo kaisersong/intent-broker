@@ -41,6 +41,25 @@ test('broadcast request_task routes to all registered participants except sender
   assert.deepEqual(result.recipients, ['agent.a', 'agent.b']);
 });
 
+test('capability routing matches participants by capability', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: ['frontend.react', 'backend.node'] });
+  broker.registerParticipant({ participantId: 'agent.b', kind: 'agent', roles: ['coder'], capabilities: ['backend.python'] });
+  broker.registerParticipant({ participantId: 'agent.c', kind: 'agent', roles: ['coder'], capabilities: ['frontend.react'] });
+
+  const result = broker.sendIntent({
+    intentId: 'int-cap',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    taskId: 'task-cap',
+    threadId: 'thread-cap',
+    to: { mode: 'capability', capabilities: ['frontend.react'] },
+    payload: { body: { summary: 'fix React component' } }
+  });
+
+  assert.deepEqual(result.recipients.sort(), ['agent.a', 'agent.c']);
+});
+
 test('respondApproval updates approval view to approved', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
   broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });

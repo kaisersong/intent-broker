@@ -108,6 +108,24 @@ export function createServer({ broker } = {}) {
         return;
       }
 
+      if (req.method === 'POST' && pathname.startsWith('/presence/')) {
+        const participantId = pathname.split('/')[2];
+        const body = await readJson(req);
+        writeJson(res, 200, broker.updatePresence(participantId, body.status, body.metadata));
+        return;
+      }
+
+      if (req.method === 'GET' && pathname.startsWith('/presence/')) {
+        const participantId = pathname.split('/')[2];
+        writeJson(res, 200, broker.getPresence(participantId));
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/presence') {
+        writeJson(res, 200, { participants: broker.listPresence() });
+        return;
+      }
+
       writeJson(res, 404, { error: 'not_found' });
     } catch (error) {
       writeJson(res, 500, { error: 'internal_error', message: error.message });
@@ -131,6 +149,9 @@ export function createServer({ broker } = {}) {
     },
     address() {
       return raw.address();
+    },
+    raw() {
+      return raw;
     }
   };
 }

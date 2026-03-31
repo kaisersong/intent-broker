@@ -1,5 +1,7 @@
 import { reduceEventStream } from '../domain/reducer.js';
 import { createEventStore } from '../store/event-store.js';
+import { createPresenceTracker } from './presence.js';
+import { createWebSocketNotifier } from './websocket.js';
 
 function unique(values) {
   return Array.from(new Set(values));
@@ -24,6 +26,8 @@ function toReducerEvent(event) {
 export function createBrokerService({ dbPath }) {
   const participants = new Map();
   const store = createEventStore({ dbPath });
+  const presence = createPresenceTracker();
+  const wsNotifier = createWebSocketNotifier();
 
   function resolveRecipients(fromParticipantId, to = { mode: 'broadcast' }) {
     if (to.mode === 'participant') {
@@ -85,6 +89,15 @@ export function createBrokerService({ dbPath }) {
         payload,
         recipients
       });
+
+      // Notify recipients via WebSocket
+      for (const recipientId of recipients) {
+        wsNotifier.notify(recipientId, {
+          type: 'new_intent',
+          event
+        });
+      }
+
       return { eventId: event.eventId, recipients };
     },
     readInbox(participantId, options) {
@@ -94,13 +107,17 @@ export function createBrokerService({ dbPath }) {
       return store.ackInbox(participantId, eventId);
     },
     respondApproval({ approvalId, taskId, fromParticipantId, decision, completesTask = false }) {
+      // Get task assignees to route approval response
+      const task = this.getTaskView(taskId);
+      const assignees = task?.assignees || [];
+
       return this.sendIntent({
         intentId: `approval-${approvalId}-${decision}-${Date.now()}`,
         kind: 'respond_approval',
         fromParticipantId,
         taskId,
         threadId: null,
-        to: { mode: 'participant', participants: [] },
+        to: { mode: 'participant', participants: assignees },
         payload: { approvalId, decision, completesTask }
       });
     },
@@ -120,6 +137,21 @@ export function createBrokerService({ dbPath }) {
       return {
         items: store.listEvents(options)
       };
+    },
+    updatePresence(participantId, status, metadata) {
+      return presence.updatePresence(participantId, status, metadata);
+    },
+    getPresence(participantId) {
+      return presence.getPresence(participantId);
+    },
+    listPresence() {
+      return presence.listPresence();
+    },
+    attachWebSocket(httpServer) {
+      wsNotifier.attachToServer(httpServer);
+    },
+    getWebSocketNotifier() {
+      return wsNotifier;
     }
   };
 }

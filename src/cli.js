@@ -14,5 +14,9 @@ const server = createServer({ broker });
 
 await server.listen(port, host);
 
+// Attach WebSocket server
+broker.attachWebSocket(server.raw());
+
 console.log(`intent-broker listening on http://${host}:${server.address().port}`);
+console.log(`intent-broker WebSocket: ws://${host}:${server.address().port}/ws`);
 console.log(`intent-broker db: ${dbPath}`);

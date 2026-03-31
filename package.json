@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-test-isolation=none --test",
-    "start": "node src/cli.js"
+    "test": "node --experimental-sqlite --experimental-test-isolation=none --test",
+    "start": "node --experimental-sqlite src/cli.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   }
 }
