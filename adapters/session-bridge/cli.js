@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 import { deriveSessionBridgeConfig } from './config.js';
+import {
+  ackInbox,
+  pollInbox,
+  registerParticipant,
+  sendProgress as sendProgressIntent,
+  sendTask as sendTaskIntent
+} from './api.js';
 
 function usage() {
   console.log(`Usage:
@@ -11,65 +18,46 @@ function usage() {
 }
 
 async function register(config) {
-  const response = await fetch(`${config.brokerUrl}/participants/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      participantId: config.participantId,
-      kind: 'agent',
-      roles: config.roles,
-      capabilities: config.capabilities
-    })
-  });
-  console.log(JSON.stringify(await response.json(), null, 2));
+  console.log(JSON.stringify(await registerParticipant(config), null, 2));
 }
 
 async function poll(config, after = '0') {
-  const response = await fetch(`${config.brokerUrl}/inbox/${config.participantId}?after=${after}&limit=50`);
-  console.log(JSON.stringify(await response.json(), null, 2));
+  console.log(JSON.stringify(await pollInbox(config, { after, limit: 50 }), null, 2));
 }
 
 async function ack(config, eventId) {
-  const response = await fetch(`${config.brokerUrl}/inbox/${config.participantId}/ack`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ eventId: Number(eventId) })
-  });
-  console.log(JSON.stringify(await response.json(), null, 2));
+  console.log(JSON.stringify(await ackInbox(config, eventId), null, 2));
 }
 
 async function sendTask(config, toParticipantId, taskId, threadId, summary) {
-  const response = await fetch(`${config.brokerUrl}/intents`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      intentId: `${config.participantId}-task-${Date.now()}`,
-      kind: 'request_task',
-      fromParticipantId: config.participantId,
-      taskId,
-      threadId,
-      to: { mode: 'participant', participants: [toParticipantId] },
-      payload: { body: { summary } }
-    })
-  });
-  console.log(JSON.stringify(await response.json(), null, 2));
+  console.log(
+    JSON.stringify(
+      await sendTaskIntent(config, {
+        intentId: `${config.participantId}-task-${Date.now()}`,
+        toParticipantId,
+        taskId,
+        threadId,
+        summary
+      }),
+      null,
+      2
+    )
+  );
 }
 
 async function sendProgress(config, taskId, threadId, summary) {
-  const response = await fetch(`${config.brokerUrl}/intents`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      intentId: `${config.participantId}-progress-${Date.now()}`,
-      kind: 'report_progress',
-      fromParticipantId: config.participantId,
-      taskId,
-      threadId,
-      to: { mode: 'broadcast' },
-      payload: { stage: 'in_progress', body: { summary } }
-    })
-  });
-  console.log(JSON.stringify(await response.json(), null, 2));
+  console.log(
+    JSON.stringify(
+      await sendProgressIntent(config, {
+        intentId: `${config.participantId}-progress-${Date.now()}`,
+        taskId,
+        threadId,
+        summary
+      }),
+      null,
+      2
+    )
+  );
 }
 
 const [, , command, toolNameArg = 'codex', ...args] = process.argv;

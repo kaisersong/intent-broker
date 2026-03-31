@@ -43,6 +43,7 @@ The current prototype supports:
 - SQLite-backed persistent event storage
 - WebSocket real-time notification channel
 - verified Yunzhijia adapter inbound and outbound integration
+- non-invasive Codex hook integration for real session inbox injection
 
 ## Tech Stack
 
@@ -272,6 +273,62 @@ Example progress update:
   }
 }
 ```
+
+## Codex Integration
+
+The current best Codex UX is a non-invasive hook + skill bridge. It does not wrap how Codex starts. Instead, it installs two Codex hooks and one local skill:
+
+- `SessionStart` hook: when a real Codex session starts or resumes, it checks broker inbox state and injects pending collaboration context.
+- `UserPromptSubmit` hook: before a real user prompt is submitted, it checks for newly arrived broker events and injects them into the turn.
+- `intent-broker` skill: gives the Codex session an explicit way to send task handoffs and progress updates.
+
+### Install the Codex bridge
+
+From this repo:
+
+```bash
+npm run codex:install
+```
+
+This writes or updates:
+
+- `~/.codex/hooks.json`
+- `~/.codex/skills/intent-broker` (symlink)
+- `~/.intent-broker/codex/*.json` local cursor state
+
+Notes:
+
+- This preserves unrelated Codex hooks and only replaces previous `intent-broker` hook entries.
+- Current Codex source indicates lifecycle hooks are not supported on Windows yet, so this path is currently intended for macOS/Linux.
+- If you move this repo, run `npm run codex:install` again so the hook command paths are refreshed.
+
+### Send from a real Codex session
+
+Register the current real Codex session:
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js register
+```
+
+Send a task to another participant:
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js send-task claude-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
+```
+
+Send a progress update:
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+```
+
+### What this enables
+
+Once installed, an already-open real Codex session can naturally participate in multi-agent communication:
+
+- it keeps its native startup flow
+- it receives broker context through hooks instead of a wrapper shell
+- it can explicitly hand off tasks or publish progress with the same local bridge command set
 
 ### 4. Use approvals for risky or user-visible transitions
 

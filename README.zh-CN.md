@@ -43,6 +43,7 @@
 - SQLite 持久化事件存储
 - WebSocket 实时通知通道
 - 云之家 adapter 的真实入站 / 出站联调
+- 面向真实 Codex 会话的非侵入 hook 接入
 
 ## 技术选型
 
@@ -272,6 +273,62 @@ POST /inbox/:participantId/ack
   }
 }
 ```
+
+## Codex 接入
+
+当前最适合 Codex 的方式是“hook + skill”的非侵入接入，不改 Codex 原本启动方式，只是在本地安装两个 hook 和一个 skill：
+
+- `SessionStart` hook：真实 Codex 会话启动或恢复时，检查 broker inbox，并把待处理协作上下文注入当前会话。
+- `UserPromptSubmit` hook：真实用户提交 prompt 前，再检查一次是否有新到达的 broker 事件，并把它们注入当前 turn。
+- `intent-broker` skill：给当前 Codex 会话一个明确的出站入口，用来发任务和发进度。
+
+### 安装 Codex 桥接
+
+在仓库根目录执行：
+
+```bash
+npm run codex:install
+```
+
+这会写入或更新：
+
+- `~/.codex/hooks.json`
+- `~/.codex/skills/intent-broker`（符号链接）
+- `~/.intent-broker/codex/*.json` 本地 cursor 状态
+
+说明：
+
+- 这个安装过程会保留你已有的其他 Codex hooks，只替换旧的 `intent-broker` hook 项。
+- 从本地 Codex 源码来看，生命周期 hooks 目前在 Windows 上还不支持，所以这条路径当前主要面向 macOS / Linux。
+- 如果你把本仓库挪了位置，需要重新执行一次 `npm run codex:install`，刷新 hook 里的绝对路径。
+
+### 在真实 Codex 会话里主动发消息
+
+注册当前真实 Codex 会话：
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js register
+```
+
+给另一个参与者发任务：
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js send-task claude-real-1 real-task-1 real-thread-1 "请接手这个回归问题排查"
+```
+
+发送进度更新：
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js send-progress real-task-1 real-thread-1 "还在排查 broker handoff 失败原因"
+```
+
+### 这套接入的意义
+
+安装后，一个已经打开的真实 Codex 会话就能比较自然地参与多智能体通信：
+
+- 保持原生启动方式
+- 通过 hook 收到 broker 协作上下文，而不是再包一层 wrapper
+- 通过统一的本地桥接命令主动发 task / progress
 
 ### 4. 对关键动作使用审批流
 

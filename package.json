@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "node --experimental-sqlite --experimental-test-isolation=none --test",
-    "start": "node --experimental-sqlite src/cli.js"
+    "start": "node --experimental-sqlite src/cli.js",
+    "codex:install": "node adapters/codex-plugin/bin/codex-broker.js install"
   },
   "dependencies": {
     "ws": "^8.20.0"

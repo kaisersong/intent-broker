@@ -1,0 +1,111 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  buildHookCommand,
+  mergeIntentBrokerHooks
+} from '../../adapters/codex-plugin/install.js';
+
+test('buildHookCommand quotes the broker cli path and hook mode', () => {
+  const command = buildHookCommand('/Users/song/projects/intent-broker/adapters/codex-plugin/bin/codex-broker.js', 'session-start');
+
+  assert.equal(
+    command,
+    'node "/Users/song/projects/intent-broker/adapters/codex-plugin/bin/codex-broker.js" hook session-start'
+  );
+});
+
+test('mergeIntentBrokerHooks adds session start and user prompt submit handlers', () => {
+  const merged = mergeIntentBrokerHooks(
+    {},
+    {
+      sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
+      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit'
+    }
+  );
+
+  assert.deepEqual(merged, {
+    hooks: {
+      SessionStart: [
+        {
+          matcher: 'startup|resume',
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/codex-broker.js" hook session-start',
+              statusMessage: 'intent-broker session sync'
+            }
+          ]
+        }
+      ],
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+              statusMessage: 'intent-broker inbox sync'
+            }
+          ]
+        }
+      ]
+    }
+  });
+});
+
+test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preserves unrelated hooks', () => {
+  const merged = mergeIntentBrokerHooks(
+    {
+      hooks: {
+        SessionStart: [
+          {
+            matcher: 'startup|resume',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node old-intent-broker hook session-start',
+                statusMessage: 'intent-broker session sync'
+              }
+            ]
+          },
+          {
+            matcher: 'startup',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node keep-me',
+                statusMessage: 'other startup hook'
+              }
+            ]
+          }
+        ],
+        UserPromptSubmit: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'node old-intent-broker hook user-prompt-submit',
+                statusMessage: 'intent-broker inbox sync'
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
+      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit'
+    }
+  );
+
+  assert.equal(merged.hooks.SessionStart.length, 2);
+  assert.equal(merged.hooks.SessionStart[0].hooks[0].command, 'node keep-me');
+  assert.equal(
+    merged.hooks.SessionStart[1].hooks[0].command,
+    'node "/repo/codex-broker.js" hook session-start'
+  );
+  assert.equal(
+    merged.hooks.UserPromptSubmit[0].hooks[0].command,
+    'node "/repo/codex-broker.js" hook user-prompt-submit'
+  );
+});
