@@ -2,9 +2,12 @@ node_modules/
 .env
 .env.*
 !**/.env.example
-docs/
+docs/*
+!docs/superpowers/
+!docs/superpowers/**
 *.db
 *.db-shm
 *.db-wal
 coverage/
 .tmp/
+.worktrees/
