@@ -34,7 +34,12 @@ export function createEventStore({ dbPath }) {
         `).run(participantId, eventId);
       }
 
-      return { eventId };
+      const row = db.prepare(`
+        SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
+        FROM events
+        WHERE event_id = ?
+      `).get(eventId);
+      return mapEventRow(row);
     },
     readInbox(participantId, { after = 0, limit = 50 } = {}) {
       const items = db.prepare(`

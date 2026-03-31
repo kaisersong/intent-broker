@@ -1,6 +1,6 @@
 /**
- * Simple WebSocket client test
- * Usage: node tests/ws-client-test.js
+ * Simple WebSocket client demo
+ * Usage: node tests/ws-client-demo.js
  */
 import WebSocket from 'ws';
 

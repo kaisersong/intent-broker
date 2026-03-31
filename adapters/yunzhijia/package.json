@@ -1,0 +1,12 @@
+{
+  "name": "yunzhijia-adapter",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --env-file=.env index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
