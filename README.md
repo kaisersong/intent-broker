@@ -193,6 +193,131 @@ Example:
 }
 ```
 
+## To Agents
+
+If you are a coding agent such as Claude Code, Codex, OpenCode, xiaok code, or a similar worker, `Intent Broker` is the coordination layer you should talk to when you need durable task handoff, approvals, replay, or human-in-the-loop collaboration.
+
+Use it like this:
+
+### 1. Register yourself once per session
+
+Register a participant before doing any work:
+
+```http
+POST /participants/register
+```
+
+Example:
+
+```json
+{
+  "participantId": "codex.main",
+  "kind": "agent",
+  "roles": ["coder"],
+  "capabilities": ["backend.node", "frontend.react"]
+}
+```
+
+Recommended naming:
+
+- `participantId`: stable and tool-specific, for example `claude-code.main`, `codex.review`, `opencode.worker-1`, `xiaok-code.backend`
+- `roles`: broad routing labels such as `coder`, `reviewer`, `approver`
+- `capabilities`: narrower skill labels such as `frontend.react`, `backend.node`, `docs.write`
+
+### 2. Pull work instead of assuming a permanent connection
+
+The reliable path is inbox pull:
+
+```http
+GET /inbox/:participantId?after=0&limit=50
+```
+
+Read pending intents, execute the next useful action, then acknowledge what you consumed:
+
+```http
+POST /inbox/:participantId/ack
+```
+
+This design is intentional. If your process restarts, you can reconnect and pull again without losing task context.
+
+### 3. Send intents as stateful collaboration events
+
+Use `POST /intents` to communicate meaningful work state, not just raw chat text.
+
+Typical patterns:
+
+- `request_task`: assign or hand off a task to another participant or role
+- `report_progress`: publish execution state, partial results, or blockers
+- `request_approval`: ask a human to approve a risky or final step
+- `respond_approval`: return a human approval decision back into the task flow
+
+Example progress update:
+
+```json
+{
+  "intentId": "progress-1",
+  "kind": "report_progress",
+  "fromParticipantId": "codex.main",
+  "taskId": "task-1",
+  "threadId": "thread-1",
+  "to": {
+    "mode": "participant",
+    "participants": ["human.song"]
+  },
+  "payload": {
+    "stage": "in_progress",
+    "body": {
+      "summary": "Implemented the adapter handshake and running verification"
+    }
+  }
+}
+```
+
+### 4. Use approvals for risky or user-visible transitions
+
+If you are about to:
+
+- submit final results
+- deploy or release
+- perform destructive changes
+- ask a human to confirm correctness
+
+send `request_approval` instead of inventing your own ad hoc message format. That keeps the approval state queryable and replayable.
+
+### 5. Recover through replay, not memory
+
+If you crash, restart, or lose local context:
+
+- pull your inbox again
+- query `GET /tasks/:taskId`
+- query `GET /threads/:threadId`
+- use `GET /events/replay` for wider reconstruction
+
+Do not depend on ephemeral terminal history as the system of record.
+
+### 6. Use adapters when humans are not inside the terminal
+
+If the human lives in Yunzhijia, Feishu, DingTalk, Telegram, Discord, or mobile surfaces, use a platform adapter instead of hard-coding chat logic into the agent.
+
+See:
+
+- [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md)
+- [adapters/yunzhijia/QUICKSTART.md](./adapters/yunzhijia/QUICKSTART.md)
+- [docs/adapter-example.js](./docs/adapter-example.js)
+
+### 7. Practical recommendation for code agents
+
+For Claude Code / Codex / OpenCode / xiaok code style agents, the most effective pattern is:
+
+1. Register at startup.
+2. Poll inbox at task boundaries, idle points, or explicit hooks.
+3. Acknowledge consumed events.
+4. Emit progress updates at meaningful milestones.
+5. Ask for approval before irreversible or user-visible completion.
+6. Replay task state after restart instead of guessing.
+
+That gives you a durable collaboration timeline without forcing every agent into the same runtime or websocket lifecycle.
+
 ## Project Structure
 
 ```text

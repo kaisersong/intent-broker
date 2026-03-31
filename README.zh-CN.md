@@ -193,6 +193,131 @@ POST /approvals/:approvalId/respond
 }
 ```
 
+## 给智能体
+
+如果你是 Claude Code、Codex、OpenCode、xiaok code 或其他代码智能体，`Intent Broker` 应该被当成协作协议层来使用，而不是聊天窗口。凡是涉及任务交接、进度同步、审批、人类插话、重启恢复，都应该优先通过 broker 来完成。
+
+推荐这样使用：
+
+### 1. 每次会话启动先注册自己
+
+先注册一个 participant，再开始工作：
+
+```http
+POST /participants/register
+```
+
+示例：
+
+```json
+{
+  "participantId": "codex.main",
+  "kind": "agent",
+  "roles": ["coder"],
+  "capabilities": ["backend.node", "frontend.react"]
+}
+```
+
+推荐命名方式：
+
+- `participantId`：稳定且能区分工具，例如 `claude-code.main`、`codex.review`、`opencode.worker-1`、`xiaok-code.backend`
+- `roles`：粗粒度角色，例如 `coder`、`reviewer`、`approver`
+- `capabilities`：细粒度能力，例如 `frontend.react`、`backend.node`、`docs.write`
+
+### 2. 优先用 inbox pull，不要假设必须常连
+
+最可靠的消费路径是主动拉 inbox：
+
+```http
+GET /inbox/:participantId?after=0&limit=50
+```
+
+处理完当前事件后，用 ack 标记已消费：
+
+```http
+POST /inbox/:participantId/ack
+```
+
+这个设计是故意的。即使你的进程重启，只要重新连接并拉取 inbox，就不会丢失关键任务上下文。
+
+### 3. 发送 intent，而不是只发聊天文本
+
+通过 `POST /intents` 发送有明确语义的协作事件，而不是临时消息。
+
+典型模式：
+
+- `request_task`：给其他 participant 或角色派任务
+- `report_progress`：报告进度、阶段结果、阻塞
+- `request_approval`：请求人类审批某个关键动作
+- `respond_approval`：把人类审批结果写回任务流
+
+进度更新示例：
+
+```json
+{
+  "intentId": "progress-1",
+  "kind": "report_progress",
+  "fromParticipantId": "codex.main",
+  "taskId": "task-1",
+  "threadId": "thread-1",
+  "to": {
+    "mode": "participant",
+    "participants": ["human.song"]
+  },
+  "payload": {
+    "stage": "in_progress",
+    "body": {
+      "summary": "已经完成 adapter 握手，正在做验证"
+    }
+  }
+}
+```
+
+### 4. 对关键动作使用审批流
+
+当你准备做下面这些事时：
+
+- 提交最终结果
+- 发布或部署
+- 执行破坏性操作
+- 请求人类确认是否可以结束
+
+优先发 `request_approval`，不要自己发一条随意格式的文本消息。这样审批状态才能被查询、被重放、被审计。
+
+### 5. 重启后靠 replay 恢复，不要靠记忆
+
+如果你崩了、重启了、上下文丢了，可以这样恢复：
+
+- 再次拉取 inbox
+- 查询 `GET /tasks/:taskId`
+- 查询 `GET /threads/:threadId`
+- 需要更完整上下文时用 `GET /events/replay`
+
+不要把临时终端历史当成唯一事实来源。
+
+### 6. 当人类不在终端里时，用 adapter
+
+如果人类用户在云之家、飞书、钉钉、Telegram、Discord 或手机端上，就应该通过平台 adapter 接入，而不是把平台消息逻辑硬编码进 agent 本身。
+
+详见：
+
+- [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md)
+- [adapters/yunzhijia/QUICKSTART.md](./adapters/yunzhijia/QUICKSTART.md)
+- [docs/adapter-example.js](./docs/adapter-example.js)
+
+### 7. 对代码智能体最实用的工作模式
+
+对 Claude Code / Codex / OpenCode / xiaok code 这类代码智能体，最有效的使用方式是：
+
+1. 启动时注册。
+2. 在任务边界、空闲点、hook 触发点主动轮询 inbox。
+3. 消费后及时 ack。
+4. 在关键里程碑上发 `report_progress`。
+5. 在不可逆或用户可见的完成动作前请求审批。
+6. 重启后通过 replay 恢复，而不是靠猜。
+
+这样可以得到一条可恢复、可审计的协作时间线，同时又不强迫所有 agent 绑定到同一种运行时或长期 websocket 生命周期。
+
 ## 项目结构
 
 ```text
