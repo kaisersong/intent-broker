@@ -46,6 +46,12 @@ export function createServer({ broker } = {}) {
         return;
       }
 
+      if (req.method === 'GET' && pathname === '/participants') {
+        const projectName = requestUrl.searchParams.get('projectName');
+        writeJson(res, 200, { participants: broker.listParticipants({ projectName }) });
+        return;
+      }
+
       if (req.method === 'POST' && pathname === '/intents') {
         const body = await readJson(req);
         writeJson(res, 202, broker.sendIntent(body));
@@ -123,6 +129,14 @@ export function createServer({ broker } = {}) {
 
       if (req.method === 'GET' && pathname === '/presence') {
         writeJson(res, 200, { participants: broker.listPresence() });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname.startsWith('/mobile/inbox/')) {
+        const participantId = pathname.split('/')[3];
+        const after = Number(requestUrl.searchParams.get('after') || '0');
+        const limit = Number(requestUrl.searchParams.get('limit') || '50');
+        writeJson(res, 200, broker.readMobileInbox(participantId, { after, limit }));
         return;
       }
 

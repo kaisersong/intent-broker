@@ -60,11 +60,38 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands) {
 
 export function defaultInstallPaths({ homeDir = os.homedir(), repoRoot } = {}) {
   return {
+    configPath: path.join(homeDir, '.codex', 'config.toml'),
     hooksConfigPath: path.join(homeDir, '.codex', 'hooks.json'),
     skillLinkPath: path.join(homeDir, '.codex', 'skills', 'intent-broker'),
     stateRoot: path.join(homeDir, '.intent-broker', 'codex'),
     skillSourcePath: path.join(repoRoot, 'adapters', 'codex-plugin', 'skills', 'intent-broker')
   };
+}
+
+export function enableCodexHooksFeature(configText = '') {
+  if (/\bcodex_hooks\s*=\s*true\b/.test(configText)) {
+    return configText;
+  }
+
+  if (/\[features\]/.test(configText)) {
+    return configText.replace(/\[features\]\n/, '[features]\ncodex_hooks = true\n');
+  }
+
+  const suffix = configText.endsWith('\n') || configText.length === 0 ? '' : '\n';
+  return `${configText}${suffix}[features]\ncodex_hooks = true\n`;
+}
+
+export function readCodexConfig(configPath) {
+  try {
+    return readFileSync(configPath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+export function writeCodexConfig(configPath, configText) {
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  writeFileSync(configPath, configText);
 }
 
 export function readHooksConfig(hooksConfigPath) {

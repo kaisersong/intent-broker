@@ -88,3 +88,28 @@ test('respondApproval updates approval view to approved', () => {
 
   assert.equal(broker.getApprovalView('app-1').status, 'approved');
 });
+
+test('registerParticipant stores projectName context and listParticipants can filter by projectName', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    context: { projectName: 'intent-broker' }
+  });
+  broker.registerParticipant({
+    participantId: 'codex.b',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    context: { projectName: 'kvoice' }
+  });
+
+  const projectParticipants = broker.listParticipants({ projectName: 'intent-broker' });
+
+  assert.equal(projectParticipants.length, 1);
+  assert.equal(projectParticipants[0].participantId, 'codex.a');
+  assert.deepEqual(projectParticipants[0].context, { projectName: 'intent-broker' });
+});

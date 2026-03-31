@@ -31,7 +31,8 @@ test('registerParticipant posts participant metadata to broker', async () => {
       brokerUrl: 'http://127.0.0.1:4318',
       participantId: 'codex.main',
       roles: ['coder'],
-      capabilities: ['backend.node']
+      capabilities: ['backend.node'],
+      context: { projectName: 'intent-broker' }
     },
     fetchStub
   );
@@ -42,7 +43,8 @@ test('registerParticipant posts participant metadata to broker', async () => {
     participantId: 'codex.main',
     kind: 'agent',
     roles: ['coder'],
-    capabilities: ['backend.node']
+    capabilities: ['backend.node'],
+    context: { projectName: 'intent-broker' }
   });
 });
 

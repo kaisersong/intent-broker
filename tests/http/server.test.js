@@ -157,3 +157,48 @@ test('query endpoints return task view, thread timeline, and replay slices', { c
   assert.equal(replayBody.items.length, 2);
   assert.equal(replayBody.items[1].intentId, 'int-progress-2');
 });
+
+test('register endpoint accepts projectName context and participants endpoint filters by projectName', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const registerA = await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      participantId: 'codex.a',
+      kind: 'agent',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    })
+  });
+  const registerABody = await registerA.json();
+
+  assert.equal(registerA.status, 200);
+  assert.deepEqual(registerABody.context, { projectName: 'intent-broker' });
+
+  await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      participantId: 'codex.b',
+      kind: 'agent',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'other-project' }
+    })
+  });
+
+  const participantsResponse = await fetch(
+    `http://127.0.0.1:${port}/participants?projectName=intent-broker`
+  );
+  const participantsBody = await participantsResponse.json();
+
+  assert.equal(participantsResponse.status, 200);
+  assert.equal(participantsBody.participants.length, 1);
+  assert.equal(participantsBody.participants[0].participantId, 'codex.a');
+  assert.deepEqual(participantsBody.participants[0].context, { projectName: 'intent-broker' });
+});

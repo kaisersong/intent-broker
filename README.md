@@ -124,8 +124,18 @@ Example:
   "participantId": "agent.a",
   "kind": "agent",
   "roles": ["coder"],
-  "capabilities": ["frontend.react"]
+  "capabilities": ["frontend.react"],
+  "context": {
+    "projectName": "intent-broker"
+  }
 }
+```
+
+List participants, optionally filtered by project:
+
+```http
+GET /participants
+GET /participants?projectName=intent-broker
 ```
 
 ### Send Intent
@@ -215,7 +225,10 @@ Example:
   "participantId": "codex.main",
   "kind": "agent",
   "roles": ["coder"],
-  "capabilities": ["backend.node", "frontend.react"]
+  "capabilities": ["backend.node", "frontend.react"],
+  "context": {
+    "projectName": "intent-broker"
+  }
 }
 ```
 
@@ -224,6 +237,13 @@ Recommended naming:
 - `participantId`: stable and tool-specific, for example `claude-code.main`, `codex.review`, `opencode.worker-1`, `xiaok-code.backend`
 - `roles`: broad routing labels such as `coder`, `reviewer`, `approver`
 - `capabilities`: narrower skill labels such as `frontend.react`, `backend.node`, `docs.write`
+- `context.projectName`: the current project the agent is actively working on, such as `intent-broker`
+
+Why `projectName` matters:
+
+- You can ask "who is working on `intent-broker`?"
+- You can route a task to the agents already active on the same project
+- You can warn before a handoff or submission when multiple agents are already on that project
 
 ### 2. Pull work instead of assuming a permanent connection
 
@@ -278,9 +298,16 @@ Example progress update:
 
 The current best Codex UX is a non-invasive hook + skill bridge. It does not wrap how Codex starts. Instead, it installs two Codex hooks and one local skill:
 
-- `SessionStart` hook: when a real Codex session starts or resumes, it checks broker inbox state and injects pending collaboration context.
-- `UserPromptSubmit` hook: before a real user prompt is submitted, it checks for newly arrived broker events and injects them into the turn.
+- `SessionStart` hook: when a real Codex session starts or resumes, it silently registers the session to the broker and records the current `projectName`.
+- `UserPromptSubmit` hook: before a real user prompt is submitted, it checks for newly arrived broker events and injects them into the turn only when there is pending collaboration context.
 - `intent-broker` skill: gives the Codex session an explicit way to send task handoffs and progress updates.
+
+Normal flow:
+
+- do not manually register the Codex session
+- open Codex in the target project directory
+- let `SessionStart` auto-register the session on startup
+- let `UserPromptSubmit` only sync inbox context when there is new collaboration work
 
 ### Install the Codex bridge
 
@@ -296,6 +323,8 @@ This writes or updates:
 - `~/.codex/skills/intent-broker` (symlink)
 - `~/.intent-broker/codex/*.json` local cursor state
 
+The Codex bridge now auto-registers the current project name using the current working directory basename by default. You can override it with `PROJECT_NAME`.
+
 Notes:
 
 - This preserves unrelated Codex hooks and only replaces previous `intent-broker` hook entries.
@@ -304,7 +333,7 @@ Notes:
 
 ### Send from a real Codex session
 
-Register the current real Codex session:
+Manual register remains available only as a debugging command when you need to inspect a session's derived participant id:
 
 ```bash
 node adapters/codex-plugin/bin/codex-broker.js register

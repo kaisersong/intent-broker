@@ -15,7 +15,7 @@ Use this skill when you need durable coordination with another agent or a human 
 
 ## Commands
 
-Register this Codex session:
+Manual register for debugging only:
 
 ```bash
 node /Users/song/projects/intent-broker/adapters/codex-plugin/bin/codex-broker.js register

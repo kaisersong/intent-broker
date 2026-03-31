@@ -69,10 +69,20 @@ export function createBrokerService({ dbPath }) {
         participantId: participant.participantId,
         kind: participant.kind,
         roles: participant.roles || [],
-        capabilities: participant.capabilities || []
+        capabilities: participant.capabilities || [],
+        context: participant.context || {}
       };
       participants.set(normalized.participantId, normalized);
       return normalized;
+    },
+    listParticipants({ projectName } = {}) {
+      return [...participants.values()].filter((participant) => {
+        if (!projectName) {
+          return true;
+        }
+
+        return participant.context?.projectName === projectName;
+      });
     },
     sendIntent(input) {
       const recipients = resolveRecipients(input.fromParticipantId, input.to);
@@ -92,16 +102,25 @@ export function createBrokerService({ dbPath }) {
 
       // Notify recipients via WebSocket
       for (const recipientId of recipients) {
-        wsNotifier.notify(recipientId, {
-          type: 'new_intent',
-          event
-        });
+        const recipient = participants.get(recipientId);
+        const notification = recipient?.kind === 'mobile'
+          ? this.formatMobileNotification(event)
+          : { type: 'new_intent', event };
+        wsNotifier.notify(recipientId, notification);
       }
 
       return { eventId: event.eventId, recipients };
     },
     readInbox(participantId, options) {
       return store.readInbox(participantId, options);
+    },
+    readMobileInbox(participantId, options) {
+      const inbox = store.readInbox(participantId, options);
+      const humanActionKinds = ['request_approval', 'ask_clarification', 'request_task'];
+      return {
+        ...inbox,
+        items: inbox.items.filter(event => humanActionKinds.includes(event.kind))
+      };
     },
     ackInbox(participantId, eventId) {
       return store.ackInbox(participantId, eventId);
@@ -152,6 +171,42 @@ export function createBrokerService({ dbPath }) {
     },
     getWebSocketNotifier() {
       return wsNotifier;
+    },
+    formatMobileNotification(event) {
+      const notificationMap = {
+        request_approval: {
+          title: '需要审批',
+          body: event.payload.body?.summary || '有新的审批请求',
+          action: 'approve',
+          data: { approvalId: event.payload.approvalId, taskId: event.taskId }
+        },
+        ask_clarification: {
+          title: '需要澄清',
+          body: event.payload.body?.summary || '有问题需要回答',
+          action: 'clarify',
+          data: { taskId: event.taskId, threadId: event.threadId }
+        },
+        request_task: {
+          title: '新任务',
+          body: event.payload.body?.summary || '收到新任务',
+          action: 'view_task',
+          data: { taskId: event.taskId }
+        }
+      };
+
+      const notification = notificationMap[event.kind] || {
+        title: '新消息',
+        body: event.kind,
+        action: 'view',
+        data: { eventId: event.eventId }
+      };
+
+      return {
+        type: 'mobile_notification',
+        eventId: event.eventId,
+        timestamp: event.timestamp,
+        ...notification
+      };
     }
   };
 }

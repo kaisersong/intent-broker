@@ -1,30 +1,26 @@
 #!/usr/bin/env node
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  ackInbox,
-  pollInbox,
   registerParticipant,
   sendProgress,
   sendTask
 } from '../../session-bridge/api.js';
-import {
-  buildCodexHookContext,
-  buildCodexHookOutput,
-  highestEventId
-} from '../../session-bridge/codex-hooks.js';
+import { buildCodexHookOutput } from '../../session-bridge/codex-hooks.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
-import { loadCursorState, saveCursorState } from '../../session-bridge/state.js';
 import {
   buildHookCommand,
   defaultInstallPaths,
   ensureSkillLink,
+  enableCodexHooksFeature,
   mergeIntentBrokerHooks,
+  readCodexConfig,
   readHooksConfig,
+  writeCodexConfig,
   writeHooksConfig
 } from '../install.js';
+import { runSessionStartHook, runUserPromptSubmitHook } from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -49,31 +45,9 @@ async function readJsonStdin() {
   return text ? JSON.parse(text) : {};
 }
 
-function configFromHookInput(input) {
-  return deriveSessionBridgeConfig({
-    toolName: 'codex',
-    env: {
-      ...process.env,
-      CODEX_THREAD_ID: process.env.CODEX_THREAD_ID || input.session_id || ''
-    }
-  });
-}
-
-function cursorPathForParticipant(participantId) {
-  const homeDir = os.homedir();
-  return path.join(homeDir, '.intent-broker', 'codex', `${participantId}.json`);
-}
-
 async function handleSessionStartHook() {
   const input = await readJsonStdin();
-  const config = configFromHookInput(input);
-  const statePath = cursorPathForParticipant(config.participantId);
-  const state = loadCursorState(statePath);
-
-  await registerParticipant(config);
-  const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
-  const items = inbox.items || [];
-  const context = buildCodexHookContext(items, { participantId: config.participantId });
+  const context = await runSessionStartHook(input);
 
   if (!context) {
     return;
@@ -84,43 +58,31 @@ async function handleSessionStartHook() {
 
 async function handleUserPromptSubmitHook() {
   const input = await readJsonStdin();
-  if (typeof input.prompt === 'string' && input.prompt.trimStart().startsWith('/')) {
-    return;
-  }
-
-  const config = configFromHookInput(input);
-  const statePath = cursorPathForParticipant(config.participantId);
-  const state = loadCursorState(statePath);
-
-  await registerParticipant(config);
-  const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
-  const items = inbox.items || [];
-  const context = buildCodexHookContext(items, { participantId: config.participantId });
+  const context = await runUserPromptSubmitHook(input);
 
   if (!context) {
     return;
   }
-
-  const lastSeenEventId = highestEventId(items);
-  saveCursorState(statePath, { lastSeenEventId });
-  await ackInbox(config, lastSeenEventId);
   process.stdout.write(JSON.stringify(buildCodexHookOutput('UserPromptSubmit', context)));
 }
 
 async function install() {
   const paths = defaultInstallPaths({ repoRoot });
+  const configText = readCodexConfig(paths.configPath);
   const existingConfig = readHooksConfig(paths.hooksConfigPath);
   const mergedConfig = mergeIntentBrokerHooks(existingConfig, {
     sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
     userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit')
   });
 
+  writeCodexConfig(paths.configPath, enableCodexHooksFeature(configText));
   writeHooksConfig(paths.hooksConfigPath, mergedConfig);
   ensureSkillLink(paths.skillSourcePath, paths.skillLinkPath);
 
   console.log(
     JSON.stringify(
       {
+        configPath: paths.configPath,
         hooksConfigPath: paths.hooksConfigPath,
         skillLinkPath: paths.skillLinkPath,
         stateRoot: paths.stateRoot,

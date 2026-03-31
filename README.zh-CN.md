@@ -124,8 +124,18 @@ POST /participants/register
   "participantId": "agent.a",
   "kind": "agent",
   "roles": ["coder"],
-  "capabilities": ["frontend.react"]
+  "capabilities": ["frontend.react"],
+  "context": {
+    "projectName": "intent-broker"
+  }
 }
+```
+
+也可以查询 participant 列表，并按项目名过滤：
+
+```http
+GET /participants
+GET /participants?projectName=intent-broker
 ```
 
 ### Send Intent
@@ -215,7 +225,10 @@ POST /participants/register
   "participantId": "codex.main",
   "kind": "agent",
   "roles": ["coder"],
-  "capabilities": ["backend.node", "frontend.react"]
+  "capabilities": ["backend.node", "frontend.react"],
+  "context": {
+    "projectName": "intent-broker"
+  }
 }
 ```
 
@@ -224,6 +237,13 @@ POST /participants/register
 - `participantId`：稳定且能区分工具，例如 `claude-code.main`、`codex.review`、`opencode.worker-1`、`xiaok-code.backend`
 - `roles`：粗粒度角色，例如 `coder`、`reviewer`、`approver`
 - `capabilities`：细粒度能力，例如 `frontend.react`、`backend.node`、`docs.write`
+- `context.projectName`：当前正在做的项目名，例如 `intent-broker`
+
+为什么 `projectName` 重要：
+
+- 可以直接问“谁在做 `intent-broker`？”
+- 可以把任务优先发给已经在这个项目上的 agent
+- 提交或交接前，可以先看这个项目上当前还有哪些协作者在线
 
 ### 2. 优先用 inbox pull，不要假设必须常连
 
@@ -278,9 +298,16 @@ POST /inbox/:participantId/ack
 
 当前最适合 Codex 的方式是“hook + skill”的非侵入接入，不改 Codex 原本启动方式，只是在本地安装两个 hook 和一个 skill：
 
-- `SessionStart` hook：真实 Codex 会话启动或恢复时，检查 broker inbox，并把待处理协作上下文注入当前会话。
-- `UserPromptSubmit` hook：真实用户提交 prompt 前，再检查一次是否有新到达的 broker 事件，并把它们注入当前 turn。
+- `SessionStart` hook：真实 Codex 会话启动或恢复时，静默向 broker 自动注册当前会话，并记录当前 `projectName`。
+- `UserPromptSubmit` hook：真实用户提交 prompt 前，再检查一次是否有新到达的 broker 事件；只有确实存在待处理协作上下文时，才把它们注入当前 turn。
 - `intent-broker` skill：给当前 Codex 会话一个明确的出站入口，用来发任务和发进度。
+
+正常使用流程：
+
+- 不要手动注册 Codex 会话
+- 直接在目标项目目录里打开 Codex
+- 让 `SessionStart` 在会话启动时自动完成静默注册
+- 让 `UserPromptSubmit` 只在存在新协作消息时做 inbox 同步
 
 ### 安装 Codex 桥接
 
@@ -296,6 +323,8 @@ npm run codex:install
 - `~/.codex/skills/intent-broker`（符号链接）
 - `~/.intent-broker/codex/*.json` 本地 cursor 状态
 
+现在 Codex 桥接在注册时会默认使用当前工作目录名作为 `projectName`。如果你想手动指定，可以设置 `PROJECT_NAME`。
+
 说明：
 
 - 这个安装过程会保留你已有的其他 Codex hooks，只替换旧的 `intent-broker` hook 项。
@@ -304,7 +333,7 @@ npm run codex:install
 
 ### 在真实 Codex 会话里主动发消息
 
-注册当前真实 Codex 会话：
+手动注册只保留给排障场景，例如你想确认当前会话推导出的 participantId：
 
 ```bash
 node adapters/codex-plugin/bin/codex-broker.js register
