@@ -18,13 +18,43 @@ export function createEventStore({ dbPath }) {
   const db = new DatabaseSync(dbPath);
   initializeSchema(db);
 
+  function getEventById(eventId) {
+    const row = db.prepare(`
+      SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
+      FROM events
+      WHERE event_id = ?
+    `).get(eventId);
+    return row ? mapEventRow(row) : null;
+  }
+
+  function getEventByIntentId(intentId) {
+    const row = db.prepare(`
+      SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
+      FROM events
+      WHERE intent_id = ?
+    `).get(intentId);
+    return row ? mapEventRow(row) : null;
+  }
+
   return {
     appendIntent({ intentId, kind, fromParticipantId, taskId, threadId, payload, recipients }) {
       const insertEvent = db.prepare(`
         INSERT INTO events (intent_id, kind, from_participant_id, task_id, thread_id, payload_json)
         VALUES (?, ?, ?, ?, ?, ?)
       `);
-      const result = insertEvent.run(intentId, kind, fromParticipantId, taskId, threadId, JSON.stringify(payload));
+      let result;
+      try {
+        result = insertEvent.run(intentId, kind, fromParticipantId, taskId, threadId, JSON.stringify(payload));
+      } catch (error) {
+        if (String(error.message).includes('UNIQUE constraint failed: events.intent_id')) {
+          const existingEvent = getEventByIntentId(intentId);
+          return {
+            ...existingEvent,
+            duplicate: true
+          };
+        }
+        throw error;
+      }
       const eventId = Number(result.lastInsertRowid);
 
       for (const participantId of recipients) {
@@ -34,12 +64,7 @@ export function createEventStore({ dbPath }) {
         `).run(participantId, eventId);
       }
 
-      const row = db.prepare(`
-        SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
-        FROM events
-        WHERE event_id = ?
-      `).get(eventId);
-      return mapEventRow(row);
+      return getEventById(eventId);
     },
     readInbox(participantId, { after = 0, limit = 50 } = {}) {
       const items = db.prepare(`

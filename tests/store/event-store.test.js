@@ -56,3 +56,34 @@ test('listEvents returns persisted events for replay', () => {
   assert.equal(events[0].intentId, 'int-1');
   assert.deepEqual(events[0].payload.body, { summary: 'fix it' });
 });
+
+test('appendIntent is idempotent for duplicate intentId', () => {
+  const store = createEventStore({ dbPath: createTempDbPath() });
+
+  const first = store.appendIntent({
+    intentId: 'int-duplicate',
+    kind: 'ask_clarification',
+    fromParticipantId: 'human.song',
+    taskId: 'task-dup',
+    threadId: 'thread-dup',
+    payload: { body: { summary: 'first delivery' } },
+    recipients: ['agent.a']
+  });
+
+  const second = store.appendIntent({
+    intentId: 'int-duplicate',
+    kind: 'ask_clarification',
+    fromParticipantId: 'human.song',
+    taskId: 'task-dup',
+    threadId: 'thread-dup',
+    payload: { body: { summary: 'first delivery' } },
+    recipients: ['agent.a']
+  });
+
+  assert.equal(first.eventId, second.eventId);
+  assert.equal(second.duplicate, true);
+
+  const events = store.listEvents();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].intentId, 'int-duplicate');
+});

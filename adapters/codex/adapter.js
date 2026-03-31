@@ -13,6 +13,7 @@ export class CodexAdapter {
     this.ws = null;
     this.ackCursor = 0;
     this.handlers = new Map();
+    this.seenIntentIds = new Set();
   }
 
   async connect() {
@@ -44,7 +45,12 @@ export class CodexAdapter {
     this.ws.on('message', async (data) => {
       const message = JSON.parse(data.toString());
       if (message.type === 'new_intent') {
-        await this.handleIntent(message.event);
+        const event = this.normalizeEvent(message.event);
+        if (!event) return;
+        await this.handleIntent(event);
+        if (event.eventId) {
+          await this.ackIntent(event.eventId);
+        }
       }
     });
 
@@ -108,6 +114,7 @@ export class CodexAdapter {
   }
 
   async handleIntent(event) {
+    if (!event?.kind) return;
     console.log(`[Codex] Received intent: ${event.kind} (${event.intentId})`);
 
     const handler = this.handlers.get(event.kind);
@@ -122,6 +129,16 @@ export class CodexAdapter {
 
   on(intentKind, handler) {
     this.handlers.set(intentKind, handler);
+  }
+
+  normalizeEvent(event) {
+    const normalized = event?.event || event;
+    if (!normalized?.kind) return null;
+    if (normalized.intentId) {
+      if (this.seenIntentIds.has(normalized.intentId)) return null;
+      this.seenIntentIds.add(normalized.intentId);
+    }
+    return normalized;
   }
 
   async sendIntent(intent) {
