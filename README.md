@@ -2,6 +2,8 @@
 
 本地优先的多 Agent 协作 broker。它不是聊天服务器，也不是工作流平台，而是一层可靠的协作协议中间层：先持久化事件，再进行投递；让 Codex、Claude Code、OpenCode 这类 agent 与人类参与方围绕同一任务对象协作。
 
+当前发布版本：`0.1.0`
+
 ## 设计思想
 
 `Intent Broker` 的设计重点不是“让多个窗口能互相发消息”，而是把协作从临时复制粘贴提升为一套可恢复、可重放、可审计的协议。
@@ -37,6 +39,8 @@
 - `GET /threads/:threadId`
 - `GET /events/replay`
 - SQLite 持久化事件存储
+- WebSocket 实时通知通道
+- 云之家 adapter 的真实入站 / 出站联调
 
 ## 技术选型
 
@@ -91,6 +95,8 @@ npm test
 - SQLite store 的 append / inbox / ack / replay
 - broker service 路由与审批聚合
 - HTTP API 端到端流程
+- Yunzhijia adapter 配置回归测试
+- Yunzhijia adapter 入站 / 出站集成测试
 
 说明：测试脚本使用了 `node --experimental-test-isolation=none --test`，因为当前沙箱环境下默认 `node --test` 会触发子进程 `EPERM`。
 
@@ -202,15 +208,41 @@ tests/
   store/         SQLite store 测试
 ```
 
+## 扩展能力
+
+### 手机连接
+
+手机可以作为 `kind: "mobile"` 的 participant 连接，支持：
+- WebSocket 实时通知
+- 简化的 inbox（只显示需要确认的事件）
+- 审批和确认操作
+
+详见 [MOBILE.md](./MOBILE.md)
+
+### 消息平台集成
+
+通过独立的 adapter 进程接入云之家、飞书、钉钉、Telegram、Discord 等平台：
+
+```
+消息平台 → Platform Adapter → Intent Broker → Agents
+```
+
+详见：
+- [docs/ADAPTERS.md](./docs/ADAPTERS.md) - Adapter 架构设计
+- [docs/adapter-example.js](./docs/adapter-example.js) - 最小实现示例
+- [docs/platform-adapters.md](./docs/platform-adapters.md) - 各平台接入指南
+
+当前仓库已包含一个可运行的云之家 adapter：
+- [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md) - 配置与运行说明
+- [adapters/yunzhijia/QUICKSTART.md](./adapters/yunzhijia/QUICKSTART.md) - 快速联调步骤
+
 ## 下一步
 
 当前仓库还是原型阶段，下一步最值得继续做的是：
 
 - `capability` 路由的更完整测试覆盖
-- `presence` 更新接口
 - 更完整的 task / approval / thread 投影视图
-- WebSocket 通知通道
-- Codex / Claude Code / OpenCode adapter
+- 飞书 / 钉钉 / Telegram / Discord adapter
 - 局域网 / 远程部署模式
 
 ## License
