@@ -3,6 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  defaultCommandShimPath
+} from '../hook-installer-core/command-shim.js';
+import {
   buildHookCommand,
   managedHookStatusMessages,
   mergeManagedHookGroups
@@ -15,19 +18,25 @@ function clone(value) {
 
 export { buildHookCommand };
 
-export function mergeIntentBrokerHooks(existingConfig = {}, commands) {
+function buildManagedCommandMatcher(scriptName, hookMode) {
+  return (command = '') => command.includes(scriptName) && command.includes(`hook ${hookMode}`);
+}
+
+export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose = false } = {}) {
   const merged = clone(existingConfig);
   const hooks = { ...(merged.hooks || {}) };
 
   hooks.SessionStart = mergeManagedHookGroups(hooks.SessionStart || [], {
     matcher: 'startup|resume',
     command: commands.sessionStartCommand,
-    statusMessage: managedHookStatusMessages.sessionStart
+    statusMessage: verbose ? managedHookStatusMessages.sessionStart : undefined,
+    commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'session-start')
   });
 
   hooks.UserPromptSubmit = mergeManagedHookGroups(hooks.UserPromptSubmit || [], {
     command: commands.userPromptSubmitCommand,
-    statusMessage: managedHookStatusMessages.userPromptSubmit
+    statusMessage: verbose ? managedHookStatusMessages.userPromptSubmit : undefined,
+    commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'user-prompt-submit')
   });
 
   merged.hooks = hooks;
@@ -40,7 +49,9 @@ export function defaultInstallPaths({ homeDir = os.homedir(), repoRoot } = {}) {
     hooksConfigPath: path.join(homeDir, '.codex', 'hooks.json'),
     skillLinkPath: path.join(homeDir, '.codex', 'skills', 'intent-broker'),
     stateRoot: resolveToolStateRoot('codex', { homeDir }),
-    skillSourcePath: path.join(repoRoot, 'adapters', 'codex-plugin', 'skills', 'intent-broker')
+    skillSourcePath: path.join(repoRoot, 'adapters', 'codex-plugin', 'skills', 'intent-broker'),
+    commandShimPath: defaultCommandShimPath({ homeDir }),
+    unifiedCliPath: path.join(repoRoot, 'bin', 'intent-broker.js')
   };
 }
 

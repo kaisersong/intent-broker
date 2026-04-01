@@ -3,10 +3,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  buildCommandShimContent,
+  ensureCommandShim,
+  isPathDirAvailable
+} from '../../hook-installer-core/command-shim.js';
+import {
   registerParticipant,
   sendProgress,
-  sendTask
+  sendTask,
+  updateWorkState
 } from '../../session-bridge/api.js';
+import {
+  runInboxCommand,
+  runReplyCommand,
+  runWhoCommand
+} from '../../session-bridge/command-runner.js';
 import { buildCodexHookOutput } from '../../session-bridge/codex-hooks.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
 import {
@@ -28,10 +39,14 @@ const cliPath = path.resolve(repoRoot, 'adapters', 'codex-plugin', 'bin', 'codex
 
 function usage() {
   console.log(`Usage:
-  node adapters/codex-plugin/bin/codex-broker.js install
+  node adapters/codex-plugin/bin/codex-broker.js install [--verbose-hooks]
   node adapters/codex-plugin/bin/codex-broker.js register
+  node adapters/codex-plugin/bin/codex-broker.js inbox
+  node adapters/codex-plugin/bin/codex-broker.js who
+  node adapters/codex-plugin/bin/codex-broker.js reply [@alias] <summary>
   node adapters/codex-plugin/bin/codex-broker.js send-task <toParticipantId> <taskId> <threadId> <summary>
   node adapters/codex-plugin/bin/codex-broker.js send-progress <taskId> <threadId> <summary>
+  node adapters/codex-plugin/bin/codex-broker.js set-work-state <status> [taskId] [threadId] [summary]
   node adapters/codex-plugin/bin/codex-broker.js hook session-start
   node adapters/codex-plugin/bin/codex-broker.js hook user-prompt-submit`);
 }
@@ -66,18 +81,26 @@ async function handleUserPromptSubmitHook() {
   process.stdout.write(JSON.stringify(buildCodexHookOutput('UserPromptSubmit', context)));
 }
 
-async function install() {
+function parseInstallOptions(args = []) {
+  return {
+    verbose: args.includes('--verbose-hooks')
+  };
+}
+
+async function install(args = []) {
+  const options = parseInstallOptions(args);
   const paths = defaultInstallPaths({ repoRoot });
   const configText = readCodexConfig(paths.configPath);
   const existingConfig = readHooksConfig(paths.hooksConfigPath);
   const mergedConfig = mergeIntentBrokerHooks(existingConfig, {
     sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
     userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit')
-  });
+  }, { verbose: options.verbose });
 
   writeCodexConfig(paths.configPath, enableCodexHooksFeature(configText));
   writeHooksConfig(paths.hooksConfigPath, mergedConfig);
   ensureSkillLink(paths.skillSourcePath, paths.skillLinkPath);
+  ensureCommandShim(paths.commandShimPath, buildCommandShimContent({ cliPath: paths.unifiedCliPath }));
 
   console.log(
     JSON.stringify(
@@ -85,8 +108,11 @@ async function install() {
         configPath: paths.configPath,
         hooksConfigPath: paths.hooksConfigPath,
         skillLinkPath: paths.skillLinkPath,
+        commandShimPath: paths.commandShimPath,
+        commandShimInPath: isPathDirAvailable(paths.commandShimPath),
         stateRoot: paths.stateRoot,
-        cliPath
+        cliPath,
+        verboseHooks: options.verbose
       },
       null,
       2
@@ -97,6 +123,21 @@ async function install() {
 async function register() {
   const config = deriveSessionBridgeConfig({ toolName: 'codex' });
   console.log(JSON.stringify(await registerParticipant(config), null, 2));
+}
+
+async function inbox() {
+  const config = deriveSessionBridgeConfig({ toolName: 'codex' });
+  await runInboxCommand(config, { toolName: 'codex' });
+}
+
+async function who() {
+  const config = deriveSessionBridgeConfig({ toolName: 'codex' });
+  await runWhoCommand(config);
+}
+
+async function reply(args) {
+  const config = deriveSessionBridgeConfig({ toolName: 'codex' });
+  await runReplyCommand(config, args, { toolName: 'codex', sendProgress });
 }
 
 async function cliSendTask(args) {
@@ -132,6 +173,30 @@ async function cliSendProgress(args) {
   );
 }
 
+function normalizeOptionalValue(value) {
+  if (!value || value === '-') {
+    return undefined;
+  }
+
+  return value;
+}
+
+async function cliSetWorkState(args) {
+  const config = deriveSessionBridgeConfig({ toolName: 'codex' });
+  console.log(
+    JSON.stringify(
+      await updateWorkState(config, {
+        status: args[0],
+        taskId: normalizeOptionalValue(args[1]),
+        threadId: normalizeOptionalValue(args[2]),
+        summary: args.slice(3).join(' ') || undefined
+      }),
+      null,
+      2
+    )
+  );
+}
+
 const [, , command, ...args] = process.argv;
 if (!command) {
   usage();
@@ -140,16 +205,28 @@ if (!command) {
 
 switch (command) {
   case 'install':
-    await install();
+    await install(args);
     break;
   case 'register':
     await register();
+    break;
+  case 'inbox':
+    await inbox();
+    break;
+  case 'who':
+    await who();
+    break;
+  case 'reply':
+    await reply(args);
     break;
   case 'send-task':
     await cliSendTask(args);
     break;
   case 'send-progress':
     await cliSendProgress(args);
+    break;
+  case 'set-work-state':
+    await cliSetWorkState(args);
     break;
   case 'hook':
     if (args[0] === 'session-start') {

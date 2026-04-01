@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { defaultCommandShimPath } from '../hook-installer-core/command-shim.js';
 import {
   buildHookCommand,
   managedHookStatusMessages,
@@ -15,10 +16,16 @@ function clone(value) {
 
 export { buildHookCommand };
 
+function buildManagedCommandMatcher(scriptName, hookMode) {
+  return (command = '') => command.includes(scriptName) && command.includes(`hook ${hookMode}`);
+}
+
 export function defaultInstallPaths({ cwd = process.cwd(), homeDir = os.homedir() } = {}) {
   return {
     settingsPath: path.join(cwd, '.claude', 'settings.json'),
-    stateRoot: resolveToolStateRoot('claude-code', { homeDir })
+    stateRoot: resolveToolStateRoot('claude-code', { homeDir }),
+    commandShimPath: defaultCommandShimPath({ homeDir }),
+    unifiedCliPath: path.join(cwd, 'bin', 'intent-broker.js')
   };
 }
 
@@ -35,19 +42,21 @@ export function writeClaudeSettings(settingsPath, settings) {
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
 }
 
-export function mergeIntentBrokerHooks(existingConfig = {}, commands) {
+export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose = false } = {}) {
   const merged = clone(existingConfig);
   const hooks = { ...(merged.hooks || {}) };
 
   hooks.SessionStart = mergeManagedHookGroups(hooks.SessionStart || [], {
     matcher: 'startup|resume',
     command: commands.sessionStartCommand,
-    statusMessage: managedHookStatusMessages.sessionStart
+    statusMessage: verbose ? managedHookStatusMessages.sessionStart : undefined,
+    commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'session-start')
   });
 
   hooks.UserPromptSubmit = mergeManagedHookGroups(hooks.UserPromptSubmit || [], {
     command: commands.userPromptSubmitCommand,
-    statusMessage: managedHookStatusMessages.userPromptSubmit
+    statusMessage: verbose ? managedHookStatusMessages.userPromptSubmit : undefined,
+    commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'user-prompt-submit')
   });
 
   merged.hooks = hooks;

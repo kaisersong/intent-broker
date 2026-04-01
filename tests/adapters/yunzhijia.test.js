@@ -128,3 +128,191 @@ test('Yunzhijia adapter translates inbound and outbound broker traffic', { concu
   assert.deepEqual(outboundPosts[0].notifyParams[0].values, ['user_local']);
   assert.equal(outboundPosts[0].param.replyMsgId, 'msg_local_1');
 });
+
+test('Yunzhijia adapter routes @alias, @all and replies on unknown aliases', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
+  broker.registerParticipant({ participantId: 'claude.b', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'claude' });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+
+  t.after(async () => {
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@codex 请看一下 alias 路由',
+        msgId: 'msg_alias_1'
+      }
+    })
+  );
+
+  await waitFor(() => broker.readInbox('codex.a', { after: 0 }).items.length === 1);
+  assert.equal(broker.readInbox('codex.a', { after: 0 }).items[0].payload.body.summary, '请看一下 alias 路由');
+  assert.equal(broker.readInbox('claude.b', { after: 0 }).items.length, 0);
+
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@codex @claude 一起处理',
+        msgId: 'msg_alias_2'
+      }
+    })
+  );
+
+  await waitFor(() => broker.readInbox('claude.b', { after: 0 }).items.length === 1);
+  assert.equal(broker.readInbox('codex.a', { after: 0 }).items.length, 2);
+  assert.equal(broker.readInbox('claude.b', { after: 0 }).items[0].payload.body.summary, '一起处理');
+
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@all 全员同步',
+        msgId: 'msg_alias_3'
+      }
+    })
+  );
+
+  await waitFor(() => broker.readInbox('claude.b', { after: 0 }).items.length === 2);
+  assert.equal(broker.readInbox('codex.a', { after: 0 }).items.length, 3);
+  assert.equal(broker.readInbox('claude.b', { after: 0 }).items[1].payload.body.summary, '全员同步');
+
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@missing 这个人不存在',
+        msgId: 'msg_alias_4'
+      }
+    })
+  );
+
+  await waitFor(() => outboundPosts.length === 1);
+  assert.match(outboundPosts[0].content, /未找到别名/);
+  assert.equal(broker.readInbox('codex.a', { after: 0 }).items.length, 3);
+  assert.equal(broker.readInbox('claude.b', { after: 0 }).items.length, 2);
+});
+
+test('Yunzhijia adapter can rename participant alias through message command and broadcast reaches human channel', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+
+  t.after(async () => {
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '/alias @codex reviewer',
+        msgId: 'msg_alias_rename_1'
+      }
+    })
+  );
+
+  await waitFor(() => outboundPosts.length >= 2);
+
+  const renamed = broker.listParticipants().find((participant) => participant.participantId === 'codex.a');
+  assert.equal(renamed.alias, 'reviewer');
+  assert.ok(outboundPosts.some((post) => /alias 已更新/.test(post.content)));
+  assert.ok(outboundPosts.some((post) => /codex\.a alias updated: codex -> reviewer/.test(post.content)));
+});

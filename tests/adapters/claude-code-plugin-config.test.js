@@ -29,6 +29,8 @@ test('defaultInstallPaths targets project .claude settings and claude state root
 
   assert.equal(paths.settingsPath, path.join('/Users/song/projects/intent-broker', '.claude', 'settings.json'));
   assert.equal(paths.stateRoot, path.join('/Users/song', '.intent-broker', 'claude-code'));
+  assert.equal(paths.commandShimPath, path.join('/Users/song', '.local', 'bin', 'intent-broker'));
+  assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
 test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', () => {
@@ -45,8 +47,7 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', (
           hooks: [
             {
               type: 'command',
-              command: 'node "/repo/claude-code-broker.js" hook session-start',
-              statusMessage: 'intent-broker session sync'
+              command: 'node "/repo/claude-code-broker.js" hook session-start'
             }
           ]
         }
@@ -56,14 +57,23 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', (
           hooks: [
             {
               type: 'command',
-              command: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
-              statusMessage: 'intent-broker inbox sync'
+              command: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
             }
           ]
         }
       ]
     }
   });
+});
+
+test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
+  const merged = mergeIntentBrokerHooks({}, {
+    sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
+    userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
+  }, { verbose: true });
+
+  assert.equal(merged.hooks.SessionStart[0].hooks[0].statusMessage, 'intent-broker session sync');
+  assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].statusMessage, 'intent-broker inbox sync');
 });
 
 test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing intent-broker hooks', () => {

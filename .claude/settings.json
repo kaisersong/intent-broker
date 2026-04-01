@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook session-start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook user-prompt-submit"
+          }
+        ]
+      }
+    ]
+  }
+}

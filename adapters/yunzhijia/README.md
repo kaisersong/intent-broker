@@ -8,6 +8,8 @@
 - 通过 HTTP POST 发送消息到云之家
 - 自动转换消息格式
 - 自动管理用户映射
+- 支持 `@alias`、`@a @b`、`@all` 精确路由
+- 支持 `/alias @旧名 新别名` 直接改 agent 短名
 
 ## 安装
 
@@ -85,6 +87,16 @@ Adapter 会自动转换消息格式：
 - `request_approval` → 【需要审批】...
 - `ask_clarification` → 【需要回答】...
 - `report_progress` → 【进度】...
+- `participant_alias_updated` → 【别名更新】...
+
+## 消息通道命令
+
+云之家里现在支持：
+
+- `@codex 看一下这个问题`
+- `@codex @claude 一起处理`
+- `@all 同步一下进度`
+- `/alias @codex reviewer`
 
 ## 已验证状态
 

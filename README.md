@@ -34,12 +34,16 @@ This project is a good fit when:
 The current prototype supports:
 
 - participant registration
+- globally unique participant aliases with automatic numeric suffixes
+- project-scoped participant discovery
+- current work-state tracking by participant
 - `request_task`, `report_progress`, `request_approval`, `respond_approval`
 - routing by `participant`, `role`, and `broadcast`
 - inbox pull and ack cursor
 - `GET /tasks/:taskId`
 - `GET /threads/:threadId`
 - `GET /events/replay`
+- `GET /work-state`
 - SQLite-backed persistent event storage
 - WebSocket real-time notification channel
 - verified Yunzhijia adapter inbound and outbound integration
@@ -93,6 +97,14 @@ npm start
 npm test
 ```
 
+Automated collaboration smoke verification:
+
+```bash
+npm run verify:collaboration
+```
+
+This starts a temporary local broker, drives the real Codex and Claude Code bridge entrypoints, and writes logs plus an analysis summary under `.tmp/collaboration-smoke-*`.
+
 Current test coverage includes:
 
 - reducer task / approval state transitions
@@ -123,6 +135,7 @@ Example:
 ```json
 {
   "participantId": "agent.a",
+  "alias": "codex",
   "kind": "agent",
   "roles": ["coder"],
   "capabilities": ["frontend.react"],
@@ -137,6 +150,26 @@ List participants, optionally filtered by project:
 ```http
 GET /participants
 GET /participants?projectName=intent-broker
+```
+
+Resolve aliases for message-channel mentions:
+
+```http
+GET /participants/resolve?aliases=codex,claude
+```
+
+Rename a participant alias:
+
+```http
+POST /participants/:participantId/alias
+```
+
+Example:
+
+```json
+{
+  "alias": "reviewer"
+}
 ```
 
 ### Send Intent
@@ -189,6 +222,35 @@ GET /threads/:threadId
 GET /events/replay?after=0&taskId=task-1
 ```
 
+### Work State
+
+Store or update the current work owned by a participant:
+
+```http
+POST /participants/:participantId/work-state
+```
+
+Example:
+
+```json
+{
+  "status": "implementing",
+  "summary": "Refactoring broker work-state API",
+  "taskId": "task-9",
+  "threadId": "thread-9"
+}
+```
+
+Query the latest work state:
+
+```http
+GET /participants/:participantId/work-state
+GET /work-state
+GET /work-state?projectName=intent-broker
+GET /work-state?participantId=codex.main
+GET /work-state?status=blocked
+```
+
 ### Approval Response
 
 ```http
@@ -236,6 +298,7 @@ Example:
 Recommended naming:
 
 - `participantId`: stable and tool-specific, for example `claude-code.main`, `codex.review`, `opencode.worker-1`, `xiaok-code.backend`
+- `alias`: short human-facing handle, for example `codex`, `claude`, `xiaok`; broker keeps this globally unique and will auto-suffix on collision, such as `codex2`
 - `roles`: broad routing labels such as `coder`, `reviewer`, `approver`
 - `capabilities`: narrower skill labels such as `frontend.react`, `backend.node`, `docs.write`
 - `context.projectName`: the current project the agent is actively working on, such as `intent-broker`
@@ -245,6 +308,10 @@ Why `projectName` matters:
 - You can ask "who is working on `intent-broker`?"
 - You can route a task to the agents already active on the same project
 - You can warn before a handoff or submission when multiple agents are already on that project
+
+If you installed the Codex or Claude Code hook bridge, session registration is already automatic. The current hook bridge also publishes an initial `idle` work state on session start, so other agents can discover that this session exists before any explicit handoff happens.
+
+The bridge now also sends a preferred alias hint at registration time. Broker owns the final alias and may append numeric suffixes to keep aliases globally unique.
 
 ### 2. Pull work instead of assuming a permanent connection
 
@@ -262,7 +329,58 @@ POST /inbox/:participantId/ack
 
 This design is intentional. If your process restarts, you can reconnect and pull again without losing task context.
 
-### 3. Send intents as stateful collaboration events
+Treat identifiers differently:
+
+- `taskId`: the stable task handle you should reason about and reference in collaboration
+- `threadId`: the stable conversation / negotiation handle you should continue replying on
+- `eventId`: an internal event cursor for replay, inbox pull, ack, and debugging only
+
+In other words, agents should coordinate around `taskId` and `threadId`, not around raw `eventId` values.
+
+### 3. Query project state before you grab work
+
+Before you take a same-project task, ask the broker what is already happening:
+
+```http
+GET /participants?projectName=intent-broker
+GET /work-state?projectName=intent-broker
+```
+
+Use these queries to answer:
+
+- who is already active on this project
+- who is currently idle, blocked, reviewing, or implementing
+- whether another agent is already touching the same task or thread
+
+Recommended `work-state` values in the current prototype:
+
+- `idle`
+- `planning`
+- `implementing`
+- `reviewing`
+- `blocked`
+- `waiting_approval`
+- `ready_to_submit`
+
+When your focus changes, update your own work state before or alongside a progress report. That is the minimal building block for later autonomous negotiation and conflict avoidance.
+
+### 4. Use aliases for human-to-agent coordination
+
+Humans should not need to type long `participantId` values in a message channel. Use aliases instead:
+
+- `@codex fix the failing broker test`
+- `@claude @codex split the regression triage`
+- `@all sync current blockers`
+
+Current v1 behavior:
+
+- aliases are globally unique across the broker
+- collisions are auto-resolved with numeric suffixes, such as `codex2`
+- alias changes create a broker event so connected clients can learn the new short name
+- Yunzhijia now resolves `@alias` and `@all` into exact broker recipients
+- Yunzhijia also supports `/alias @old newalias` to rename a participant from the message channel
+
+### 5. Send intents as stateful collaboration events
 
 Use `POST /intents` to communicate meaningful work state, not just raw chat text.
 
@@ -299,8 +417,8 @@ Example progress update:
 
 The current best Codex UX is a non-invasive hook + skill bridge. It does not wrap how Codex starts. Instead, it installs two Codex hooks and one local skill:
 
-- `SessionStart` hook: when a real Codex session starts or resumes, it silently registers the session to the broker and records the current `projectName`.
-- `UserPromptSubmit` hook: before a real user prompt is submitted, it checks for newly arrived broker events and injects them into the turn only when there is pending collaboration context.
+- `SessionStart` hook: when a real Codex session starts or resumes, it silently registers the session to the broker, records the current `projectName`, and publishes an initial `idle` work state.
+- `UserPromptSubmit` hook: before a real user prompt is submitted, it silently re-registers the session, then checks for newly arrived broker events and injects them into the turn only when there is pending collaboration context.
 - `intent-broker` skill: gives the Codex session an explicit way to send task handoffs and progress updates.
 
 Normal flow:
@@ -308,7 +426,7 @@ Normal flow:
 - do not manually register the Codex session
 - open Codex in the target project directory
 - let `SessionStart` auto-register the session on startup
-- let `UserPromptSubmit` only sync inbox context when there is new collaboration work
+- let `UserPromptSubmit` recover registration after a broker restart and only inject context when there is new collaboration work
 
 ### Install the Codex bridge
 
@@ -318,10 +436,17 @@ From this repo:
 npm run codex:install
 ```
 
+If you want the old visible hook execution lines for debugging, install with:
+
+```bash
+node adapters/codex-plugin/bin/codex-broker.js install --verbose-hooks
+```
+
 This writes or updates:
 
 - `~/.codex/hooks.json`
 - `~/.codex/skills/intent-broker` (symlink)
+- `~/.local/bin/intent-broker` unified command shim
 - `~/.intent-broker/codex/*.json` local cursor state
 
 The Codex bridge now auto-registers the current project name using the current working directory basename by default. You can override it with `PROJECT_NAME`.
@@ -329,7 +454,10 @@ The Codex bridge now auto-registers the current project name using the current w
 Notes:
 
 - This preserves unrelated Codex hooks and only replaces previous `intent-broker` hook entries.
+- The default install is now quiet: it does not print `Running ... hook: intent-broker ...` on every prompt submit.
 - Current Codex source indicates lifecycle hooks are not supported on Windows yet, so this path is currently intended for macOS/Linux.
+- In current real Codex behavior, `SessionStart` is observed when the session actually enters its first turn or resume flow, not merely when the TUI frame first appears.
+- Hook-provided `session_id` now takes precedence over inherited `CODEX_THREAD_ID`, so starting a new Codex from inside another agent environment will not accidentally reuse the parent participant id.
 - If you move this repo, run `npm run codex:install` again so the hook command paths are refreshed.
 
 ### Send from a real Codex session
@@ -337,19 +465,43 @@ Notes:
 Manual register remains available only as a debugging command when you need to inspect a session's derived participant id:
 
 ```bash
-node adapters/codex-plugin/bin/codex-broker.js register
+intent-broker register
 ```
 
 Send a task to another participant:
 
 ```bash
-node adapters/codex-plugin/bin/codex-broker.js send-task claude-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
+intent-broker send-task claude-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
 ```
 
 Send a progress update:
 
 ```bash
-node adapters/codex-plugin/bin/codex-broker.js send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+intent-broker send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+```
+
+Check unread collaboration context without querying broker by hand:
+
+```bash
+intent-broker inbox
+```
+
+See who is active on the same project and what they are doing:
+
+```bash
+intent-broker who
+```
+
+Reply on the latest remembered `taskId/threadId` context:
+
+```bash
+intent-broker reply "Received, starting now"
+```
+
+Reply to an explicit alias while still reusing the latest `taskId/threadId`:
+
+```bash
+intent-broker reply @claude2 "Please review the latest patch"
 ```
 
 ### What this enables
@@ -364,8 +516,8 @@ Once installed, an already-open real Codex session can naturally participate in 
 
 Claude Code now has the same non-invasive hook bridge model as Codex, but installs into project settings:
 
-- `SessionStart` hook: auto-registers the Claude Code session into broker context
-- `UserPromptSubmit` hook: injects only newly arrived broker inbox context before prompt submission
+- `SessionStart` hook: auto-registers the Claude Code session into broker context and publishes an initial `idle` work state
+- `UserPromptSubmit` hook: silently re-registers after broker restart and injects only newly arrived broker inbox context before prompt submission
 
 ### Install the Claude Code bridge
 
@@ -375,14 +527,23 @@ From this repo root:
 npm run claude-code:install
 ```
 
+If you want visible hook execution lines for debugging, install with:
+
+```bash
+node adapters/claude-code-plugin/bin/claude-code-broker.js install --verbose-hooks
+```
+
 This writes or updates:
 
 - `.claude/settings.json`
+- `~/.local/bin/intent-broker` unified command shim
 - `~/.intent-broker/claude-code/*.json` local cursor state
 
 Notes:
 
 - this preserves unrelated Claude Code hooks and only replaces previous `intent-broker` hook entries
+- the default install is now quiet: it does not print `Running ... hook: intent-broker ...` on every prompt submit
+- hook-provided `session_id` takes precedence over inherited session env, so nested launcher environments do not accidentally collapse multiple clients onto one participant id
 - if you move this repo, run `npm run claude-code:install` again to refresh command paths
 
 ### Send from a real Claude Code session
@@ -390,22 +551,46 @@ Notes:
 Manual register remains available for debugging or inspecting derived participant ids:
 
 ```bash
-node adapters/claude-code-plugin/bin/claude-code-broker.js register
+intent-broker --tool claude-code register
 ```
 
 Send a task to another participant:
 
 ```bash
-node adapters/claude-code-plugin/bin/claude-code-broker.js send-task codex-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
+intent-broker --tool claude-code send-task codex-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
 ```
 
 Send a progress update:
 
 ```bash
-node adapters/claude-code-plugin/bin/claude-code-broker.js send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+intent-broker --tool claude-code send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
 ```
 
-### 4. Use approvals for risky or user-visible transitions
+Check unread collaboration context:
+
+```bash
+intent-broker --tool claude-code inbox
+```
+
+See same-project collaborators and work-state:
+
+```bash
+intent-broker --tool claude-code who
+```
+
+Reply on the latest remembered collaboration context:
+
+```bash
+intent-broker --tool claude-code reply "Received, starting now"
+```
+
+Override the reply target by alias while keeping the latest `taskId/threadId`:
+
+```bash
+intent-broker --tool claude-code reply @codex2 "Please rebase before submit"
+```
+
+### 6. Use approvals for risky or user-visible transitions
 
 If you are about to:
 
@@ -416,7 +601,7 @@ If you are about to:
 
 send `request_approval` instead of inventing your own ad hoc message format. That keeps the approval state queryable and replayable.
 
-### 5. Recover through replay, not memory
+### 7. Recover through replay, not memory
 
 If you crash, restart, or lose local context:
 
@@ -427,7 +612,7 @@ If you crash, restart, or lose local context:
 
 Do not depend on ephemeral terminal history as the system of record.
 
-### 6. Use adapters when humans are not inside the terminal
+### 8. Use adapters when humans are not inside the terminal
 
 If the human lives in Yunzhijia, Feishu, DingTalk, Telegram, Discord, or mobile surfaces, use a platform adapter instead of hard-coding chat logic into the agent.
 
@@ -437,16 +622,17 @@ See:
 - [adapters/yunzhijia/QUICKSTART.md](./adapters/yunzhijia/QUICKSTART.md)
 - [docs/adapter-example.js](./docs/adapter-example.js)
 
-### 7. Practical recommendation for code agents
+### 9. Practical recommendation for code agents
 
 For Claude Code / Codex / OpenCode / xiaok code style agents, the most effective pattern is:
 
 1. Register at startup.
 2. Poll inbox at task boundaries, idle points, or explicit hooks.
-3. Acknowledge consumed events.
-4. Emit progress updates at meaningful milestones.
-5. Ask for approval before irreversible or user-visible completion.
-6. Replay task state after restart instead of guessing.
+3. Query same-project participants and work state before taking ownership.
+4. Acknowledge consumed events.
+5. Update work state and emit progress at meaningful milestones.
+6. Ask for approval before irreversible or user-visible completion.
+7. Replay task state after restart instead of guessing.
 
 That gives you a durable collaboration timeline without forcing every agent into the same runtime or websocket lifecycle.
 

@@ -15,6 +15,7 @@ test('deriveSessionBridgeConfig prefers explicit participant id', () => {
 
   assert.equal(config.brokerUrl, 'http://127.0.0.1:9999');
   assert.equal(config.participantId, 'codex.manual');
+  assert.equal(config.alias, 'codex');
   assert.deepEqual(config.roles, ['coder']);
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
 });
@@ -30,6 +31,7 @@ test('deriveSessionBridgeConfig derives participant id from codex thread id', ()
 
   assert.equal(config.brokerUrl, 'http://127.0.0.1:4318');
   assert.equal(config.participantId, 'codex-session-019d42b4');
+  assert.equal(config.alias, 'codex');
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
 });
 
@@ -43,6 +45,7 @@ test('deriveSessionBridgeConfig derives participant id from claude code session 
   });
 
   assert.equal(config.participantId, 'claude-code-session-019d42d0');
+  assert.equal(config.alias, 'claude');
 });
 
 test('deriveSessionBridgeConfig falls back to tool name when no thread id exists', () => {
@@ -55,5 +58,18 @@ test('deriveSessionBridgeConfig falls back to tool name when no thread id exists
   });
 
   assert.equal(config.participantId, 'claude-code-session');
+  assert.equal(config.alias, 'claude');
   assert.deepEqual(config.context, { projectName: 'manual-project' });
+});
+
+test('deriveSessionBridgeConfig prefers explicit alias override', () => {
+  const config = deriveSessionBridgeConfig({
+    toolName: 'xiaok-code',
+    env: {
+      ALIAS: 'backend'
+    },
+    cwd: '/Users/song/projects/intent-broker'
+  });
+
+  assert.equal(config.alias, 'backend');
 });

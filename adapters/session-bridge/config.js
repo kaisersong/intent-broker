@@ -12,6 +12,21 @@ function deriveProjectName({ env, cwd }) {
   return path.basename(cwd);
 }
 
+function deriveAlias({ toolName, env }) {
+  if (env.ALIAS) {
+    return env.ALIAS;
+  }
+
+  const aliasMap = {
+    codex: 'codex',
+    'claude-code': 'claude',
+    opencode: 'opencode',
+    'xiaok-code': 'xiaok'
+  };
+
+  return aliasMap[toolName] || toolName.replace(/-code$/, '');
+}
+
 export function deriveSessionBridgeConfig({ toolName, env = process.env, cwd = process.cwd() } = {}) {
   const brokerUrl = env.BROKER_URL || 'http://127.0.0.1:4318';
   const explicitParticipantId = env.PARTICIPANT_ID;
@@ -29,6 +44,7 @@ export function deriveSessionBridgeConfig({ toolName, env = process.env, cwd = p
   return {
     brokerUrl,
     participantId,
+    alias: deriveAlias({ toolName, env }),
     roles: ['coder'],
     capabilities: [],
     context: projectName ? { projectName } : {}

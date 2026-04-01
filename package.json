@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --experimental-sqlite --experimental-test-isolation=none --test",
     "start": "node --experimental-sqlite src/cli.js",
+    "verify:collaboration": "node scripts/run-collaboration-smoke.js",
     "codex:install": "node adapters/codex-plugin/bin/codex-broker.js install",
     "claude-code:install": "node adapters/claude-code-plugin/bin/claude-code-broker.js install"
   },

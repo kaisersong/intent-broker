@@ -58,6 +58,7 @@ export async function registerParticipant(config, fetchImpl = fetch) {
       kind: 'agent',
       roles: config.roles,
       capabilities: config.capabilities,
+      alias: config.alias,
       context: config.context || {}
     })
   }, { fetchImpl });
@@ -79,6 +80,56 @@ export async function ackInbox(config, eventId, fetchImpl = fetch) {
   }, { fetchImpl });
 }
 
+export async function updateWorkState(config, state, fetchImpl = fetch) {
+  return requestJson(`${config.brokerUrl}/participants/${config.participantId}/work-state`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      status: state.status,
+      summary: state.summary,
+      taskId: state.taskId,
+      threadId: state.threadId
+    })
+  }, { fetchImpl });
+}
+
+export async function listWorkStates(config, filters = {}, fetchImpl = fetch) {
+  const params = new URLSearchParams();
+  if (filters.projectName) {
+    params.set('projectName', filters.projectName);
+  }
+  if (filters.participantId) {
+    params.set('participantId', filters.participantId);
+  }
+  if (filters.status) {
+    params.set('status', filters.status);
+  }
+
+  const query = params.toString();
+  const suffix = query ? `?${query}` : '';
+
+  return requestJson(`${config.brokerUrl}/work-state${suffix}`, {}, { fetchImpl });
+}
+
+export async function listParticipants(config, filters = {}, fetchImpl = fetch) {
+  const params = new URLSearchParams();
+  if (filters.projectName) {
+    params.set('projectName', filters.projectName);
+  }
+
+  const query = params.toString();
+  const suffix = query ? `?${query}` : '';
+
+  return requestJson(`${config.brokerUrl}/participants${suffix}`, {}, { fetchImpl });
+}
+
+export async function resolveParticipantAliases(config, aliases = [], fetchImpl = fetch) {
+  const filtered = aliases.map((item) => String(item || '').trim().replace(/^@+/, '')).filter(Boolean);
+  const params = new URLSearchParams();
+  params.set('aliases', filtered.join(','));
+  return requestJson(`${config.brokerUrl}/participants/resolve?${params.toString()}`, {}, { fetchImpl });
+}
+
 export async function sendTask(config, request, fetchImpl = fetch) {
   return requestJson(`${config.brokerUrl}/intents`, {
     method: 'POST',
@@ -96,6 +147,12 @@ export async function sendTask(config, request, fetchImpl = fetch) {
 }
 
 export async function sendProgress(config, request, fetchImpl = fetch) {
+  const to = request.toParticipantId
+    ? { mode: 'participant', participants: [request.toParticipantId] }
+    : request.toParticipantIds?.length
+      ? { mode: 'participant', participants: request.toParticipantIds }
+      : { mode: 'broadcast' };
+
   return requestJson(`${config.brokerUrl}/intents`, {
     method: 'POST',
     headers: jsonHeaders(),
@@ -105,7 +162,7 @@ export async function sendProgress(config, request, fetchImpl = fetch) {
       fromParticipantId: config.participantId,
       taskId: request.taskId,
       threadId: request.threadId,
-      to: { mode: 'broadcast' },
+      to,
       payload: { stage: 'in_progress', body: { summary: request.summary } }
     })
   }, { fetchImpl });

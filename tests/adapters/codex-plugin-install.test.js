@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import {
+  defaultInstallPaths,
   buildHookCommand,
   mergeIntentBrokerHooks
 } from '../../adapters/codex-plugin/install.js';
@@ -17,6 +19,20 @@ test('buildHookCommand quotes the broker cli path and hook mode', () => {
     command,
     'node "/Users/song/projects/intent-broker/adapters/codex-plugin/bin/codex-broker.js" hook session-start'
   );
+});
+
+test('defaultInstallPaths targets codex config, state root, and unified command shim', () => {
+  const paths = defaultInstallPaths({
+    homeDir: '/Users/song',
+    repoRoot: '/Users/song/projects/intent-broker'
+  });
+
+  assert.equal(paths.configPath, path.join('/Users/song', '.codex', 'config.toml'));
+  assert.equal(paths.hooksConfigPath, path.join('/Users/song', '.codex', 'hooks.json'));
+  assert.equal(paths.skillLinkPath, path.join('/Users/song', '.codex', 'skills', 'intent-broker'));
+  assert.equal(paths.stateRoot, path.join('/Users/song', '.intent-broker', 'codex'));
+  assert.equal(paths.commandShimPath, path.join('/Users/song', '.local', 'bin', 'intent-broker'));
+  assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
 test('mergeIntentBrokerHooks adds session start and user prompt submit handlers', () => {
@@ -36,8 +52,7 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
           hooks: [
             {
               type: 'command',
-              command: 'node "/repo/codex-broker.js" hook session-start',
-              statusMessage: 'intent-broker session sync'
+              command: 'node "/repo/codex-broker.js" hook session-start'
             }
           ]
         }
@@ -47,14 +62,27 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
           hooks: [
             {
               type: 'command',
-              command: 'node "/repo/codex-broker.js" hook user-prompt-submit',
-              statusMessage: 'intent-broker inbox sync'
+              command: 'node "/repo/codex-broker.js" hook user-prompt-submit'
             }
           ]
         }
       ]
     }
   });
+});
+
+test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
+  const merged = mergeIntentBrokerHooks(
+    {},
+    {
+      sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
+      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit'
+    },
+    { verbose: true }
+  );
+
+  assert.equal(merged.hooks.SessionStart[0].hooks[0].statusMessage, 'intent-broker session sync');
+  assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].statusMessage, 'intent-broker inbox sync');
 });
 
 test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preserves unrelated hooks', () => {

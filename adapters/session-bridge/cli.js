@@ -2,19 +2,32 @@
 import { deriveSessionBridgeConfig } from './config.js';
 import {
   ackInbox,
+  listParticipants,
+  listWorkStates,
   pollInbox,
   registerParticipant,
+  resolveParticipantAliases,
+  updateWorkState,
   sendProgress as sendProgressIntent,
   sendTask as sendTaskIntent
 } from './api.js';
+import {
+  runInboxCommand,
+  runReplyCommand,
+  runWhoCommand
+} from './command-runner.js';
 
 function usage() {
   console.log(`Usage:
   node adapters/session-bridge/cli.js register [toolName]
   node adapters/session-bridge/cli.js poll [toolName] [after]
   node adapters/session-bridge/cli.js ack [toolName] <eventId>
+  node adapters/session-bridge/cli.js inbox [toolName]
+  node adapters/session-bridge/cli.js who [toolName]
+  node adapters/session-bridge/cli.js reply [toolName] [@alias] <summary>
   node adapters/session-bridge/cli.js send-task [toolName] <toParticipantId> <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js send-progress [toolName] <taskId> <threadId> <summary>`);
+  node adapters/session-bridge/cli.js send-progress [toolName] <taskId> <threadId> <summary>
+  node adapters/session-bridge/cli.js set-work-state [toolName] <status> [taskId] [threadId] [summary]`);
 }
 
 async function register(config) {
@@ -60,6 +73,29 @@ async function sendProgress(config, taskId, threadId, summary) {
   );
 }
 
+function normalizeOptionalValue(value) {
+  if (!value || value === '-') {
+    return undefined;
+  }
+
+  return value;
+}
+
+async function setWorkState(config, status, taskId, threadId, summary) {
+  console.log(
+    JSON.stringify(
+      await updateWorkState(config, {
+        status,
+        taskId: normalizeOptionalValue(taskId),
+        threadId: normalizeOptionalValue(threadId),
+        summary: summary || undefined
+      }),
+      null,
+      2
+    )
+  );
+}
+
 const [, , command, toolNameArg = 'codex', ...args] = process.argv;
 if (!command) {
   usage();
@@ -78,11 +114,30 @@ switch (command) {
   case 'ack':
     await ack(config, args[0]);
     break;
+  case 'inbox':
+    await runInboxCommand(config, { toolName: toolNameArg });
+    break;
+  case 'who':
+    await runWhoCommand(config, {
+      listParticipants,
+      listWorkStates
+    });
+    break;
+  case 'reply':
+    await runReplyCommand(config, args, {
+      toolName: toolNameArg,
+      resolveParticipantAliases,
+      sendProgress: sendProgressIntent
+    });
+    break;
   case 'send-task':
     await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));
     break;
   case 'send-progress':
     await sendProgress(config, args[0], args[1], args.slice(2).join(' '));
+    break;
+  case 'set-work-state':
+    await setWorkState(config, args[0], args[1], args[2], args.slice(3).join(' '));
     break;
   default:
     usage();

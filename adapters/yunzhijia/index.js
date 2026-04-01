@@ -134,6 +134,15 @@ export class YunzhijiaAdapter {
       console.log(`✓ Registered new user: ${participantId}`);
     }
 
+    if (await this.handleCommand(text, { yzjUserId, participantId, msgId })) {
+      return;
+    }
+
+    const routing = await this.resolveRouting(text, yzjUserId, msgId);
+    if (!routing) {
+      return;
+    }
+
     const res = await fetch(`${this.brokerUrl}/intents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -143,9 +152,9 @@ export class YunzhijiaAdapter {
         fromParticipantId: participantId,
         taskId: 'task-1',
         threadId: 'thread-1',
-        to: { mode: 'broadcast' },
+        to: routing.to,
         payload: {
-          body: { summary: text },
+          body: { summary: routing.summary },
           metadata: { robotId, msgId, yzjUserId }
         }
       })
@@ -156,6 +165,110 @@ export class YunzhijiaAdapter {
     } else {
       console.error(`❌ Failed to send intent: ${res.status}`);
     }
+  }
+
+  parseAliasRenameCommand(text) {
+    const match = String(text || '').trim().match(/^\/(?:alias|rename)\s+@?([^\s@]+)\s+([^\s@]+)$/i);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      currentAlias: match[1],
+      nextAlias: match[2]
+    };
+  }
+
+  async handleCommand(text, { yzjUserId, msgId } = {}) {
+    const aliasRename = this.parseAliasRenameCommand(text);
+    if (!aliasRename) {
+      return false;
+    }
+
+    const query = encodeURIComponent(aliasRename.currentAlias);
+    const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
+    const participant = resolved.participants?.[0];
+
+    if (!participant) {
+      await this.sendToYunzhijia(yzjUserId, `未找到别名: @${aliasRename.currentAlias}`, msgId);
+      return true;
+    }
+
+    const renamed = await fetch(`${this.brokerUrl}/participants/${participant.participantId}/alias`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias: aliasRename.nextAlias })
+    }).then((res) => res.json());
+
+    await this.sendToYunzhijia(
+      yzjUserId,
+      `alias 已更新: @${aliasRename.currentAlias} -> @${renamed.participant.alias}`,
+      msgId
+    );
+    return true;
+  }
+
+  parseMentions(text) {
+    const aliases = [];
+    let hasAll = false;
+
+    const summary = String(text || '')
+      .replace(/(^|\s)@([^\s@]+)/g, (_, prefix, mention) => {
+        const alias = mention.trim();
+        if (alias.toLowerCase() === 'all') {
+          hasAll = true;
+        } else if (!aliases.includes(alias)) {
+          aliases.push(alias);
+        }
+        return prefix || ' ';
+      })
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return { aliases, hasAll, summary };
+  }
+
+  async resolveRouting(text, yzjUserId, replyMsgId) {
+    const mentions = this.parseMentions(text);
+
+    if (mentions.hasAll) {
+      const participants = await fetch(`${this.brokerUrl}/participants`).then((res) => res.json());
+      const recipients = participants.participants
+        .filter((participant) => participant.kind === 'agent')
+        .map((participant) => participant.participantId);
+
+      return {
+        to: { mode: 'participant', participants: recipients },
+        summary: mentions.summary || text
+      };
+    }
+
+    if (!mentions.aliases.length) {
+      return {
+        to: { mode: 'broadcast' },
+        summary: text
+      };
+    }
+
+    const query = encodeURIComponent(mentions.aliases.join(','));
+    const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
+
+    if (resolved.missingAliases?.length) {
+      await this.sendToYunzhijia(
+        yzjUserId,
+        `未找到别名: ${resolved.missingAliases.map((alias) => `@${alias}`).join(', ')}`,
+        replyMsgId
+      );
+      return null;
+    }
+
+    return {
+      to: {
+        mode: 'participant',
+        participants: resolved.participants.map((participant) => participant.participantId)
+      },
+      summary: mentions.summary || text
+    };
   }
 
   async registerUser(participantId) {
@@ -244,7 +357,8 @@ export class YunzhijiaAdapter {
     const templates = {
       request_approval: summary ? `【需要审批】${summary}` : '【需要审批】',
       ask_clarification: summary ? `【需要回答】${summary}` : '【需要回答】',
-      report_progress: summary ? `【进度】${summary}` : '【进度】'
+      report_progress: summary ? `【进度】${summary}` : '【进度】',
+      participant_alias_updated: summary ? `【别名更新】${summary}` : '【别名更新】'
     };
     return templates[event.kind] || summary || event.kind;
   }

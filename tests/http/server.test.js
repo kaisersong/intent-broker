@@ -202,3 +202,111 @@ test('register endpoint accepts projectName context and participants endpoint fi
   assert.equal(participantsBody.participants[0].participantId, 'codex.a');
   assert.deepEqual(participantsBody.participants[0].context, { projectName: 'intent-broker' });
 });
+
+test('work-state endpoints store and query current project work', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      participantId: 'codex.a',
+      kind: 'agent',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    })
+  });
+
+  const updateResponse = await fetch(`http://127.0.0.1:${port}/participants/codex.a/work-state`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      status: 'implementing',
+      summary: 'Add broker work-state endpoint',
+      taskId: 'task-5',
+      threadId: 'thread-5'
+    })
+  });
+  const updateBody = await updateResponse.json();
+
+  assert.equal(updateResponse.status, 200);
+  assert.equal(updateBody.participantId, 'codex.a');
+  assert.equal(updateBody.projectName, 'intent-broker');
+  assert.equal(updateBody.status, 'implementing');
+
+  const detailResponse = await fetch(`http://127.0.0.1:${port}/participants/codex.a/work-state`);
+  const detailBody = await detailResponse.json();
+  assert.equal(detailResponse.status, 200);
+  assert.equal(detailBody.workState.summary, 'Add broker work-state endpoint');
+
+  const listResponse = await fetch(
+    `http://127.0.0.1:${port}/work-state?projectName=intent-broker`
+  );
+  const listBody = await listResponse.json();
+
+  assert.equal(listResponse.status, 200);
+  assert.equal(listBody.items.length, 1);
+  assert.equal(listBody.items[0].participantId, 'codex.a');
+  assert.equal(listBody.items[0].taskId, 'task-5');
+});
+
+test('participant alias endpoints assign unique aliases, rename them, and resolve mentions', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  const firstRegister = await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      participantId: 'codex.a',
+      kind: 'agent',
+      roles: ['coder'],
+      capabilities: [],
+      alias: 'codex'
+    })
+  });
+  const firstBody = await firstRegister.json();
+
+  const secondRegister = await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      participantId: 'codex.b',
+      kind: 'agent',
+      roles: ['coder'],
+      capabilities: [],
+      alias: 'codex'
+    })
+  });
+  const secondBody = await secondRegister.json();
+
+  const renameResponse = await fetch(`http://127.0.0.1:${port}/participants/codex.b/alias`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ alias: 'reviewer' })
+  });
+  const renameBody = await renameResponse.json();
+
+  const resolveResponse = await fetch(
+    `http://127.0.0.1:${port}/participants/resolve?aliases=codex,reviewer,missing`
+  );
+  const resolveBody = await resolveResponse.json();
+
+  assert.equal(firstRegister.status, 200);
+  assert.equal(secondRegister.status, 200);
+  assert.equal(firstBody.alias, 'codex');
+  assert.equal(secondBody.alias, 'codex2');
+  assert.equal(renameResponse.status, 200);
+  assert.equal(renameBody.participant.alias, 'reviewer');
+  assert.deepEqual(
+    resolveBody.participants.map((participant) => participant.participantId),
+    ['codex.a', 'codex.b']
+  );
+  assert.deepEqual(resolveBody.missingAliases, ['missing']);
+});

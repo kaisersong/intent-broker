@@ -113,3 +113,136 @@ test('registerParticipant stores projectName context and listParticipants can fi
   assert.equal(projectParticipants[0].participantId, 'codex.a');
   assert.deepEqual(projectParticipants[0].context, { projectName: 'intent-broker' });
 });
+
+test('updateWorkState stores current work summary and listWorkStates can filter by projectName', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    context: { projectName: 'intent-broker' }
+  });
+  broker.registerParticipant({
+    participantId: 'codex.b',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    context: { projectName: 'other-project' }
+  });
+
+  const updated = broker.updateWorkState('codex.a', {
+    status: 'implementing',
+    summary: 'Refactoring work-state API',
+    taskId: 'task-9',
+    threadId: 'thread-9'
+  });
+  broker.updateWorkState('codex.b', {
+    status: 'reviewing',
+    summary: 'Checking release notes'
+  });
+
+  const projectStates = broker.listWorkStates({ projectName: 'intent-broker' });
+
+  assert.equal(updated.participantId, 'codex.a');
+  assert.equal(updated.projectName, 'intent-broker');
+  assert.equal(updated.status, 'implementing');
+  assert.equal(updated.summary, 'Refactoring work-state API');
+  assert.equal(updated.taskId, 'task-9');
+  assert.equal(updated.threadId, 'thread-9');
+  assert.ok(updated.updatedAt);
+  assert.equal(projectStates.length, 1);
+  assert.deepEqual(projectStates[0], broker.getWorkState('codex.a'));
+});
+
+test('registerParticipant assigns globally unique aliases and resolves collisions with numeric suffixes', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  const first = broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex'
+  });
+  const second = broker.registerParticipant({
+    participantId: 'codex.session-2',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex'
+  });
+  const third = broker.registerParticipant({
+    participantId: 'claude-code.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: []
+  });
+
+  const resolved = broker.resolveParticipantsByAliases(['codex', 'codex2', 'claude']);
+
+  assert.equal(first.alias, 'codex');
+  assert.equal(second.alias, 'codex2');
+  assert.equal(third.alias, 'claude');
+  assert.deepEqual(resolved.missingAliases, []);
+  assert.deepEqual(
+    resolved.participants.map((participant) => participant.participantId),
+    ['codex.session-1', 'codex.session-2', 'claude-code.session-1']
+  );
+});
+
+test('updateParticipantAlias reassigns alias and broadcasts a broker event to other participants', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
+  broker.registerParticipant({ participantId: 'claude.b', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'claude' });
+
+  const updated = broker.updateParticipantAlias('claude.b', 'reviewer');
+  const codexInbox = broker.readInbox('codex.a', { after: 0 });
+
+  assert.equal(updated.alias, 'reviewer');
+  assert.equal(codexInbox.items.length, 1);
+  assert.equal(codexInbox.items[0].kind, 'participant_alias_updated');
+  assert.equal(codexInbox.items[0].payload.previousAlias, 'claude');
+  assert.equal(codexInbox.items[0].payload.alias, 'reviewer');
+  assert.equal(codexInbox.items[0].payload.participantId, 'claude.b');
+});
+
+test('readInbox enriches events with sender alias and project context', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'claude.b',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'claude',
+    context: { projectName: 'intent-broker' }
+  });
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    context: { projectName: 'intent-broker' }
+  });
+
+  broker.sendIntent({
+    intentId: 'task-1',
+    kind: 'request_task',
+    fromParticipantId: 'claude.b',
+    taskId: 'task-1',
+    threadId: 'thread-1',
+    to: { mode: 'participant', participants: ['codex.a'] },
+    payload: { body: { summary: 'Review the hook output' } }
+  });
+
+  const inbox = broker.readInbox('codex.a', { after: 0 });
+
+  assert.equal(inbox.items.length, 1);
+  assert.equal(inbox.items[0].fromParticipantId, 'claude.b');
+  assert.equal(inbox.items[0].fromAlias, 'claude');
+  assert.equal(inbox.items[0].fromProjectName, 'intent-broker');
+});

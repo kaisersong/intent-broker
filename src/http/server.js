@@ -46,9 +46,49 @@ export function createServer({ broker } = {}) {
         return;
       }
 
+      if (req.method === 'GET' && pathname === '/participants/resolve') {
+        const aliases = requestUrl.searchParams.get('aliases') || '';
+        writeJson(res, 200, broker.resolveParticipantsByAliases(
+          aliases.split(',').map((item) => item.trim()).filter(Boolean)
+        ));
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/participants') {
         const projectName = requestUrl.searchParams.get('projectName');
         writeJson(res, 200, { participants: broker.listParticipants({ projectName }) });
+        return;
+      }
+
+      if (req.method === 'POST' && pathname.startsWith('/participants/') && pathname.endsWith('/alias')) {
+        const participantId = pathname.split('/')[2];
+        const body = await readJson(req);
+        writeJson(res, 200, { participant: broker.updateParticipantAlias(participantId, body.alias) });
+        return;
+      }
+
+      if (pathname.startsWith('/participants/') && pathname.endsWith('/work-state')) {
+        const participantId = pathname.split('/')[2];
+
+        if (req.method === 'POST') {
+          const body = await readJson(req);
+          writeJson(res, 200, broker.updateWorkState(participantId, body));
+          return;
+        }
+
+        if (req.method === 'GET') {
+          writeJson(res, 200, { workState: broker.getWorkState(participantId) });
+          return;
+        }
+      }
+
+      if (req.method === 'GET' && pathname === '/work-state') {
+        const participantId = requestUrl.searchParams.get('participantId');
+        const projectName = requestUrl.searchParams.get('projectName');
+        const status = requestUrl.searchParams.get('status');
+        writeJson(res, 200, {
+          items: broker.listWorkStates({ participantId, projectName, status })
+        });
         return;
       }
 

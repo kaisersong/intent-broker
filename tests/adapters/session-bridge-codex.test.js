@@ -110,7 +110,7 @@ test('cursor state defaults to zero when file does not exist', () => {
 
   try {
     const state = loadCursorState(path.join(dir, 'missing.json'));
-    assert.deepEqual(state, { lastSeenEventId: 0 });
+    assert.deepEqual(state, { lastSeenEventId: 0, recentContext: null });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -121,11 +121,32 @@ test('cursor state can be saved and reloaded', () => {
   const statePath = path.join(dir, 'cursor.json');
 
   try {
-    saveCursorState(statePath, { lastSeenEventId: 72 });
+    saveCursorState(statePath, {
+      lastSeenEventId: 72,
+      recentContext: {
+        fromParticipantId: 'claude.session',
+        fromAlias: 'claude2',
+        taskId: 'task-9',
+        threadId: 'thread-9'
+      }
+    });
     const state = loadCursorState(statePath);
 
-    assert.deepEqual(state, { lastSeenEventId: 72 });
+    assert.deepEqual(state, {
+      lastSeenEventId: 72,
+      recentContext: {
+        eventId: null,
+        kind: null,
+        fromParticipantId: 'claude.session',
+        fromAlias: 'claude2',
+        fromProjectName: null,
+        taskId: 'task-9',
+        threadId: 'thread-9',
+        summary: null
+      }
+    });
     assert.match(readFileSync(statePath, 'utf8'), /72/);
+    assert.match(readFileSync(statePath, 'utf8'), /claude2/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
