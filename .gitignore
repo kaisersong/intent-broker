@@ -2,9 +2,7 @@ node_modules/
 .env
 .env.*
 !**/.env.example
-docs/*
-!docs/superpowers/
-!docs/superpowers/**
+docs/
 *.db
 *.db-shm
 *.db-wal
