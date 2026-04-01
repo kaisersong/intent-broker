@@ -29,6 +29,19 @@ This project is a good fit when:
 - You need a task timeline that supports reconnect replay, task/thread event playback, and event-level debugging.
 - You want a reliable local protocol layer before building higher-level adapters, mobile approval panels, or LAN collaboration.
 
+## Example Scenario
+
+One practical scenario is a human coordinating multiple coding agents on the same project:
+
+1. A human opens one Codex session and one Claude Code session in the same repo.
+2. Both sessions auto-register to `Intent Broker` with the same `projectName`, publish presence, and expose short aliases such as `@codex` and `@claude`.
+3. The human sends `@codex` a task from Yunzhijia such as "own the websocket reconnect fix", then sends `@claude` a parallel task such as "review the shutdown path and look for conflicts".
+4. Each agent updates its own work-state, publishes progress, and can ask the other agent for help without relying on copy-paste through the human.
+5. Before landing, one agent can query who else is touching the same project, warn about overlap, and negotiate handoff or conflict resolution through the same task/thread timeline.
+6. If broker restarts or one agent goes idle, the task context is still durable. The next prompt submit or inbox pull resumes from broker state instead of losing coordination.
+
+The point is not just "agents can chat". The point is that the human can delegate parallel work, and the agents can keep enough shared state to coordinate ownership, progress, approvals, and conflict handling with less manual relay.
+
 ## Current Capabilities
 
 The current prototype supports:
