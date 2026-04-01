@@ -2,56 +2,32 @@ import { lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileS
 import os from 'node:os';
 import path from 'node:path';
 
-const SESSION_START_STATUS = 'intent-broker session sync';
-const USER_PROMPT_STATUS = 'intent-broker inbox sync';
+import {
+  buildHookCommand,
+  managedHookStatusMessages,
+  mergeManagedHookGroups
+} from '../hook-installer-core/install-core.js';
+import { resolveToolStateRoot } from '../hook-installer-core/state-paths.js';
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function isOurHookEntry(entry) {
-  return entry?.statusMessage === SESSION_START_STATUS || entry?.statusMessage === USER_PROMPT_STATUS;
-}
-
-function pruneGroups(groups = []) {
-  return groups
-    .map((group) => ({
-      ...group,
-      hooks: (group.hooks || []).filter((entry) => !isOurHookEntry(entry))
-    }))
-    .filter((group) => group.hooks.length > 0);
-}
-
-export function buildHookCommand(cliPath, mode) {
-  return `node "${cliPath}" hook ${mode}`;
-}
+export { buildHookCommand };
 
 export function mergeIntentBrokerHooks(existingConfig = {}, commands) {
   const merged = clone(existingConfig);
   const hooks = { ...(merged.hooks || {}) };
 
-  hooks.SessionStart = pruneGroups(hooks.SessionStart);
-  hooks.UserPromptSubmit = pruneGroups(hooks.UserPromptSubmit);
-
-  hooks.SessionStart.push({
+  hooks.SessionStart = mergeManagedHookGroups(hooks.SessionStart || [], {
     matcher: 'startup|resume',
-    hooks: [
-      {
-        type: 'command',
-        command: commands.sessionStartCommand,
-        statusMessage: SESSION_START_STATUS
-      }
-    ]
+    command: commands.sessionStartCommand,
+    statusMessage: managedHookStatusMessages.sessionStart
   });
 
-  hooks.UserPromptSubmit.push({
-    hooks: [
-      {
-        type: 'command',
-        command: commands.userPromptSubmitCommand,
-        statusMessage: USER_PROMPT_STATUS
-      }
-    ]
+  hooks.UserPromptSubmit = mergeManagedHookGroups(hooks.UserPromptSubmit || [], {
+    command: commands.userPromptSubmitCommand,
+    statusMessage: managedHookStatusMessages.userPromptSubmit
   });
 
   merged.hooks = hooks;
@@ -63,7 +39,7 @@ export function defaultInstallPaths({ homeDir = os.homedir(), repoRoot } = {}) {
     configPath: path.join(homeDir, '.codex', 'config.toml'),
     hooksConfigPath: path.join(homeDir, '.codex', 'hooks.json'),
     skillLinkPath: path.join(homeDir, '.codex', 'skills', 'intent-broker'),
-    stateRoot: path.join(homeDir, '.intent-broker', 'codex'),
+    stateRoot: resolveToolStateRoot('codex', { homeDir }),
     skillSourcePath: path.join(repoRoot, 'adapters', 'codex-plugin', 'skills', 'intent-broker')
   };
 }

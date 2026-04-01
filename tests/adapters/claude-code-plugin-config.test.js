@@ -1,0 +1,139 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import {
+  buildHookCommand,
+  defaultInstallPaths,
+  mergeIntentBrokerHooks,
+  readClaudeSettings,
+  writeClaudeSettings
+} from '../../adapters/claude-code-plugin/install.js';
+
+test('buildHookCommand quotes the claude broker cli path and hook mode', () => {
+  const command = buildHookCommand('/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js', 'session-start');
+
+  assert.equal(
+    command,
+    'node "/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js" hook session-start'
+  );
+});
+
+test('defaultInstallPaths targets project .claude settings and claude state root', () => {
+  const paths = defaultInstallPaths({
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir: '/Users/song'
+  });
+
+  assert.equal(paths.settingsPath, path.join('/Users/song/projects/intent-broker', '.claude', 'settings.json'));
+  assert.equal(paths.stateRoot, path.join('/Users/song', '.intent-broker', 'claude-code'));
+});
+
+test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', () => {
+  const merged = mergeIntentBrokerHooks({}, {
+    sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
+    userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
+  });
+
+  assert.deepEqual(merged, {
+    hooks: {
+      SessionStart: [
+        {
+          matcher: 'startup|resume',
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/claude-code-broker.js" hook session-start',
+              statusMessage: 'intent-broker session sync'
+            }
+          ]
+        }
+      ],
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+              statusMessage: 'intent-broker inbox sync'
+            }
+          ]
+        }
+      ]
+    }
+  });
+});
+
+test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing intent-broker hooks', () => {
+  const merged = mergeIntentBrokerHooks(
+    {
+      hooks: {
+        SessionStart: [
+          {
+            matcher: 'startup',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node keep-me',
+                statusMessage: 'other startup hook'
+              }
+            ]
+          },
+          {
+            matcher: 'startup|resume',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node old-intent-broker session-start',
+                statusMessage: 'intent-broker session sync'
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
+      userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
+    }
+  );
+
+  assert.equal(merged.hooks.SessionStart.length, 2);
+  assert.equal(merged.hooks.SessionStart[0].hooks[0].command, 'node keep-me');
+  assert.equal(merged.hooks.SessionStart[1].hooks[0].command, 'node "/repo/claude-code-broker.js" hook session-start');
+  assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook user-prompt-submit');
+});
+
+test('readClaudeSettings and writeClaudeSettings round-trip JSON config', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-settings-'));
+  const settingsPath = path.join(dir, '.claude', 'settings.json');
+
+  try {
+    const expected = {
+      hooks: {
+        SessionStart: [
+          {
+            matcher: 'startup|resume',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node test session-start',
+                statusMessage: 'intent-broker session sync'
+              }
+            ]
+          }
+        ]
+      }
+    };
+
+    writeClaudeSettings(settingsPath, expected);
+    const loaded = readClaudeSettings(settingsPath);
+
+    assert.deepEqual(loaded, expected);
+    assert.match(readFileSync(settingsPath, 'utf8'), /intent-broker session sync/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -4,7 +4,7 @@ import {
   registerParticipant as registerParticipantDefault
 } from '../session-bridge/api.js';
 import {
-  buildCodexHookContext,
+  buildToolHookContext,
   highestEventId
 } from '../session-bridge/codex-hooks.js';
 import { deriveSessionBridgeConfig } from '../session-bridge/config.js';
@@ -16,17 +16,17 @@ import { resolveParticipantStatePath } from '../hook-installer-core/state-paths.
 
 function configFromHookInput(input, { env = process.env, cwd = process.cwd() } = {}) {
   return deriveSessionBridgeConfig({
-    toolName: 'codex',
+    toolName: 'claude-code',
     env: {
       ...env,
-      CODEX_THREAD_ID: env.CODEX_THREAD_ID || input.session_id || ''
+      CLAUDE_CODE_SESSION_ID: env.CLAUDE_CODE_SESSION_ID || input.session_id || ''
     },
     cwd
   });
 }
 
 function cursorPathForParticipant(participantId, homeDir) {
-  return resolveParticipantStatePath('codex', participantId, { homeDir });
+  return resolveParticipantStatePath('claude-code', participantId, { homeDir });
 }
 
 export async function runSessionStartHook(
@@ -48,7 +48,10 @@ export async function runSessionStartHook(
   const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
   const items = inbox.items || [];
 
-  return buildCodexHookContext(items, { participantId: config.participantId });
+  return buildToolHookContext(items, {
+    participantId: config.participantId,
+    sessionLabel: 'Claude Code session'
+  });
 }
 
 export async function runUserPromptSubmitHook(
@@ -73,7 +76,11 @@ export async function runUserPromptSubmitHook(
 
   const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
   const items = inbox.items || [];
-  const context = buildCodexHookContext(items, { participantId: config.participantId });
+
+  const context = buildToolHookContext(items, {
+    participantId: config.participantId,
+    sessionLabel: 'Claude Code session'
+  });
 
   if (!context) {
     return null;

@@ -30,16 +30,23 @@ export function summarizeInboxItems(items = []) {
   return lines.join('\n');
 }
 
-export function buildCodexHookContext(items = [], { participantId } = {}) {
+export function buildToolHookContext(items = [], { participantId, sessionLabel = 'session' } = {}) {
   if (!items.length) {
     return null;
   }
 
   return [
-    `Intent Broker update for ${participantId || 'this Codex session'}:`,
+    `Intent Broker update for ${participantId || `this ${sessionLabel}`}:`,
     summarizeInboxItems(items),
     'If relevant, respond in this turn or continue the newly assigned work.'
   ].join('\n');
+}
+
+export function buildCodexHookContext(items = [], { participantId } = {}) {
+  return buildToolHookContext(items, {
+    participantId,
+    sessionLabel: 'Codex session'
+  });
 }
 
 export function buildCodexHookOutput(hookEventName, additionalContext) {

@@ -44,6 +44,7 @@ The current prototype supports:
 - WebSocket real-time notification channel
 - verified Yunzhijia adapter inbound and outbound integration
 - non-invasive Codex hook integration for real session inbox injection
+- non-invasive Claude Code hook integration for project-level inbox injection
 
 ## Tech Stack
 
@@ -358,6 +359,51 @@ Once installed, an already-open real Codex session can naturally participate in 
 - it keeps its native startup flow
 - it receives broker context through hooks instead of a wrapper shell
 - it can explicitly hand off tasks or publish progress with the same local bridge command set
+
+## Claude Code Integration
+
+Claude Code now has the same non-invasive hook bridge model as Codex, but installs into project settings:
+
+- `SessionStart` hook: auto-registers the Claude Code session into broker context
+- `UserPromptSubmit` hook: injects only newly arrived broker inbox context before prompt submission
+
+### Install the Claude Code bridge
+
+From this repo root:
+
+```bash
+npm run claude-code:install
+```
+
+This writes or updates:
+
+- `.claude/settings.json`
+- `~/.intent-broker/claude-code/*.json` local cursor state
+
+Notes:
+
+- this preserves unrelated Claude Code hooks and only replaces previous `intent-broker` hook entries
+- if you move this repo, run `npm run claude-code:install` again to refresh command paths
+
+### Send from a real Claude Code session
+
+Manual register remains available for debugging or inspecting derived participant ids:
+
+```bash
+node adapters/claude-code-plugin/bin/claude-code-broker.js register
+```
+
+Send a task to another participant:
+
+```bash
+node adapters/claude-code-plugin/bin/claude-code-broker.js send-task codex-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
+```
+
+Send a progress update:
+
+```bash
+node adapters/claude-code-plugin/bin/claude-code-broker.js send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+```
 
 ### 4. Use approvals for risky or user-visible transitions
 

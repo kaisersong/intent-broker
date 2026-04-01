@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   buildCodexHookContext,
   buildCodexHookOutput,
+  buildToolHookContext,
   highestEventId,
   summarizeInboxItems
 } from '../../adapters/session-bridge/codex-hooks.js';
@@ -44,6 +45,25 @@ test('summarizeInboxItems renders broker requests and progress succinctly', () =
 
 test('buildCodexHookContext returns null when inbox is empty', () => {
   assert.equal(buildCodexHookContext([], { participantId: 'codex.main' }), null);
+});
+
+test('buildToolHookContext supports custom session label', () => {
+  const context = buildToolHookContext(
+    [
+      {
+        eventId: 70,
+        kind: 'request_task',
+        fromParticipantId: 'codex.main',
+        taskId: 'task-2',
+        threadId: 'thread-2',
+        payload: { body: { summary: 'Please pick up regression triage' } }
+      }
+    ],
+    { participantId: 'claude-code-session-aabbccdd', sessionLabel: 'Claude Code session' }
+  );
+
+  assert.match(context, /Intent Broker update for claude-code-session-aabbccdd/);
+  assert.match(context, /Please pick up regression triage/);
 });
 
 test('buildCodexHookContext produces actionable context for Codex', () => {

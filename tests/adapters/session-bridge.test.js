@@ -19,7 +19,7 @@ test('deriveSessionBridgeConfig prefers explicit participant id', () => {
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
 });
 
-test('deriveSessionBridgeConfig derives participant id from thread id', () => {
+test('deriveSessionBridgeConfig derives participant id from codex thread id', () => {
   const config = deriveSessionBridgeConfig({
     toolName: 'codex',
     env: {
@@ -31,6 +31,18 @@ test('deriveSessionBridgeConfig derives participant id from thread id', () => {
   assert.equal(config.brokerUrl, 'http://127.0.0.1:4318');
   assert.equal(config.participantId, 'codex-session-019d42b4');
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
+});
+
+test('deriveSessionBridgeConfig derives participant id from claude code session id', () => {
+  const config = deriveSessionBridgeConfig({
+    toolName: 'claude-code',
+    env: {
+      CLAUDE_CODE_SESSION_ID: '019d42d0-1111-2222-3333-444444444444'
+    },
+    cwd: '/Users/song/projects/intent-broker'
+  });
+
+  assert.equal(config.participantId, 'claude-code-session-019d42d0');
 });
 
 test('deriveSessionBridgeConfig falls back to tool name when no thread id exists', () => {

@@ -5,6 +5,10 @@ import {
   buildHookCommand,
   mergeIntentBrokerHooks
 } from '../../adapters/codex-plugin/install.js';
+import {
+  mergeManagedHookGroups,
+  managedHookStatusMessages
+} from '../../adapters/hook-installer-core/install-core.js';
 
 test('buildHookCommand quotes the broker cli path and hook mode', () => {
   const command = buildHookCommand('/Users/song/projects/intent-broker/adapters/codex-plugin/bin/codex-broker.js', 'session-start');
@@ -108,4 +112,47 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
     merged.hooks.UserPromptSubmit[0].hooks[0].command,
     'node "/repo/codex-broker.js" hook user-prompt-submit'
   );
+});
+
+test('managedHookStatusMessages exposes stable hook status labels', () => {
+  assert.deepEqual(managedHookStatusMessages, {
+    sessionStart: 'intent-broker session sync',
+    userPromptSubmit: 'intent-broker inbox sync'
+  });
+});
+
+test('mergeManagedHookGroups replaces only matching intent-broker owned entries', () => {
+  const merged = mergeManagedHookGroups(
+    [
+      {
+        matcher: 'startup',
+        hooks: [
+          {
+            type: 'command',
+            command: 'node keep-me',
+            statusMessage: 'other startup hook'
+          }
+        ]
+      },
+      {
+        matcher: 'startup|resume',
+        hooks: [
+          {
+            type: 'command',
+            command: 'node old-intent-broker',
+            statusMessage: 'intent-broker session sync'
+          }
+        ]
+      }
+    ],
+    {
+      matcher: 'startup|resume',
+      statusMessage: 'intent-broker session sync',
+      command: 'node new-intent-broker'
+    }
+  );
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].hooks[0].command, 'node keep-me');
+  assert.equal(merged[1].hooks[0].command, 'node new-intent-broker');
 });
