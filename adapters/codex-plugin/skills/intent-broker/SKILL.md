@@ -11,6 +11,7 @@ Use this skill when you need durable coordination with another agent or a human 
 
 - You need to hand off a task to another participant such as `claude-real-1`.
 - You need to publish progress so other agents or Yunzhijia can see it.
+- You need to send a blocking question versus a non-blocking note and want the broker semantic to be explicit.
 - You need to check who is already active on the same project and what they are doing.
 - You need to continue work that was injected into the current Codex session by the broker hooks.
 
@@ -34,16 +35,28 @@ See same-project collaborators and their work-state:
 intent-broker who
 ```
 
-Send a task:
+Send an actionable task:
 
 ```bash
-intent-broker send-task <toParticipantId> <taskId> <threadId> "<summary>"
+intent-broker task <toParticipantId> <taskId> <threadId> "<summary>"
 ```
 
-Send a progress update:
+Send an actionable question:
 
 ```bash
-intent-broker send-progress <taskId> <threadId> "<summary>"
+intent-broker ask <toParticipantId> <taskId> <threadId> "<summary>"
+```
+
+Send a non-blocking note to a specific participant:
+
+```bash
+intent-broker note <toParticipantId> <taskId> <threadId> "<summary>"
+```
+
+Send a non-blocking progress update:
+
+```bash
+intent-broker progress <taskId> <threadId> "<summary>"
 ```
 
 Reply on the latest remembered collaboration context:
@@ -72,6 +85,12 @@ Treat identifiers this way:
 - `eventId` is only an internal replay / ack cursor
 
 When you reply or continue a collaboration, prefer keeping the same `taskId` and `threadId`.
+
+Default delivery semantics:
+
+- human channel -> agent: actionable
+- `intent-broker task` / `intent-broker ask`: actionable
+- `intent-broker note` / `intent-broker progress` / `intent-broker reply`: informational
 
 When you are about to take ownership in the same project:
 

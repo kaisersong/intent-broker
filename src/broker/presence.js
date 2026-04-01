@@ -3,9 +3,23 @@
  * Tracks online status, last seen, and activity
  */
 
-export function createPresenceTracker() {
+export function createPresenceTracker({ timeoutMs = 60000 } = {}) {
   const presenceMap = new Map();
-  const PRESENCE_TIMEOUT_MS = 60000; // 1 minute
+
+  function materializePresence(presence) {
+    if (!presence) {
+      return null;
+    }
+
+    const now = Date.now();
+    const isStale = now - presence.lastSeen > timeoutMs;
+
+    return {
+      ...presence,
+      status: isStale ? 'offline' : presence.status,
+      isStale
+    };
+  }
 
   return {
     updatePresence(participantId, status = 'online', metadata = {}) {
@@ -19,25 +33,16 @@ export function createPresenceTracker() {
       return presenceMap.get(participantId);
     },
 
+    peekPresence(participantId) {
+      return presenceMap.get(participantId) ?? null;
+    },
+
     getPresence(participantId) {
-      const presence = presenceMap.get(participantId);
-      if (!presence) return null;
-
-      const now = Date.now();
-      const isStale = now - presence.lastSeen > PRESENCE_TIMEOUT_MS;
-
-      return {
-        ...presence,
-        status: isStale ? 'offline' : presence.status
-      };
+      return materializePresence(presenceMap.get(participantId));
     },
 
     listPresence() {
-      const now = Date.now();
-      return Array.from(presenceMap.values()).map(presence => ({
-        ...presence,
-        status: now - presence.lastSeen > PRESENCE_TIMEOUT_MS ? 'offline' : presence.status
-      }));
+      return Array.from(presenceMap.values()).map((presence) => materializePresence(presence));
     },
 
     removePresence(participantId) {

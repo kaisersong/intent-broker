@@ -62,14 +62,15 @@ test('participant can register, receive inbox items, ack them, and respond to ap
 
   const inboxResponse = await fetch(`http://127.0.0.1:${port}/inbox/agent.a?after=0`);
   const inboxBody = await inboxResponse.json();
+  const taskItems = inboxBody.items.filter((item) => item.kind === 'request_task');
   assert.equal(inboxResponse.status, 200);
-  assert.equal(inboxBody.items.length, 1);
-  assert.equal(inboxBody.items[0].intentId, 'int-1');
+  assert.equal(taskItems.length, 1);
+  assert.equal(taskItems[0].intentId, 'int-1');
 
   const ackResponse = await fetch(`http://127.0.0.1:${port}/inbox/agent.a/ack`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ eventId: inboxBody.items[0].eventId })
+    body: JSON.stringify({ eventId: taskItems[0].eventId })
   });
   assert.equal(ackResponse.status, 200);
 
@@ -96,6 +97,46 @@ test('participant can register, receive inbox items, ack them, and respond to ap
 
   assert.equal(approvalResponse.status, 200);
   assert.equal(approvalBody.approval.status, 'approved');
+});
+
+test('inbox endpoint returns delivery semantics for stored events', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => {
+    await server.close();
+  });
+
+  await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] })
+  });
+  await fetch(`http://127.0.0.1:${port}/participants/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] })
+  });
+
+  const sendTask = await fetch(`http://127.0.0.1:${port}/intents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intentId: 'int-delivery-1',
+      kind: 'request_task',
+      fromParticipantId: 'human.song',
+      taskId: 'task-delivery-1',
+      threadId: 'thread-delivery-1',
+      to: { mode: 'participant', participants: ['agent.a'] },
+      payload: { body: { summary: 'handle this' } }
+    })
+  });
+  assert.equal(sendTask.status, 202);
+
+  const inboxResponse = await fetch(`http://127.0.0.1:${port}/inbox/agent.a?after=0`);
+  const inboxBody = await inboxResponse.json();
+
+  assert.equal(inboxResponse.status, 200);
+  assert.equal(inboxBody.items[0].payload.delivery.semantic, 'actionable');
+  assert.equal(inboxBody.items[0].payload.delivery.source, 'default');
 });
 
 test('query endpoints return task view, thread timeline, and replay slices', { concurrency: false }, async (t) => {

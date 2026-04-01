@@ -7,6 +7,7 @@ import {
   pollInbox,
   registerParticipant,
   resolveParticipantAliases,
+  sendAsk,
   sendProgress,
   sendTask,
   updateWorkState
@@ -25,6 +26,10 @@ function usage() {
   intent-broker [--tool ...] reply [@alias] <summary>
   intent-broker [--tool ...] poll [after]
   intent-broker [--tool ...] ack <eventId>
+  intent-broker [--tool ...] task <toParticipantId> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] ask <toParticipantId> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] note <toParticipantId> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] progress <taskId> <threadId> <summary>
   intent-broker [--tool ...] send-task <toParticipantId> <taskId> <threadId> <summary>
   intent-broker [--tool ...] send-progress <taskId> <threadId> <summary>
   intent-broker [--tool ...] set-work-state <status> [taskId] [threadId] [summary]`);
@@ -69,6 +74,48 @@ function normalizeOptionalValue(value) {
   return value;
 }
 
+async function runTaskCommand(config, args) {
+  return sendTask(config, {
+    intentId: `${config.participantId}-task-${Date.now()}`,
+    toParticipantId: args[0],
+    taskId: args[1],
+    threadId: args[2],
+    summary: args.slice(3).join(' ')
+  });
+}
+
+async function runAskCommand(config, args) {
+  return sendAsk(config, {
+    intentId: `${config.participantId}-ask-${Date.now()}`,
+    toParticipantId: args[0],
+    taskId: args[1],
+    threadId: args[2],
+    summary: args.slice(3).join(' '),
+    delivery: { semantic: 'actionable', source: 'explicit' }
+  });
+}
+
+async function runNoteCommand(config, args) {
+  return sendProgress(config, {
+    intentId: `${config.participantId}-note-${Date.now()}`,
+    toParticipantId: args[0],
+    taskId: args[1],
+    threadId: args[2],
+    summary: args.slice(3).join(' '),
+    delivery: { semantic: 'informational', source: 'explicit' }
+  });
+}
+
+async function runProgressCommand(config, args) {
+  return sendProgress(config, {
+    intentId: `${config.participantId}-progress-${Date.now()}`,
+    taskId: args[0],
+    threadId: args[1],
+    summary: args.slice(2).join(' '),
+    delivery: { semantic: 'informational', source: 'explicit' }
+  });
+}
+
 const parsed = parseArgs();
 if (!parsed.command) {
   usage();
@@ -100,22 +147,23 @@ switch (parsed.command) {
   case 'ack':
     console.log(JSON.stringify(await ackInbox(config, parsed.args[0]), null, 2));
     break;
+  case 'task':
+    console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
+    break;
+  case 'ask':
+    console.log(JSON.stringify(await runAskCommand(config, parsed.args), null, 2));
+    break;
+  case 'note':
+    console.log(JSON.stringify(await runNoteCommand(config, parsed.args), null, 2));
+    break;
+  case 'progress':
+    console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
+    break;
   case 'send-task':
-    console.log(JSON.stringify(await sendTask(config, {
-      intentId: `${config.participantId}-task-${Date.now()}`,
-      toParticipantId: parsed.args[0],
-      taskId: parsed.args[1],
-      threadId: parsed.args[2],
-      summary: parsed.args.slice(3).join(' ')
-    }), null, 2));
+    console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
     break;
   case 'send-progress':
-    console.log(JSON.stringify(await sendProgress(config, {
-      intentId: `${config.participantId}-progress-${Date.now()}`,
-      taskId: parsed.args[0],
-      threadId: parsed.args[1],
-      summary: parsed.args.slice(2).join(' ')
-    }), null, 2));
+    console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
     break;
   case 'set-work-state':
     console.log(JSON.stringify(await updateWorkState(config, {

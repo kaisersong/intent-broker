@@ -2,6 +2,7 @@ node_modules/
 .env
 .env.*
 !**/.env.example
+intent-broker.local.json
 docs/
 *.db
 *.db-shm

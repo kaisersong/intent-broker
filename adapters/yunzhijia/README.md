@@ -19,18 +19,29 @@ npm install
 
 ## 配置
 
-复制 `.env.example` 为 `.env`，填入配置：
+推荐方式是由 broker 托管云之家通道，而不是单独启动 adapter 进程。
 
-```bash
-cp .env.example .env
+在仓库根目录的 `intent-broker.config.json` 里启用：
+
+```json
+{
+  "channels": {
+    "yunzhijia": {
+      "enabled": true,
+      "sendUrlEnv": "YZJ_SEND_URL"
+    }
+  }
+}
 ```
 
-只需要配置：
+然后设置：
+
 - `YZJ_SEND_URL` - 云之家机器人 Webhook URL
 
 注意：
-- `npm start` 会自动通过 `node --env-file=.env` 读取 `.env`
-- `YZJ_SEND_URL` 必须保留双引号，因为 URL 中包含 `&`
+
+- `YZJ_SEND_URL` 建议通过环境变量提供，不要把真实 token 直接提交进配置文件
+- URL 中包含 `&` 时，要保留 shell 引号
 
 ## 获取云之家 Webhook URL
 
@@ -44,10 +55,16 @@ cp .env.example .env
 ## 启动
 
 ```bash
-npm start
+YZJ_SEND_URL='https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN' npm start
 ```
 
-**无需在云之家侧配置任何回调地址！** Adapter 会自动通过 WebSocket 连接到云之家接收消息。
+**无需在云之家侧配置任何回调地址！** broker 托管的 Yunzhijia channel 会自动通过 WebSocket 连接到云之家接收消息。
+
+如果你需要单独调试，也可以继续直接运行：
+
+```bash
+YZJ_SEND_URL='https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN' node adapters/yunzhijia/index.js
+```
 
 首次连接成功时，日志中会出现类似输出：
 

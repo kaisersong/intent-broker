@@ -8,6 +8,7 @@ import {
   pollInbox,
   registerParticipant,
   resolveParticipantAliases,
+  sendAsk,
   updateWorkState,
   sendProgress,
   sendTask
@@ -111,7 +112,10 @@ test('sendTask posts request_task intent', async () => {
     taskId: 'task-1',
     threadId: 'thread-1',
     to: { mode: 'participant', participants: ['claude.main'] },
-    payload: { body: { summary: 'Pick up the regression' } }
+    payload: {
+      body: { summary: 'Pick up the regression' },
+      delivery: { semantic: 'actionable', source: 'default' }
+    }
   });
 });
 
@@ -139,7 +143,11 @@ test('sendProgress posts report_progress intent', async () => {
     taskId: 'task-1',
     threadId: 'thread-1',
     to: { mode: 'broadcast' },
-    payload: { stage: 'in_progress', body: { summary: 'Still investigating' } }
+    payload: {
+      stage: 'in_progress',
+      body: { summary: 'Still investigating' },
+      delivery: { semantic: 'informational', source: 'default' }
+    }
   });
 });
 
@@ -168,7 +176,77 @@ test('sendProgress can target a specific participant for reply-style updates', a
     taskId: 'task-1',
     threadId: 'thread-1',
     to: { mode: 'participant', participants: ['claude.main'] },
-    payload: { stage: 'in_progress', body: { summary: 'Picked this up' } }
+    payload: {
+      stage: 'in_progress',
+      body: { summary: 'Picked this up' },
+      delivery: { semantic: 'informational', source: 'default' }
+    }
+  });
+});
+
+test('sendAsk posts ask_clarification intent with explicit actionable delivery', async () => {
+  const { calls, fetchStub } = createFetchStub();
+
+  await sendAsk(
+    {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex.main'
+    },
+    {
+      intentId: 'intent-ask',
+      toParticipantId: 'claude.main',
+      taskId: 'task-ask',
+      threadId: 'thread-ask',
+      summary: 'Need a decision',
+      delivery: { semantic: 'actionable', source: 'explicit' }
+    },
+    fetchStub
+  );
+
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    intentId: 'intent-ask',
+    kind: 'ask_clarification',
+    fromParticipantId: 'codex.main',
+    taskId: 'task-ask',
+    threadId: 'thread-ask',
+    to: { mode: 'participant', participants: ['claude.main'] },
+    payload: {
+      body: { summary: 'Need a decision' },
+      delivery: { semantic: 'actionable', source: 'explicit' }
+    }
+  });
+});
+
+test('sendProgress forwards explicit delivery overrides', async () => {
+  const { calls, fetchStub } = createFetchStub();
+
+  await sendProgress(
+    {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex.main'
+    },
+    {
+      intentId: 'intent-override',
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      summary: 'FYI',
+      delivery: { semantic: 'actionable', source: 'explicit' }
+    },
+    fetchStub
+  );
+
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    intentId: 'intent-override',
+    kind: 'report_progress',
+    fromParticipantId: 'codex.main',
+    taskId: 'task-1',
+    threadId: 'thread-1',
+    to: { mode: 'broadcast' },
+    payload: {
+      stage: 'in_progress',
+      body: { summary: 'FYI' },
+      delivery: { semantic: 'actionable', source: 'explicit' }
+    }
   });
 });
 

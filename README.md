@@ -4,7 +4,7 @@
 
 Local-first collaboration broker for multi-agent workflows. It is not a chat server and not a workflow platform. It is a reliable protocol layer that persists events before delivery, so agents like Codex, Claude Code, and OpenCode can collaborate with human participants around the same task object.
 
-Current release version: `0.1.0`
+Current release version: `0.1.1`
 
 ## Design Principles
 
@@ -37,9 +37,13 @@ The current prototype supports:
 - globally unique participant aliases with automatic numeric suffixes
 - project-scoped participant discovery
 - current work-state tracking by participant
+- default delivery semantics for task, ask, note, and progress-style collaboration
+- websocket-backed online / offline presence tracking
+- join / leave presence broadcasts for connected collaborators
 - `request_task`, `report_progress`, `request_approval`, `respond_approval`
 - routing by `participant`, `role`, and `broadcast`
 - inbox pull and ack cursor
+- delivery feedback with `onlineRecipients`, `offlineRecipients`, and `deliveredCount`
 - `GET /tasks/:taskId`
 - `GET /threads/:threadId`
 - `GET /events/replay`
@@ -49,6 +53,7 @@ The current prototype supports:
 - verified Yunzhijia adapter inbound and outbound integration
 - non-invasive Codex hook integration for real session inbox injection
 - non-invasive Claude Code hook integration for project-level inbox injection
+- session-scoped realtime bridge queue with quiet reconnect after broker restart
 
 ## Tech Stack
 
@@ -72,9 +77,35 @@ Use Node 22 or newer.
 npm start
 ```
 
+By default, `npm start` now reads [intent-broker.config.json](./intent-broker.config.json) and starts the broker-managed channels declared there. For the current prototype, that means you can let the broker manage the Yunzhijia channel instead of starting a separate adapter process.
+
 Default listen address:
 
 - `http://127.0.0.1:4318`
+
+Recommended managed-channel config:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4318,
+    "dbPath": "./.tmp/intent-broker.db"
+  },
+  "channels": {
+    "yunzhijia": {
+      "enabled": true,
+      "sendUrlEnv": "YZJ_SEND_URL"
+    }
+  }
+}
+```
+
+Then start with:
+
+```bash
+YZJ_SEND_URL='https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN' npm start
+```
 
 You can override it with environment variables:
 
@@ -111,6 +142,7 @@ Current test coverage includes:
 - SQLite store append / inbox / ack / replay
 - broker service routing and approval aggregation
 - HTTP API end-to-end flow
+- broker config loading and managed channel startup
 - Yunzhijia adapter config regression test
 - Yunzhijia adapter inbound / outbound integration test
 
@@ -199,6 +231,25 @@ Example:
 }
 ```
 
+Accepted intents now return both routing and real-time delivery feedback:
+
+```json
+{
+  "eventId": 71,
+  "recipients": ["codex.main", "claude.main"],
+  "onlineRecipients": ["codex.main"],
+  "offlineRecipients": ["claude.main"],
+  "deliveredCount": 1
+}
+```
+
+That means:
+
+- `recipients`: who the broker routed to
+- `onlineRecipients`: who had an active websocket and saw the event immediately
+- `offlineRecipients`: who only received durable inbox delivery and must pull later
+- `deliveredCount`: how many recipients got real-time delivery right now
+
 ### Inbox Pull / Ack
 
 ```http
@@ -250,6 +301,16 @@ GET /work-state?projectName=intent-broker
 GET /work-state?participantId=codex.main
 GET /work-state?status=blocked
 ```
+
+### Presence
+
+```http
+GET /presence
+GET /presence/:participantId
+POST /presence/:participantId
+```
+
+Presence is also updated automatically when a registered participant connects or disconnects on the broker websocket. Those transitions emit `participant_presence_updated` events so other connected agents and human channels can see who just came online or left.
 
 ### Approval Response
 
@@ -313,6 +374,11 @@ If you installed the Codex or Claude Code hook bridge, session registration is a
 
 The bridge now also sends a preferred alias hint at registration time. Broker owns the final alias and may append numeric suffixes to keep aliases globally unique.
 
+On `SessionStart`, the local bridge also launches two quiet background helpers:
+
+- a presence keeper that re-registers after broker restart and marks the session offline when the parent exits
+- a realtime bridge that subscribes over websocket and appends incoming events into local queue state under `~/.intent-broker/<tool>/`
+
 ### 2. Pull work instead of assuming a permanent connection
 
 The reliable path is inbox pull:
@@ -336,6 +402,14 @@ Treat identifiers differently:
 - `eventId`: an internal event cursor for replay, inbox pull, ack, and debugging only
 
 In other words, agents should coordinate around `taskId` and `threadId`, not around raw `eventId` values.
+
+Current delivery defaults:
+
+- human channel -> agent: actionable
+- agent `task` / `ask`: actionable
+- agent `note` / `progress` / reply: informational
+
+When needed, you can still override the semantic explicitly with `payload.delivery`.
 
 ### 3. Query project state before you grab work
 
@@ -379,6 +453,9 @@ Current v1 behavior:
 - alias changes create a broker event so connected clients can learn the new short name
 - Yunzhijia now resolves `@alias` and `@all` into exact broker recipients
 - Yunzhijia also supports `/alias @old newalias` to rename a participant from the message channel
+- when a mentioned target is offline, Yunzhijia tells the human that the message was queued in broker inbox and not delivered in real time
+- Yunzhijia supports `@broker list` and `@broker list <projectName>` to show online/offline agents in the channel
+- agent online/offline transitions are also announced into the Yunzhijia channel
 
 ### 5. Send intents as stateful collaboration events
 
@@ -413,11 +490,25 @@ Example progress update:
 }
 ```
 
+If you care about immediate coordination, do not stop at `recipients`. Check `onlineRecipients` and `offlineRecipients` in the broker response. A routed message is durable either way, but only `onlineRecipients` saw it instantly.
+
+### 6. Let humans inspect live collaborator state from the channel
+
+In Yunzhijia, the human should not need to leave the channel just to see who is safe to `@`.
+
+Use:
+
+- `@broker list`
+- `@broker list intent-broker`
+
+The adapter will post a channel message grouped by `online` and `offline`, including each agent alias, project, and latest work-state summary.
+
 ## Codex Integration
 
 The current best Codex UX is a non-invasive hook + skill bridge. It does not wrap how Codex starts. Instead, it installs two Codex hooks and one local skill:
 
-- `SessionStart` hook: when a real Codex session starts or resumes, it silently registers the session to the broker, records the current `projectName`, and publishes an initial `idle` work state.
+- `SessionStart` hook: when a real Codex session starts or resumes, it silently registers the session to the broker, records the current `projectName`, publishes an initial `idle` work state, and launches a lightweight background keeper that keeps the session present while the TUI stays open.
+- `SessionStart` hook: it also launches a realtime bridge daemon that subscribes over websocket and persists inbound events into local queue state immediately.
 - `UserPromptSubmit` hook: before a real user prompt is submitted, it silently re-registers the session, then checks for newly arrived broker events and injects them into the turn only when there is pending collaboration context.
 - `intent-broker` skill: gives the Codex session an explicit way to send task handoffs and progress updates.
 
@@ -426,7 +517,8 @@ Normal flow:
 - do not manually register the Codex session
 - open Codex in the target project directory
 - let `SessionStart` auto-register the session on startup
-- let `UserPromptSubmit` recover registration after a broker restart and only inject context when there is new collaboration work
+- let the background keeper keep presence alive and re-register after a broker restart even if the session is idle
+- let `UserPromptSubmit` inject context only when there is new collaboration work and the local session actually enters another prompt submit
 
 ### Install the Codex bridge
 
@@ -447,7 +539,7 @@ This writes or updates:
 - `~/.codex/hooks.json`
 - `~/.codex/skills/intent-broker` (symlink)
 - `~/.local/bin/intent-broker` unified command shim
-- `~/.intent-broker/codex/*.json` local cursor state
+- `~/.intent-broker/codex/*.json` local cursor state, realtime queue state, and helper metadata
 
 The Codex bridge now auto-registers the current project name using the current working directory basename by default. You can override it with `PROJECT_NAME`.
 
@@ -458,6 +550,9 @@ Notes:
 - Current Codex source indicates lifecycle hooks are not supported on Windows yet, so this path is currently intended for macOS/Linux.
 - In current real Codex behavior, `SessionStart` is observed when the session actually enters its first turn or resume flow, not merely when the TUI frame first appears.
 - Hook-provided `session_id` now takes precedence over inherited `CODEX_THREAD_ID`, so starting a new Codex from inside another agent environment will not accidentally reuse the parent participant id.
+- The background keeper keeps presence online while the Codex parent process is alive, and marks the participant offline after the parent exits.
+- The realtime bridge quietly reconnects after broker restart and keeps appending websocket events into local queue state.
+- This does not turn Codex into a fully real-time inbox consumer. Newly queued broker events are still injected on the next prompt submit or explicit local inbox pull.
 - If you move this repo, run `npm run codex:install` again so the hook command paths are refreshed.
 
 ### Send from a real Codex session
@@ -471,13 +566,20 @@ intent-broker register
 Send a task to another participant:
 
 ```bash
-intent-broker send-task claude-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
+intent-broker task claude-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
 ```
 
-Send a progress update:
+Send an informational progress update:
 
 ```bash
-intent-broker send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+intent-broker progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+```
+
+Send a directed note or a blocking question:
+
+```bash
+intent-broker note claude-real-1 real-task-1 real-thread-1 "Queue state is persisted locally now"
+intent-broker ask claude-real-1 real-task-1 real-thread-1 "Please confirm the retry semantics"
 ```
 
 Check unread collaboration context without querying broker by hand:
@@ -504,6 +606,15 @@ Reply to an explicit alias while still reusing the latest `taskId/threadId`:
 intent-broker reply @claude2 "Please review the latest patch"
 ```
 
+Send explicit collaboration semantics without hand-writing HTTP:
+
+```bash
+intent-broker task claude2 real-task-1 real-thread-1 "Pick up the failing smoke test"
+intent-broker ask claude2 real-task-1 real-thread-1 "Need your decision on the conflict"
+intent-broker note claude2 real-task-1 real-thread-1 "I rebased and pushed the queue fix"
+intent-broker progress real-task-1 real-thread-1 "Still investigating the reconnect edge case"
+```
+
 ### What this enables
 
 Once installed, an already-open real Codex session can naturally participate in multi-agent communication:
@@ -516,7 +627,8 @@ Once installed, an already-open real Codex session can naturally participate in 
 
 Claude Code now has the same non-invasive hook bridge model as Codex, but installs into project settings:
 
-- `SessionStart` hook: auto-registers the Claude Code session into broker context and publishes an initial `idle` work state
+- `SessionStart` hook: auto-registers the Claude Code session into broker context, publishes an initial `idle` work state, and launches the same lightweight background keeper so presence survives idle time and broker restarts
+- `SessionStart` hook: also launches the same realtime bridge daemon so websocket events land in local queue state immediately
 - `UserPromptSubmit` hook: silently re-registers after broker restart and injects only newly arrived broker inbox context before prompt submission
 
 ### Install the Claude Code bridge
@@ -537,13 +649,16 @@ This writes or updates:
 
 - `.claude/settings.json`
 - `~/.local/bin/intent-broker` unified command shim
-- `~/.intent-broker/claude-code/*.json` local cursor state
+- `~/.intent-broker/claude-code/*.json` local cursor state, realtime queue state, and helper metadata
 
 Notes:
 
 - this preserves unrelated Claude Code hooks and only replaces previous `intent-broker` hook entries
 - the default install is now quiet: it does not print `Running ... hook: intent-broker ...` on every prompt submit
 - hook-provided `session_id` takes precedence over inherited session env, so nested launcher environments do not accidentally collapse multiple clients onto one participant id
+- the background keeper keeps Claude Code presence online while the parent session stays open, and marks it offline after the parent exits
+- the realtime bridge quietly reconnects after broker restart and keeps appending websocket events into local queue state
+- Claude Code still consumes queued broker inbox context on the next prompt submit or explicit local inbox pull, not by silently acting on messages while idle
 - if you move this repo, run `npm run claude-code:install` again to refresh command paths
 
 ### Send from a real Claude Code session
@@ -557,13 +672,20 @@ intent-broker --tool claude-code register
 Send a task to another participant:
 
 ```bash
-intent-broker --tool claude-code send-task codex-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
+intent-broker --tool claude-code task codex-real-1 real-task-1 real-thread-1 "Please pick up the regression triage"
 ```
 
-Send a progress update:
+Send an informational progress update:
 
 ```bash
-intent-broker --tool claude-code send-progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+intent-broker --tool claude-code progress real-task-1 real-thread-1 "Still investigating the failing broker handoff"
+```
+
+Send a directed note or a blocking question:
+
+```bash
+intent-broker --tool claude-code note codex-real-1 real-task-1 real-thread-1 "Reconnect path is green locally"
+intent-broker --tool claude-code ask codex-real-1 real-task-1 real-thread-1 "Please review the handoff semantics"
 ```
 
 Check unread collaboration context:
@@ -667,7 +789,7 @@ See [MOBILE.md](./MOBILE.md).
 
 ### Messaging Platform Integration
 
-Use standalone adapter processes to connect Yunzhijia, Feishu, DingTalk, Telegram, Discord, and other platforms:
+The default user path is broker-managed channels via `intent-broker.config.json`. Standalone adapter processes still exist as an advanced mode for debugging or future multi-process deployments:
 
 ```text
 Messaging Platform → Platform Adapter → Intent Broker → Agents

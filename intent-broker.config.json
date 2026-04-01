@@ -1,0 +1,13 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4318,
+    "dbPath": "./.tmp/intent-broker.db"
+  },
+  "channels": {
+    "yunzhijia": {
+      "enabled": false,
+      "sendUrlEnv": "YZJ_SEND_URL"
+    }
+  }
+}

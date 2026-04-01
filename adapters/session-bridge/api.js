@@ -7,6 +7,13 @@ function jsonHeaders() {
   return { 'Content-Type': 'application/json' };
 }
 
+function normalizeDelivery(delivery, defaults) {
+  return {
+    semantic: delivery?.semantic ?? defaults.semantic,
+    source: delivery?.source ?? defaults.source
+  };
+}
+
 function shouldFallbackToCurl(error, url) {
   const parsedUrl = new URL(url);
   const isLoopback = parsedUrl.hostname === '127.0.0.1' || parsedUrl.hostname === 'localhost';
@@ -93,6 +100,17 @@ export async function updateWorkState(config, state, fetchImpl = fetch) {
   }, { fetchImpl });
 }
 
+export async function updatePresence(config, status, metadata = {}, fetchImpl = fetch) {
+  return requestJson(`${config.brokerUrl}/presence/${config.participantId}`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      status,
+      metadata
+    })
+  }, { fetchImpl });
+}
+
 export async function listWorkStates(config, filters = {}, fetchImpl = fetch) {
   const params = new URLSearchParams();
   if (filters.projectName) {
@@ -141,7 +159,35 @@ export async function sendTask(config, request, fetchImpl = fetch) {
       taskId: request.taskId,
       threadId: request.threadId,
       to: { mode: 'participant', participants: [request.toParticipantId] },
-      payload: { body: { summary: request.summary } }
+      payload: {
+        body: { summary: request.summary },
+        delivery: normalizeDelivery(request.delivery, {
+          semantic: 'actionable',
+          source: 'default'
+        })
+      }
+    })
+  }, { fetchImpl });
+}
+
+export async function sendAsk(config, request, fetchImpl = fetch) {
+  return requestJson(`${config.brokerUrl}/intents`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      intentId: request.intentId,
+      kind: 'ask_clarification',
+      fromParticipantId: config.participantId,
+      taskId: request.taskId,
+      threadId: request.threadId,
+      to: { mode: 'participant', participants: [request.toParticipantId] },
+      payload: {
+        body: { summary: request.summary },
+        delivery: normalizeDelivery(request.delivery, {
+          semantic: 'actionable',
+          source: 'default'
+        })
+      }
     })
   }, { fetchImpl });
 }
@@ -163,7 +209,14 @@ export async function sendProgress(config, request, fetchImpl = fetch) {
       taskId: request.taskId,
       threadId: request.threadId,
       to,
-      payload: { stage: 'in_progress', body: { summary: request.summary } }
+      payload: {
+        stage: 'in_progress',
+        body: { summary: request.summary },
+        delivery: normalizeDelivery(request.delivery, {
+          semantic: 'informational',
+          source: 'default'
+        })
+      }
     })
   }, { fetchImpl });
 }

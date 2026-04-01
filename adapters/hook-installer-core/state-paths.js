@@ -8,3 +8,11 @@ export function resolveToolStateRoot(toolName, { homeDir = os.homedir() } = {}) 
 export function resolveParticipantStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
   return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.json`);
 }
+
+export function resolveRealtimeQueueStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
+  return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.queue.json`);
+}
+
+export function resolveRealtimeBridgeStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
+  return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.bridge.json`);
+}

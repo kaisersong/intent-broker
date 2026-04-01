@@ -1,22 +1,24 @@
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { createBrokerService } from './broker/service.js';
-import { createServer } from './http/server.js';
+import { startBrokerApp } from './runtime/start-broker-app.js';
 
-const host = '127.0.0.1';
-const port = Number(process.env.PORT || '4318');
-const dbPath = resolve(process.env.INTENT_BROKER_DB || './.tmp/intent-broker.db');
+const app = await startBrokerApp();
 
-mkdirSync(dirname(dbPath), { recursive: true });
+let shuttingDown = false;
 
-const broker = createBrokerService({ dbPath });
-const server = createServer({ broker });
+async function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  try {
+    await app.close();
+  } finally {
+    process.exit(signal ? 0 : 1);
+  }
+}
 
-await server.listen(port, host);
-
-// Attach WebSocket server
-broker.attachWebSocket(server.raw());
-
-console.log(`intent-broker listening on http://${host}:${server.address().port}`);
-console.log(`intent-broker WebSocket: ws://${host}:${server.address().port}/ws`);
-console.log(`intent-broker db: ${dbPath}`);
+process.on('SIGINT', () => {
+  shutdown('SIGINT');
+});
+process.on('SIGTERM', () => {
+  shutdown('SIGTERM');
+});

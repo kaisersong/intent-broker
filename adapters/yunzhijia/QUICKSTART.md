@@ -19,36 +19,40 @@
    https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN
    ```
 
-### 2. 配置 Adapter
+### 2. 配置 broker 托管通道
 
 ```bash
-cd adapters/yunzhijia
-npm install
-cp .env.example .env
+cd /Users/song/projects/intent-broker
 ```
 
-编辑 `.env`：
-```bash
-BROKER_URL=http://127.0.0.1:4318
-YZJ_SEND_URL="https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN"
+编辑根目录下的 `intent-broker.config.json`，确认云之家已启用：
+
+```json
+{
+  "channels": {
+    "yunzhijia": {
+      "enabled": true,
+      "sendUrlEnv": "YZJ_SEND_URL"
+    }
+  }
+}
 ```
 
 不需要为云之家配置任何回调地址，也不需要暴露本地端口。
 
 ## 启动
 
-### 启动 Intent Broker
+### 启动 Intent Broker 与托管云之家通道
 
 ```bash
 cd /Users/song/projects/intent-broker
-npm start
+YZJ_SEND_URL="https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN" npm start
 ```
 
-### 启动云之家 Adapter
+如果你只是在调试 adapter，也可以继续单独启动：
 
 ```bash
-cd adapters/yunzhijia
-npm start
+YZJ_SEND_URL="https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN" node adapters/yunzhijia/index.js
 ```
 
 ## 测试
@@ -56,7 +60,7 @@ npm start
 ### 测试接收消息
 
 在云之家群聊中 @机器人 发送消息，应该能看到：
-- Adapter 收到消息并打印日志
+- broker 托管的 Yunzhijia channel 收到消息并打印日志
 - 消息转发到 Intent Broker
 - Broker 广播给其他 participants
 - 首次连接时 Yunzhijia 会先发送 `{"success":true,"cmd":"auth"}`，这是正常现象
@@ -105,17 +109,17 @@ curl -X POST http://127.0.0.1:4318/intents \
 
 ## 故障排查
 
-### Adapter 无法启动
+### Yunzhijia 通道无法启动
 
 - 检查 `YZJ_SEND_URL` 是否配置
-- 检查 `.env` 中的 `YZJ_SEND_URL` 是否保留双引号
-- 直接运行 `npm start`，不要手动 `source .env`
+- 检查 `intent-broker.config.json` 里 `channels.yunzhijia.enabled` 是否为 `true`
+- 检查 shell 中的 `YZJ_SEND_URL` 是否保留双引号
 
 ### 收不到云之家消息
 
-- 检查 adapter 日志中是否出现 `✓ Yunzhijia WebSocket connected`
+- 检查 broker 日志中是否出现 `✓ Yunzhijia WebSocket connected`
 - 检查是否能看到 `{"success":true,"cmd":"auth"}` 登录帧
-- 查看 Adapter 日志
+- 查看 broker 启动日志
 
 ### 发不出消息到云之家
 

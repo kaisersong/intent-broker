@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
   ackInbox as ackInboxDefault,
   pollInbox as pollInboxDefault,
@@ -14,7 +17,17 @@ import {
   loadCursorState as loadCursorStateDefault,
   saveCursorState as saveCursorStateDefault
 } from '../session-bridge/state.js';
+import {
+  ensureRealtimeBridge as ensureRealtimeBridgeDefault
+} from '../session-bridge/realtime-bridge.js';
+import {
+  ensureSessionKeeper as ensureSessionKeeperDefault,
+  resolveObservedParentPid
+} from '../session-bridge/session-keeper.js';
 import { resolveParticipantStatePath } from '../hook-installer-core/state-paths.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const cliPath = path.resolve(path.dirname(__filename), 'bin', 'codex-broker.js');
 
 function configFromHookInput(input, { env = process.env, cwd = process.cwd() } = {}) {
   const sessionId = input.session_id || env.CODEX_THREAD_ID || '';
@@ -46,6 +59,8 @@ export async function runSessionStartHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    ensureSessionKeeper = ensureSessionKeeperDefault,
+    ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
     registerParticipant = registerParticipantDefault,
     updateWorkState = updateWorkStateDefault,
@@ -57,6 +72,26 @@ export async function runSessionStartHook(
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
 
+    await ensureSessionKeeper({
+      toolName: 'codex',
+      cliPath,
+      config,
+      sessionId: input.session_id,
+      cwd,
+      env,
+      homeDir,
+      parentPid: resolveObservedParentPid()
+    }).catch(() => null);
+    await ensureRealtimeBridge({
+      toolName: 'codex',
+      cliPath,
+      config,
+      sessionId: input.session_id,
+      cwd,
+      env,
+      homeDir,
+      parentPid: resolveObservedParentPid()
+    }).catch(() => null);
     await registerParticipant(config);
     await updateWorkState(config, { status: 'idle', summary: null });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });

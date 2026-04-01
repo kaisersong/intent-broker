@@ -4,7 +4,7 @@
 
 本地优先的多 Agent 协作 broker。它不是聊天服务器，也不是工作流平台，而是一层可靠的协作协议中间层：先持久化事件，再进行投递；让 Codex、Claude Code、OpenCode 这类 agent 与人类参与方围绕同一任务对象协作。
 
-当前发布版本：`0.1.0`
+当前发布版本：`0.1.1`
 
 ## 设计思想
 
@@ -37,9 +37,13 @@
 - 全局唯一 participant alias，冲突时自动加数字后缀
 - 按项目查询 participant
 - 记录并查询 participant 当前工作状态
+- `task`、`ask`、`note`、`progress` 协作的默认投递语义
+- 基于 websocket 的在线 / 离线 presence 追踪
+- 新 client 上线 / 离线时的 presence 广播
 - `request_task`、`report_progress`、`request_approval`、`respond_approval`
 - 按 `participant`、`role`、`broadcast` 路由
 - inbox pull 与 ack cursor
+- 返回 `onlineRecipients`、`offlineRecipients`、`deliveredCount` 的实时投递反馈
 - `GET /tasks/:taskId`
 - `GET /threads/:threadId`
 - `GET /events/replay`
@@ -49,6 +53,7 @@
 - 云之家 adapter 的真实入站 / 出站联调
 - 面向真实 Codex 会话的非侵入 hook 接入
 - 面向真实 Claude Code 会话的非侵入 hook 接入
+- 带静默重连能力的 session 级 realtime bridge 本地队列
 
 ## 技术选型
 
@@ -72,9 +77,35 @@
 npm start
 ```
 
+现在 `npm start` 会默认读取 [intent-broker.config.json](./intent-broker.config.json)，并启动配置里声明的 broker 托管通道。对当前原型来说，这意味着云之家可以直接由 broker 托管，不需要用户再额外手动起一个 adapter 进程。
+
 默认监听：
 
 - `http://127.0.0.1:4318`
+
+推荐的托管通道配置：
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 4318,
+    "dbPath": "./.tmp/intent-broker.db"
+  },
+  "channels": {
+    "yunzhijia": {
+      "enabled": true,
+      "sendUrlEnv": "YZJ_SEND_URL"
+    }
+  }
+}
+```
+
+然后这样启动：
+
+```bash
+YZJ_SEND_URL='https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=YOUR_TOKEN' npm start
+```
 
 可以通过环境变量覆盖：
 
@@ -111,6 +142,7 @@ npm run verify:collaboration
 - SQLite store 的 append / inbox / ack / replay
 - broker service 路由与审批聚合
 - HTTP API 端到端流程
+- broker 配置加载与托管通道启动
 - Yunzhijia adapter 配置回归测试
 - Yunzhijia adapter 入站 / 出站集成测试
 
@@ -199,6 +231,25 @@ POST /intents
 }
 ```
 
+现在 broker 在接受 intent 后，还会返回路由结果和实时投递结果：
+
+```json
+{
+  "eventId": 71,
+  "recipients": ["codex.main", "claude.main"],
+  "onlineRecipients": ["codex.main"],
+  "offlineRecipients": ["claude.main"],
+  "deliveredCount": 1
+}
+```
+
+含义如下：
+
+- `recipients`：broker 语义路由后的目标
+- `onlineRecipients`：当前有活跃 websocket，已经实时收到事件的目标
+- `offlineRecipients`：只写入了 durable inbox，还需要之后自己 pull 的目标
+- `deliveredCount`：本次真正实时送达的目标数
+
 ### Inbox Pull / Ack
 
 ```http
@@ -250,6 +301,16 @@ GET /work-state?projectName=intent-broker
 GET /work-state?participantId=codex.main
 GET /work-state?status=blocked
 ```
+
+### Presence
+
+```http
+GET /presence
+GET /presence/:participantId
+POST /presence/:participantId
+```
+
+如果已注册 participant 连接或断开 broker websocket，presence 也会自动更新，并产生 `participant_presence_updated` 事件，让其他 agent 或消息通道能知道谁刚刚上线、谁已经离开。
 
 ### Approval Response
 
@@ -313,6 +374,11 @@ POST /participants/register
 
 现在 bridge 在注册时也会带上一个首选 alias 提示。最终 alias 由 broker 决定；如果撞名，broker 会自动追加数字后缀。
 
+现在 `SessionStart` 还会静默拉起两个后台辅助进程：
+
+- presence keeper：broker 重启后自动补注册，父会话退出后自动下线
+- realtime bridge：通过 websocket 收件，并把事件追加到 `~/.intent-broker/<tool>/` 下的本地队列
+
 ### 2. 优先用 inbox pull，不要假设必须常连
 
 最可靠的消费路径是主动拉 inbox：
@@ -336,6 +402,14 @@ POST /inbox/:participantId/ack
 - `eventId`：只给 broker 内部做重放、增量拉取、ack 和排障游标
 
 也就是说，agent 协作的主视角应该是 `taskId` 和 `threadId`，而不是裸 `eventId`。
+
+当前默认语义规则：
+
+- 人类消息通道 -> agent：actionable
+- agent 发 `task` / `ask`：actionable
+- agent 发 `note` / `progress` / reply：informational
+
+如果有特殊场景，仍然可以通过 `payload.delivery` 显式覆盖。
 
 ### 3. 先查询项目现状，再决定接不接活
 
@@ -379,6 +453,9 @@ GET /work-state?projectName=intent-broker
 - alias 改名会生成 broker 广播事件，让已连接 client 感知到变化
 - 云之家现在支持把 `@alias` 和 `@all` 精确解析成 broker 接收方
 - 云之家也支持通过 `/alias @旧名 新别名` 直接改 participant alias
+- 如果被 `@` 的目标当前离线，云之家会明确告诉人类“消息已写入 broker inbox，但没有实时送达”
+- 云之家支持 `@broker list` 和 `@broker list <projectName>`，直接在 channel 里查看在线/离线 agent
+- agent 的上线 / 离线也会主动广播到云之家 channel
 
 ### 5. 发送 intent，而不是只发聊天文本
 
@@ -413,11 +490,25 @@ GET /work-state?projectName=intent-broker
 }
 ```
 
+如果你关心的是“对方现在有没有马上看到”，不要只看 `recipients`，还要看 broker 返回的 `onlineRecipients` 和 `offlineRecipients`。路由成功只代表事件已持久化，不代表对方此刻在线。
+
+### 6. 让人类直接在 channel 里看协作现状
+
+在云之家里，人不应该为了确认该 `@谁`，还要再去查 broker 接口。
+
+可以直接发：
+
+- `@broker list`
+- `@broker list intent-broker`
+
+adapter 会在 channel 中回一条协作列表，按 `在线` / `离线` 分组，并带上 agent 的 alias、项目名和最近 work-state 摘要。
+
 ## Codex 接入
 
 当前最适合 Codex 的方式是“hook + skill”的非侵入接入，不改 Codex 原本启动方式，只是在本地安装两个 hook 和一个 skill：
 
-- `SessionStart` hook：真实 Codex 会话启动或恢复时，静默向 broker 自动注册当前会话，记录当前 `projectName`，并上报一个初始 `idle` 工作状态。
+- `SessionStart` hook：真实 Codex 会话启动或恢复时，静默向 broker 自动注册当前会话，记录当前 `projectName`，上报一个初始 `idle` 工作状态，并拉起一个轻量后台 keeper，在 TUI 打开期间持续保活 presence。
+- `SessionStart` hook：同时拉起 realtime bridge 守护进程，通过 websocket 收件并立即写入本地队列状态。
 - `UserPromptSubmit` hook：真实用户提交 prompt 前，会静默重注册当前会话，再检查是否有新到达的 broker 事件；只有确实存在待处理协作上下文时，才把它们注入当前 turn。
 - `intent-broker` skill：给当前 Codex 会话一个明确的出站入口，用来发任务和发进度。
 
@@ -426,7 +517,8 @@ GET /work-state?projectName=intent-broker
 - 不要手动注册 Codex 会话
 - 直接在目标项目目录里打开 Codex
 - 让 `SessionStart` 在会话启动时自动完成静默注册
-- 让 `UserPromptSubmit` 在 broker 重启后自动恢复注册，并且只在存在新协作消息时做 inbox 注入
+- 让后台 keeper 在会话空闲时也维持在线状态，并在 broker 重启后自动补注册
+- 让 `UserPromptSubmit` 只在下一次真实 prompt 提交时，按需把新协作上下文注入进来
 
 ### 安装 Codex 桥接
 
@@ -447,7 +539,7 @@ node adapters/codex-plugin/bin/codex-broker.js install --verbose-hooks
 - `~/.codex/hooks.json`
 - `~/.codex/skills/intent-broker`（符号链接）
 - `~/.local/bin/intent-broker` 统一命令 shim
-- `~/.intent-broker/codex/*.json` 本地 cursor 状态
+- `~/.intent-broker/codex/*.json` 本地 cursor 状态、realtime 队列状态和辅助进程元数据
 
 现在 Codex 桥接在注册时会默认使用当前工作目录名作为 `projectName`。如果你想手动指定，可以设置 `PROJECT_NAME`。
 
@@ -458,6 +550,9 @@ node adapters/codex-plugin/bin/codex-broker.js install --verbose-hooks
 - 从本地 Codex 源码来看，生命周期 hooks 目前在 Windows 上还不支持，所以这条路径当前主要面向 macOS / Linux。
 - 从当前真实 Codex 行为看，`SessionStart` 会在会话真正进入第一轮 turn 或 resume 流程时触发，而不是 TUI 刚画出来就立即触发。
 - 现在 hook 输入里的 `session_id` 会优先于继承下来的 `CODEX_THREAD_ID`，所以即使你在一个 agent 环境里再拉起新的 Codex，也不会错误复用父会话的 participant id。
+- 后台 keeper 会在 Codex 父进程仍存活时持续保活 presence，在父进程退出后把 participant 标记为离线。
+- realtime bridge 会在 broker 重启后静默重连，并持续把 websocket 事件写入本地队列状态。
+- 这并不意味着 Codex 已经变成“完全实时收件”。broker 新消息仍然会在下一次 prompt submit，或你显式执行本地 inbox pull 时进入会话上下文。
 - 如果你把本仓库挪了位置，需要重新执行一次 `npm run codex:install`，刷新 hook 里的绝对路径。
 
 ### 在真实 Codex 会话里主动发消息
@@ -471,13 +566,20 @@ intent-broker register
 给另一个参与者发任务：
 
 ```bash
-intent-broker send-task claude-real-1 real-task-1 real-thread-1 "请接手这个回归问题排查"
+intent-broker task claude-real-1 real-task-1 real-thread-1 "请接手这个回归问题排查"
 ```
 
-发送进度更新：
+发送一条信息型进度更新：
 
 ```bash
-intent-broker send-progress real-task-1 real-thread-1 "还在排查 broker handoff 失败原因"
+intent-broker progress real-task-1 real-thread-1 "还在排查 broker handoff 失败原因"
+```
+
+发送定向通知或阻塞性提问：
+
+```bash
+intent-broker note claude-real-1 real-task-1 real-thread-1 "本地队列已经持久化好了"
+intent-broker ask claude-real-1 real-task-1 real-thread-1 "请确认重试语义是否符合预期"
 ```
 
 直接查看未读协作消息，不再手查 broker：
@@ -504,6 +606,15 @@ intent-broker reply "收到，开始处理"
 intent-broker reply @claude2 "请看一下最新补丁"
 ```
 
+如果你想直接发带语义的协作命令，不需要自己写 HTTP：
+
+```bash
+intent-broker task claude2 real-task-1 real-thread-1 "接手失败的 smoke test"
+intent-broker ask claude2 real-task-1 real-thread-1 "这个冲突要怎么决策"
+intent-broker note claude2 real-task-1 real-thread-1 "我已经 rebase 并提交了队列修复"
+intent-broker progress real-task-1 real-thread-1 "还在排查重连边界"
+```
+
 ### 这套接入的意义
 
 安装后，一个已经打开的真实 Codex 会话就能比较自然地参与多智能体通信：
@@ -516,7 +627,8 @@ intent-broker reply @claude2 "请看一下最新补丁"
 
 Claude Code 现在和 Codex 一样，也采用非侵入的 hook 桥接模式，只是安装位置放在项目级设置里：
 
-- `SessionStart` hook：自动把 Claude Code 会话注册进 broker，并上报一个初始 `idle` 工作状态
+- `SessionStart` hook：自动把 Claude Code 会话注册进 broker，上报一个初始 `idle` 工作状态，并拉起同样的轻量后台 keeper，让空闲期和 broker 重启期间的 presence 也能恢复
+- `SessionStart` hook：同时拉起 realtime bridge 守护进程，让 websocket 事件立即落到本地队列状态
 - `UserPromptSubmit` hook：broker 重启后会静默重注册，并且只在确实有新到达 broker inbox 上下文时，才在 prompt 提交前注入
 
 ### 安装 Claude Code 桥接
@@ -537,13 +649,16 @@ node adapters/claude-code-plugin/bin/claude-code-broker.js install --verbose-hoo
 
 - `.claude/settings.json`
 - `~/.local/bin/intent-broker` 统一命令 shim
-- `~/.intent-broker/claude-code/*.json` 本地 cursor 状态
+- `~/.intent-broker/claude-code/*.json` 本地 cursor 状态、realtime 队列状态与辅助进程元数据
 
 说明：
 
 - 会保留你已有的其他 Claude Code hooks，只替换旧的 `intent-broker` hook 项
 - 默认安装现在是静默的，不会在每次发消息时都打印 `Running ... hook: intent-broker ...`
 - 现在 hook 输入里的 `session_id` 会优先于继承下来的 session 环境变量，避免嵌套拉起时多个客户端错误共用同一个 participant id
+- 后台 keeper 会在 Claude Code 父会话仍存活时维持在线状态，退出后再自动标记离线
+- realtime bridge 会在 broker 重启后静默重连，并持续把 websocket 事件写入本地队列状态
+- Claude Code 仍然是在下一次 prompt submit，或你显式执行本地 inbox pull 时，才消费已排队的 broker 上下文，而不是空闲时静默自动执行
 - 如果你把本仓库挪了位置，需要重新执行一次 `npm run claude-code:install`，刷新命令路径
 
 ### 在真实 Claude Code 会话里主动发消息
@@ -557,13 +672,20 @@ intent-broker --tool claude-code register
 给另一个参与者发任务：
 
 ```bash
-intent-broker --tool claude-code send-task codex-real-1 real-task-1 real-thread-1 "请接手这个回归问题排查"
+intent-broker --tool claude-code task codex-real-1 real-task-1 real-thread-1 "请接手这个回归问题排查"
 ```
 
-发送进度更新：
+发送一条信息型进度更新：
 
 ```bash
-intent-broker --tool claude-code send-progress real-task-1 real-thread-1 "还在排查 broker handoff 失败原因"
+intent-broker --tool claude-code progress real-task-1 real-thread-1 "还在排查 broker handoff 失败原因"
+```
+
+发送定向通知或阻塞性提问：
+
+```bash
+intent-broker --tool claude-code note codex-real-1 real-task-1 real-thread-1 "重连路径本地已验证通过"
+intent-broker --tool claude-code ask codex-real-1 real-task-1 real-thread-1 "请帮我确认交接语义"
 ```
 
 直接查看未读协作消息：
@@ -667,7 +789,7 @@ tests/
 
 ### 消息平台集成
 
-通过独立的 adapter 进程接入云之家、飞书、钉钉、Telegram、Discord 等平台：
+默认用户路径现在是通过 `intent-broker.config.json` 让 broker 托管通道。独立 adapter 进程仍然保留，作为调试或未来多进程部署的高级模式：
 
 ```text
 消息平台 → Platform Adapter → Intent Broker → Agents

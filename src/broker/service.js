@@ -23,12 +23,34 @@ function toReducerEvent(event) {
   };
 }
 
-export function createBrokerService({ dbPath }) {
+const ACTIONABLE_INTENT_KINDS = new Set([
+  'request_task',
+  'ask_clarification',
+  'request_approval'
+]);
+
+function deriveDeliverySemantic({ kind, fromParticipant }) {
+  if (fromParticipant?.kind === 'human') {
+    return 'actionable';
+  }
+
+  if (ACTIONABLE_INTENT_KINDS.has(kind)) {
+    return 'actionable';
+  }
+
+  return 'informational';
+}
+
+export function createBrokerService({
+  dbPath,
+  presenceTimeoutMs = 600000,
+  presenceSweepIntervalMs = 5000
+}) {
   const participants = new Map();
   const aliases = new Map();
   const workStates = new Map();
   const store = createEventStore({ dbPath });
-  const presence = createPresenceTracker();
+  const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs });
   const wsNotifier = createWebSocketNotifier();
 
   function resolveRecipients(fromParticipantId, to = { mode: 'broadcast' }) {
@@ -162,9 +184,171 @@ export function createBrokerService({ dbPath }) {
     };
   }
 
+  function formatPresenceSummary(participant, status) {
+    const subject = participant.alias ? `@${participant.alias}` : participant.participantId;
+    const projectName = participant.context?.projectName ? `，项目 ${participant.context.projectName}` : '';
+    if (status === 'online') {
+      return `${subject} 已上线${projectName}`;
+    }
+    if (status === 'offline') {
+      return `${subject} 已离线${projectName}`;
+    }
+    return `${subject} 状态更新为 ${status}${projectName}`;
+  }
+
+  function sendIntentInternal(input) {
+    const recipients = resolveRecipients(input.fromParticipantId, input.to);
+    const sender = participants.get(input.fromParticipantId);
+    const delivery = {
+      semantic: input.payload?.delivery?.semantic ?? deriveDeliverySemantic({
+        kind: input.kind,
+        fromParticipant: sender
+      }),
+      source: input.payload?.delivery?.source ?? 'default'
+    };
+    const payload = {
+      ...input.payload,
+      participantId: input.payload?.participantId ?? input.fromParticipantId,
+      delivery
+    };
+    const event = store.appendIntent({
+      intentId: input.intentId,
+      kind: input.kind,
+      fromParticipantId: input.fromParticipantId,
+      taskId: input.taskId,
+      threadId: input.threadId,
+      payload,
+      recipients
+    });
+
+    const onlineRecipients = [];
+    const offlineRecipients = [];
+
+    for (const recipientId of recipients) {
+      const recipient = participants.get(recipientId);
+      const notification = recipient?.kind === 'mobile'
+        ? formatMobileNotification(event)
+        : { type: 'new_intent', event };
+      const sent = wsNotifier.notify(recipientId, notification);
+      if (sent > 0) {
+        onlineRecipients.push(recipientId);
+      } else {
+        offlineRecipients.push(recipientId);
+      }
+    }
+
+    return {
+      eventId: event.eventId,
+      recipients,
+      onlineRecipients,
+      offlineRecipients,
+      deliveredCount: onlineRecipients.length
+    };
+  }
+
+  function broadcastPresenceChange(participantId, status, previousStatus) {
+    const participant = participants.get(participantId);
+    if (!participant || previousStatus === status) {
+      return;
+    }
+
+    const recipients = [...participants.keys()].filter((id) => id !== participantId);
+    if (!recipients.length) {
+      return;
+    }
+
+    sendIntentInternal({
+      intentId: `participant-presence-${participantId}-${status}-${Date.now()}`,
+      kind: 'participant_presence_updated',
+      fromParticipantId: 'broker.system',
+      taskId: null,
+      threadId: null,
+      to: { mode: 'participant', participants: recipients },
+      payload: {
+        participantId,
+        alias: participant.alias ?? null,
+        status,
+        previousStatus,
+        participantKind: participant.kind,
+        projectName: participant.context?.projectName ?? null,
+        body: {
+          summary: formatPresenceSummary(participant, status)
+        }
+      }
+    });
+  }
+
+  function setPresence(participantId, status, metadata = {}) {
+    const previousEffectiveStatus = presence.getPresence(participantId)?.status ?? 'offline';
+    const previousStoredStatus = presence.peekPresence(participantId)?.status ?? 'offline';
+    const previousStatus = status === 'offline' ? previousStoredStatus : previousEffectiveStatus;
+    const next = presence.updatePresence(participantId, status, metadata);
+    broadcastPresenceChange(participantId, next.status, previousStatus);
+    return next;
+  }
+
+  function sweepStalePresence() {
+    for (const item of presence.listPresence()) {
+      const raw = presence.peekPresence(item.participantId);
+      if (!raw) {
+        continue;
+      }
+
+      if (item.status === 'offline' && raw.status !== 'offline') {
+        setPresence(item.participantId, 'offline', {
+          ...raw.metadata,
+          reason: 'timeout'
+        });
+      }
+    }
+  }
+
+  const presenceSweepTimer = presenceSweepIntervalMs > 0
+    ? setInterval(sweepStalePresence, presenceSweepIntervalMs)
+    : null;
+  presenceSweepTimer?.unref?.();
+
+  function formatMobileNotification(event) {
+    const notificationMap = {
+      request_approval: {
+        title: '需要审批',
+        body: event.payload.body?.summary || '有新的审批请求',
+        action: 'approve',
+        data: { approvalId: event.payload.approvalId, taskId: event.taskId }
+      },
+      ask_clarification: {
+        title: '需要澄清',
+        body: event.payload.body?.summary || '有问题需要回答',
+        action: 'clarify',
+        data: { taskId: event.taskId, threadId: event.threadId }
+      },
+      request_task: {
+        title: '新任务',
+        body: event.payload.body?.summary || '收到新任务',
+        action: 'view_task',
+        data: { taskId: event.taskId }
+      }
+    };
+
+    const notification = notificationMap[event.kind] || {
+      title: '新消息',
+      body: event.payload.body?.summary || event.kind,
+      action: 'view',
+      data: { eventId: event.eventId }
+    };
+
+    return {
+      type: 'mobile_notification',
+      eventId: event.eventId,
+      timestamp: event.timestamp,
+      ...notification
+    };
+  }
+
   return {
     registerParticipant(participant) {
       const existing = participants.get(participant.participantId);
+      const preferredAlias = existing?.alias || participant.alias;
       const normalized = {
         participantId: participant.participantId,
         kind: participant.kind,
@@ -174,13 +358,18 @@ export function createBrokerService({ dbPath }) {
           participant.participantId,
           deriveAliasBase({
             ...participant,
-            alias: participant.alias || existing?.alias
+            alias: preferredAlias
           }),
           existing?.alias || null
         ),
         context: participant.context || {}
       };
       participants.set(normalized.participantId, normalized);
+      setPresence(normalized.participantId, 'online', {
+        source: 'registration',
+        kind: normalized.kind,
+        projectName: normalized.context?.projectName ?? null
+      });
       return normalized;
     },
     listParticipants({ projectName } = {}) {
@@ -226,7 +415,7 @@ export function createBrokerService({ dbPath }) {
       participant.alias = nextAlias;
 
       if (previousAlias !== nextAlias) {
-        this.sendIntent({
+        sendIntentInternal({
           intentId: `participant-alias-updated-${participantId}-${Date.now()}`,
           kind: 'participant_alias_updated',
           fromParticipantId: 'broker.system',
@@ -249,6 +438,11 @@ export function createBrokerService({ dbPath }) {
     updateWorkState(participantId, state) {
       const normalized = normalizeWorkState(participantId, state);
       workStates.set(participantId, normalized);
+      setPresence(participantId, 'online', {
+        source: 'work-state',
+        status: normalized.status,
+        projectName: normalized.projectName
+      });
       return normalized;
     },
     getWorkState(participantId) {
@@ -269,31 +463,7 @@ export function createBrokerService({ dbPath }) {
       });
     },
     sendIntent(input) {
-      const recipients = resolveRecipients(input.fromParticipantId, input.to);
-      const payload = {
-        ...input.payload,
-        participantId: input.payload?.participantId ?? input.fromParticipantId
-      };
-      const event = store.appendIntent({
-        intentId: input.intentId,
-        kind: input.kind,
-        fromParticipantId: input.fromParticipantId,
-        taskId: input.taskId,
-        threadId: input.threadId,
-        payload,
-        recipients
-      });
-
-      // Notify recipients via WebSocket
-      for (const recipientId of recipients) {
-        const recipient = participants.get(recipientId);
-        const notification = recipient?.kind === 'mobile'
-          ? this.formatMobileNotification(event)
-          : { type: 'new_intent', event };
-        wsNotifier.notify(recipientId, notification);
-      }
-
-      return { eventId: event.eventId, recipients };
+      return sendIntentInternal(input);
     },
     readInbox(participantId, options) {
       const inbox = store.readInbox(participantId, options);
@@ -318,7 +488,7 @@ export function createBrokerService({ dbPath }) {
       const task = this.getTaskView(taskId);
       const assignees = task?.assignees || [];
 
-      return this.sendIntent({
+      return sendIntentInternal({
         intentId: `approval-${approvalId}-${decision}-${Date.now()}`,
         kind: 'respond_approval',
         fromParticipantId,
@@ -346,7 +516,7 @@ export function createBrokerService({ dbPath }) {
       };
     },
     updatePresence(participantId, status, metadata) {
-      return presence.updatePresence(participantId, status, metadata);
+      return setPresence(participantId, status, metadata);
     },
     getPresence(participantId) {
       return presence.getPresence(participantId);
@@ -354,47 +524,33 @@ export function createBrokerService({ dbPath }) {
     listPresence() {
       return presence.listPresence();
     },
+    sweepPresence() {
+      sweepStalePresence();
+    },
     attachWebSocket(httpServer) {
-      wsNotifier.attachToServer(httpServer);
+      wsNotifier.attachToServer(httpServer, {
+        onConnect: ({ participantId, connectionCount }) => {
+          setPresence(participantId, 'online', {
+            transport: 'websocket',
+            connectionCount
+          });
+        },
+        onDisconnect: ({ participantId, connectionCount }) => {
+          setPresence(participantId, 'offline', {
+            transport: 'websocket',
+            connectionCount
+          });
+        }
+      });
     },
     getWebSocketNotifier() {
       return wsNotifier;
     },
-    formatMobileNotification(event) {
-      const notificationMap = {
-        request_approval: {
-          title: '需要审批',
-          body: event.payload.body?.summary || '有新的审批请求',
-          action: 'approve',
-          data: { approvalId: event.payload.approvalId, taskId: event.taskId }
-        },
-        ask_clarification: {
-          title: '需要澄清',
-          body: event.payload.body?.summary || '有问题需要回答',
-          action: 'clarify',
-          data: { taskId: event.taskId, threadId: event.threadId }
-        },
-        request_task: {
-          title: '新任务',
-          body: event.payload.body?.summary || '收到新任务',
-          action: 'view_task',
-          data: { taskId: event.taskId }
-        }
-      };
-
-      const notification = notificationMap[event.kind] || {
-        title: '新消息',
-        body: event.kind,
-        action: 'view',
-        data: { eventId: event.eventId }
-      };
-
-      return {
-        type: 'mobile_notification',
-        eventId: event.eventId,
-        timestamp: event.timestamp,
-        ...notification
-      };
+    close() {
+      if (presenceSweepTimer) {
+        clearInterval(presenceSweepTimer);
+      }
+      wsNotifier.close();
     }
   };
 }

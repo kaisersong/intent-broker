@@ -9,7 +9,7 @@ export function createWebSocketNotifier() {
   let wss = null;
 
   return {
-    attachToServer(httpServer) {
+    attachToServer(httpServer, { onConnect, onDisconnect } = {}) {
       wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
       wss.on('connection', (ws, req) => {
@@ -25,6 +25,10 @@ export function createWebSocketNotifier() {
           connections.set(participantId, new Set());
         }
         connections.get(participantId).add(ws);
+        onConnect?.({
+          participantId,
+          connectionCount: connections.get(participantId).size
+        });
 
         ws.on('close', () => {
           const sockets = connections.get(participantId);
@@ -34,6 +38,10 @@ export function createWebSocketNotifier() {
               connections.delete(participantId);
             }
           }
+          onDisconnect?.({
+            participantId,
+            connectionCount: connections.get(participantId)?.size ?? 0
+          });
         });
 
         ws.send(JSON.stringify({ type: 'connected', participantId }));
@@ -77,6 +85,17 @@ export function createWebSocketNotifier() {
     },
 
     close() {
+      for (const sockets of connections.values()) {
+        for (const ws of sockets) {
+          try {
+            ws.terminate();
+          } catch {
+            // best effort during shutdown
+          }
+        }
+      }
+      connections.clear();
+
       if (wss) {
         wss.close();
       }

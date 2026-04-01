@@ -159,9 +159,16 @@ export class YunzhijiaAdapter {
         }
       })
     });
+    const result = await res.json().catch(() => ({}));
 
     if (res.ok) {
       console.log(`✓ Sent intent to broker`);
+      await this.sendOfflineDeliveryHint({
+        yzjUserId,
+        replyMsgId: msgId,
+        delivery: result,
+        routing
+      });
     } else {
       console.error(`❌ Failed to send intent: ${res.status}`);
     }
@@ -179,7 +186,26 @@ export class YunzhijiaAdapter {
     };
   }
 
+  parseBrokerCommand(text) {
+    const match = String(text || '').trim().match(/^(?:@broker|\/broker)\s+list(?:\s+(.+))?$/i);
+    if (!match) {
+      return null;
+    }
+
+    return {
+      action: 'list',
+      projectName: match[1]?.trim() || null
+    };
+  }
+
   async handleCommand(text, { yzjUserId, msgId } = {}) {
+    const brokerCommand = this.parseBrokerCommand(text);
+    if (brokerCommand?.action === 'list') {
+      const message = await this.renderBrokerList(brokerCommand.projectName);
+      await this.sendToChannel(message, msgId);
+      return true;
+    }
+
     const aliasRename = this.parseAliasRenameCommand(text);
     if (!aliasRename) {
       return false;
@@ -236,10 +262,14 @@ export class YunzhijiaAdapter {
       const recipients = participants.participants
         .filter((participant) => participant.kind === 'agent')
         .map((participant) => participant.participantId);
+      const participantsById = Object.fromEntries(
+        participants.participants.map((participant) => [participant.participantId, participant])
+      );
 
       return {
         to: { mode: 'participant', participants: recipients },
-        summary: mentions.summary || text
+        summary: mentions.summary || text,
+        participantsById
       };
     }
 
@@ -267,8 +297,97 @@ export class YunzhijiaAdapter {
         mode: 'participant',
         participants: resolved.participants.map((participant) => participant.participantId)
       },
-      summary: mentions.summary || text
+      summary: mentions.summary || text,
+      participantsById: Object.fromEntries(
+        resolved.participants.map((participant) => [participant.participantId, participant])
+      )
     };
+  }
+
+  async renderBrokerList(projectName = null) {
+    const participantsSuffix = projectName ? `?projectName=${encodeURIComponent(projectName)}` : '';
+    const workStateSuffix = projectName ? `?projectName=${encodeURIComponent(projectName)}` : '';
+    const [{ participants }, { participants: presenceItems }, { items: workStates }] = await Promise.all([
+      fetch(`${this.brokerUrl}/participants${participantsSuffix}`).then((res) => res.json()),
+      fetch(`${this.brokerUrl}/presence`).then((res) => res.json()),
+      fetch(`${this.brokerUrl}/work-state${workStateSuffix}`).then((res) => res.json())
+    ]);
+
+    const agentParticipants = participants.filter((participant) => participant.kind === 'agent');
+    const presenceById = new Map(
+      (presenceItems || []).map((item) => [item.participantId, item])
+    );
+    const workStateById = new Map(
+      (workStates || []).map((item) => [item.participantId, item])
+    );
+
+    const online = [];
+    const offline = [];
+
+    for (const participant of agentParticipants) {
+      const presence = presenceById.get(participant.participantId);
+      const workState = workStateById.get(participant.participantId);
+      const status = presence?.status === 'online' ? 'online' : 'offline';
+      const line = this.formatBrokerListLine(participant, workState);
+      if (status === 'online') {
+        online.push(line);
+      } else {
+        offline.push(line);
+      }
+    }
+
+    const lines = [
+      projectName ? `协作列表（项目: ${projectName}）` : '协作列表',
+      `在线 (${online.length})`,
+      ...(online.length ? online : ['- 无']),
+      `离线 (${offline.length})`,
+      ...(offline.length ? offline : ['- 无'])
+    ];
+
+    return lines.join('\n');
+  }
+
+  formatBrokerListLine(participant, workState) {
+    const alias = participant.alias ? `@${participant.alias}` : participant.participantId;
+    const project = participant.context?.projectName || '-';
+    const status = workState?.status || 'idle';
+    const summary = workState?.summary ? ` | ${workState.summary}` : '';
+    return `- ${alias} | ${project} | ${status}${summary}`;
+  }
+
+  async sendOfflineDeliveryHint({ yzjUserId, replyMsgId, delivery, routing }) {
+    const offlineRecipients = delivery?.offlineRecipients || [];
+    if (!offlineRecipients.length) {
+      return;
+    }
+
+    const { participants: presenceItems = [] } = await fetch(`${this.brokerUrl}/presence`).then((res) => res.json());
+    const presenceById = new Map(presenceItems.map((item) => [item.participantId, item]));
+
+    const onlineButDeferred = [];
+    const offline = [];
+
+    for (const participantId of offlineRecipients) {
+      const participant = routing?.participantsById?.[participantId];
+      const label = participant?.alias ? `@${participant.alias}` : participantId;
+      if (presenceById.get(participantId)?.status === 'online') {
+        onlineButDeferred.push(label);
+      } else {
+        offline.push(label);
+      }
+    }
+
+    const hints = [];
+    if (onlineButDeferred.length) {
+      hints.push(`消息已写入 broker inbox，${onlineButDeferred.join('、')} 会话在线，但当前不是实时收件模式，需要目标会话下一次本地交互时才会看到。`);
+    }
+    if (offline.length) {
+      hints.push(`消息已写入 broker inbox，但 ${offline.join('、')} 当前不在线，恢复后才能看到。`);
+    }
+
+    for (const hint of hints) {
+      await this.sendToYunzhijia(yzjUserId, hint, replyMsgId);
+    }
   }
 
   async registerUser(participantId) {
@@ -333,6 +452,13 @@ export class YunzhijiaAdapter {
     const normalizedEvent = this.unwrapBrokerEvent(event);
     if (normalizedEvent.fromParticipantId?.startsWith('human.yzj_')) return;
 
+    if (normalizedEvent.kind === 'participant_presence_updated') {
+      if (normalizedEvent.payload?.participantKind === 'agent') {
+        await this.sendToChannel(this.formatMessage(normalizedEvent));
+      }
+      return;
+    }
+
     const targetParticipantId = normalizedEvent.fromParticipantId;
     if (!targetParticipantId) return;
 
@@ -358,7 +484,8 @@ export class YunzhijiaAdapter {
       request_approval: summary ? `【需要审批】${summary}` : '【需要审批】',
       ask_clarification: summary ? `【需要回答】${summary}` : '【需要回答】',
       report_progress: summary ? `【进度】${summary}` : '【进度】',
-      participant_alias_updated: summary ? `【别名更新】${summary}` : '【别名更新】'
+      participant_alias_updated: summary ? `【别名更新】${summary}` : '【别名更新】',
+      participant_presence_updated: summary ? `【协作状态】${summary}` : '【协作状态】'
     };
     return templates[event.kind] || summary || event.kind;
   }
@@ -380,30 +507,68 @@ export class YunzhijiaAdapter {
       }]
     };
 
-    if (replyMsgId) {
-      payload.param = {
-        replyMsgId,
-        replyTitle: '',
-        isReference: true,
-        replySummary: message.substring(0, 50)
-      };
-      payload.paramType = 3;
+    this.attachReplyMetadata(payload, message, replyMsgId);
+    await this.postYunzhijiaPayload(payload);
+    console.log(`✓ Sent message to Yunzhijia user ${yzjUserId}`);
+  }
+
+  async sendToChannel(message, replyMsgId) {
+    const payload = {
+      msgtype: 2,
+      content: message
+    };
+
+    this.attachReplyMetadata(payload, message, replyMsgId);
+    await this.postYunzhijiaPayload(payload);
+    console.log('✓ Sent message to Yunzhijia channel');
+  }
+
+  attachReplyMetadata(payload, message, replyMsgId) {
+    if (!replyMsgId) {
+      return;
     }
 
+    payload.param = {
+      replyMsgId,
+      replyTitle: '',
+      isReference: true,
+      replySummary: message.substring(0, 50)
+    };
+    payload.paramType = 3;
+  }
+
+  async postYunzhijiaPayload(payload) {
     await fetch(this.sendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    console.log(`✓ Sent message to Yunzhijia user ${yzjUserId}`);
   }
 
   stop() {
     this.stopped = true;
-    this.brokerWs?.close();
-    this.yzjWs?.close();
+    this.closeSocket(this.brokerWs);
+    this.closeSocket(this.yzjWs);
     for (const ws of this.userWebSockets.values()) {
-      ws.close();
+      this.closeSocket(ws);
+    }
+  }
+
+  closeSocket(ws) {
+    if (!ws) {
+      return;
+    }
+
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        return;
+      }
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.terminate();
+      }
+    } catch (error) {
+      console.error('Failed to close WebSocket cleanly:', error);
     }
   }
 }

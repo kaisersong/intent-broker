@@ -99,6 +99,16 @@ async function runCommand({
 }
 
 function spawnBroker({ repoRoot, port, dbPath, logDir }) {
+  const configPath = join(logDir, 'intent-broker.smoke.config.json');
+  const localConfigPath = join(logDir, 'intent-broker.smoke.local.json');
+  writeJsonLog(logDir, 'intent-broker.smoke.config.json', {
+    server: {
+      host: '127.0.0.1',
+      port,
+      dbPath
+    },
+    channels: {}
+  });
   const stdoutChunks = [];
   const stderrChunks = [];
   const child = spawn(process.execPath, ['--experimental-sqlite', 'src/cli.js'], {
@@ -106,7 +116,9 @@ function spawnBroker({ repoRoot, port, dbPath, logDir }) {
     env: {
       ...process.env,
       PORT: String(port),
-      INTENT_BROKER_DB: dbPath
+      INTENT_BROKER_DB: dbPath,
+      INTENT_BROKER_CONFIG: configPath,
+      INTENT_BROKER_LOCAL_CONFIG: localConfigPath
     }
   });
 

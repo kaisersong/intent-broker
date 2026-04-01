@@ -7,6 +7,7 @@ import {
   pollInbox,
   registerParticipant,
   resolveParticipantAliases,
+  sendAsk as sendAskIntent,
   updateWorkState,
   sendProgress as sendProgressIntent,
   sendTask as sendTaskIntent
@@ -25,6 +26,10 @@ function usage() {
   node adapters/session-bridge/cli.js inbox [toolName]
   node adapters/session-bridge/cli.js who [toolName]
   node adapters/session-bridge/cli.js reply [toolName] [@alias] <summary>
+  node adapters/session-bridge/cli.js task [toolName] <toParticipantId> <taskId> <threadId> <summary>
+  node adapters/session-bridge/cli.js ask [toolName] <toParticipantId> <taskId> <threadId> <summary>
+  node adapters/session-bridge/cli.js note [toolName] <toParticipantId> <taskId> <threadId> <summary>
+  node adapters/session-bridge/cli.js progress [toolName] <taskId> <threadId> <summary>
   node adapters/session-bridge/cli.js send-task [toolName] <toParticipantId> <taskId> <threadId> <summary>
   node adapters/session-bridge/cli.js send-progress [toolName] <taskId> <threadId> <summary>
   node adapters/session-bridge/cli.js set-work-state [toolName] <status> [taskId] [threadId] [summary]`);
@@ -58,6 +63,23 @@ async function sendTask(config, toParticipantId, taskId, threadId, summary) {
   );
 }
 
+async function sendAsk(config, toParticipantId, taskId, threadId, summary) {
+  console.log(
+    JSON.stringify(
+      await sendAskIntent(config, {
+        intentId: `${config.participantId}-ask-${Date.now()}`,
+        toParticipantId,
+        taskId,
+        threadId,
+        summary,
+        delivery: { semantic: 'actionable', source: 'explicit' }
+      }),
+      null,
+      2
+    )
+  );
+}
+
 async function sendProgress(config, taskId, threadId, summary) {
   console.log(
     JSON.stringify(
@@ -66,6 +88,23 @@ async function sendProgress(config, taskId, threadId, summary) {
         taskId,
         threadId,
         summary
+      }),
+      null,
+      2
+    )
+  );
+}
+
+async function sendNote(config, toParticipantId, taskId, threadId, summary) {
+  console.log(
+    JSON.stringify(
+      await sendProgressIntent(config, {
+        intentId: `${config.participantId}-note-${Date.now()}`,
+        toParticipantId,
+        taskId,
+        threadId,
+        summary,
+        delivery: { semantic: 'informational', source: 'explicit' }
       }),
       null,
       2
@@ -129,6 +168,18 @@ switch (command) {
       resolveParticipantAliases,
       sendProgress: sendProgressIntent
     });
+    break;
+  case 'task':
+    await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));
+    break;
+  case 'ask':
+    await sendAsk(config, args[0], args[1], args[2], args.slice(3).join(' '));
+    break;
+  case 'note':
+    await sendNote(config, args[0], args[1], args[2], args.slice(3).join(' '));
+    break;
+  case 'progress':
+    await sendProgress(config, args[0], args[1], args.slice(2).join(' '));
     break;
   case 'send-task':
     await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));

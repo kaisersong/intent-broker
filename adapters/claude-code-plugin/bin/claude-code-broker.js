@@ -9,6 +9,7 @@ import {
 } from '../../hook-installer-core/command-shim.js';
 import {
   registerParticipant,
+  sendAsk,
   sendProgress,
   sendTask,
   updateWorkState
@@ -19,6 +20,8 @@ import {
   runWhoCommand
 } from '../../session-bridge/command-runner.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
+import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
+import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
 import { buildClaudeCodeHookOutput } from '../format.js';
 import {
   buildHookCommand,
@@ -40,9 +43,15 @@ function usage() {
   node adapters/claude-code-plugin/bin/claude-code-broker.js inbox
   node adapters/claude-code-plugin/bin/claude-code-broker.js who
   node adapters/claude-code-plugin/bin/claude-code-broker.js reply [@alias] <summary>
+  node adapters/claude-code-plugin/bin/claude-code-broker.js task <toParticipantId> <taskId> <threadId> <summary>
+  node adapters/claude-code-plugin/bin/claude-code-broker.js ask <toParticipantId> <taskId> <threadId> <summary>
+  node adapters/claude-code-plugin/bin/claude-code-broker.js note <toParticipantId> <taskId> <threadId> <summary>
+  node adapters/claude-code-plugin/bin/claude-code-broker.js progress <taskId> <threadId> <summary>
   node adapters/claude-code-plugin/bin/claude-code-broker.js send-task <toParticipantId> <taskId> <threadId> <summary>
   node adapters/claude-code-plugin/bin/claude-code-broker.js send-progress <taskId> <threadId> <summary>
   node adapters/claude-code-plugin/bin/claude-code-broker.js set-work-state <status> [taskId] [threadId] [summary]
+  node adapters/claude-code-plugin/bin/claude-code-broker.js keepalive
+  node adapters/claude-code-plugin/bin/claude-code-broker.js realtime-bridge
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook session-start
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook user-prompt-submit`);
 }
@@ -149,6 +158,24 @@ async function cliSendTask(args) {
   );
 }
 
+async function cliAsk(args) {
+  const config = deriveSessionBridgeConfig({ toolName: 'claude-code' });
+  console.log(
+    JSON.stringify(
+      await sendAsk(config, {
+        intentId: `${config.participantId}-ask-${Date.now()}`,
+        toParticipantId: args[0],
+        taskId: args[1],
+        threadId: args[2],
+        summary: args.slice(3).join(' '),
+        delivery: { semantic: 'actionable', source: 'explicit' }
+      }),
+      null,
+      2
+    )
+  );
+}
+
 async function cliSendProgress(args) {
   const config = deriveSessionBridgeConfig({ toolName: 'claude-code' });
   console.log(
@@ -158,6 +185,24 @@ async function cliSendProgress(args) {
         taskId: args[0],
         threadId: args[1],
         summary: args.slice(2).join(' ')
+      }),
+      null,
+      2
+    )
+  );
+}
+
+async function cliNote(args) {
+  const config = deriveSessionBridgeConfig({ toolName: 'claude-code' });
+  console.log(
+    JSON.stringify(
+      await sendProgress(config, {
+        intentId: `${config.participantId}-note-${Date.now()}`,
+        toParticipantId: args[0],
+        taskId: args[1],
+        threadId: args[2],
+        summary: args.slice(3).join(' '),
+        delivery: { semantic: 'informational', source: 'explicit' }
       }),
       null,
       2
@@ -189,6 +234,14 @@ async function cliSetWorkState(args) {
   );
 }
 
+async function keepalive() {
+  await runSessionKeeperProcess({ toolName: 'claude-code' });
+}
+
+async function realtimeBridge() {
+  await runRealtimeBridgeProcess({ toolName: 'claude-code' });
+}
+
 const [, , command, ...args] = process.argv;
 if (!command) {
   usage();
@@ -211,6 +264,18 @@ switch (command) {
   case 'reply':
     await reply(args);
     break;
+  case 'task':
+    await cliSendTask(args);
+    break;
+  case 'ask':
+    await cliAsk(args);
+    break;
+  case 'note':
+    await cliNote(args);
+    break;
+  case 'progress':
+    await cliSendProgress(args);
+    break;
   case 'send-task':
     await cliSendTask(args);
     break;
@@ -219,6 +284,12 @@ switch (command) {
     break;
   case 'set-work-state':
     await cliSetWorkState(args);
+    break;
+  case 'keepalive':
+    await keepalive();
+    break;
+  case 'realtime-bridge':
+    await realtimeBridge();
     break;
   case 'hook':
     if (args[0] === 'session-start') {

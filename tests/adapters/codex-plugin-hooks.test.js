@@ -16,6 +16,12 @@ test('session start hook always registers and returns no output when inbox is em
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      ensureSessionKeeper: async (input) => {
+        calls.push({ type: 'keeper', input });
+      },
+      ensureRealtimeBridge: async (input) => {
+        calls.push({ type: 'bridge', input });
+      },
       registerParticipant: async (config) => {
         calls.push({ type: 'register', config });
         return { ok: true };
@@ -32,12 +38,45 @@ test('session start hook always registers and returns no output when inbox is em
   );
 
   assert.equal(result, null);
-  assert.equal(calls[0].type, 'register');
-  assert.equal(calls[0].config.participantId, 'codex-session-019d448e');
-  assert.deepEqual(calls[0].config.context, { projectName: 'intent-broker' });
-  assert.equal(calls[1].type, 'work-state');
-  assert.deepEqual(calls[1].state, { status: 'idle', summary: null });
-  assert.equal(calls[2].type, 'poll');
+  assert.equal(calls[0].type, 'keeper');
+  assert.equal(calls[0].input.config.participantId, 'codex-session-019d448e');
+  assert.equal(calls[0].input.sessionId, '019d448e-1234-5678-9999-aaaaaaaaaaaa');
+  assert.equal(calls[1].type, 'bridge');
+  assert.equal(calls[1].input.config.participantId, 'codex-session-019d448e');
+  assert.equal(calls[2].type, 'register');
+  assert.equal(calls[2].config.participantId, 'codex-session-019d448e');
+  assert.deepEqual(calls[2].config.context, { projectName: 'intent-broker' });
+  assert.equal(calls[3].type, 'work-state');
+  assert.deepEqual(calls[3].state, { status: 'idle', summary: null });
+  assert.equal(calls[4].type, 'poll');
+});
+
+test('session start hook still launches keeper when broker is unavailable', async () => {
+  const calls = [];
+
+  const result = await runSessionStartHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 0 }),
+      ensureSessionKeeper: async (input) => {
+        calls.push({ type: 'keeper', input });
+      },
+      ensureRealtimeBridge: async (input) => {
+        calls.push({ type: 'bridge', input });
+      },
+      registerParticipant: async () => {
+        calls.push({ type: 'register' });
+        throw new Error('fetch failed');
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls.map((item) => item.type), ['keeper', 'bridge', 'register']);
 });
 
 test('session start hook prefers hook session id over inherited CODEX_THREAD_ID', async () => {

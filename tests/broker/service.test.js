@@ -1,7 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { WebSocket } from 'ws';
 import { createBrokerService } from '../../src/broker/service.js';
+import { createServer } from '../../src/http/server.js';
 import { createTempDbPath } from '../fixtures/temp-dir.js';
+
+async function waitFor(predicate, { timeoutMs = 3000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error('Timed out waiting for condition');
+}
 
 test('broadcast request_task routes to participants matching role', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
@@ -19,7 +33,10 @@ test('broadcast request_task routes to participants matching role', () => {
   });
 
   assert.deepEqual(result.recipients, ['agent.a']);
-  assert.equal(broker.readInbox('agent.a', { after: 0 }).items.length, 1);
+  assert.equal(
+    broker.readInbox('agent.a', { after: 0 }).items.filter((item) => item.kind === 'request_task').length,
+    1
+  );
 });
 
 test('broadcast request_task routes to all registered participants except sender', () => {
@@ -200,13 +217,99 @@ test('updateParticipantAlias reassigns alias and broadcasts a broker event to ot
 
   const updated = broker.updateParticipantAlias('claude.b', 'reviewer');
   const codexInbox = broker.readInbox('codex.a', { after: 0 });
+  const aliasEvents = codexInbox.items.filter((item) => item.kind === 'participant_alias_updated');
 
   assert.equal(updated.alias, 'reviewer');
-  assert.equal(codexInbox.items.length, 1);
-  assert.equal(codexInbox.items[0].kind, 'participant_alias_updated');
-  assert.equal(codexInbox.items[0].payload.previousAlias, 'claude');
-  assert.equal(codexInbox.items[0].payload.alias, 'reviewer');
-  assert.equal(codexInbox.items[0].payload.participantId, 'claude.b');
+  assert.equal(aliasEvents.length, 1);
+  assert.equal(aliasEvents[0].payload.previousAlias, 'claude');
+  assert.equal(aliasEvents[0].payload.alias, 'reviewer');
+  assert.equal(aliasEvents[0].payload.participantId, 'claude.b');
+});
+
+test('registerParticipant preserves a remotely updated alias across later re-registration', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex'
+  });
+
+  broker.updateParticipantAlias('codex.session-1', 'codex4');
+
+  const reregistered = broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex'
+  });
+
+  assert.equal(reregistered.alias, 'codex4');
+  assert.deepEqual(
+    broker.resolveParticipantsByAliases(['codex4']).participants.map((participant) => participant.participantId),
+    ['codex.session-1']
+  );
+});
+
+test('sendIntent annotates delivery semantics based on sender kind and intent kind', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'human.song',
+    kind: 'human',
+    roles: ['approver'],
+    capabilities: []
+  });
+  broker.registerParticipant({
+    participantId: 'agent.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: []
+  });
+  broker.registerParticipant({
+    participantId: 'agent.b',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: []
+  });
+
+  broker.sendIntent({
+    intentId: 'progress-1',
+    kind: 'report_progress',
+    fromParticipantId: 'agent.a',
+    taskId: 'task-1',
+    threadId: 'thread-1',
+    to: { mode: 'participant', participants: ['agent.b'] },
+    payload: { stage: 'in_progress', body: { summary: 'sync only' } }
+  });
+
+  broker.sendIntent({
+    intentId: 'task-1',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    taskId: 'task-2',
+    threadId: 'thread-2',
+    to: { mode: 'participant', participants: ['agent.b'] },
+    payload: { body: { summary: 'need reply' } }
+  });
+
+  const inbox = broker.readInbox('agent.b', { after: 0 }).items;
+
+  assert.equal(
+    inbox.find((item) => item.intentId === 'progress-1').payload.delivery.semantic,
+    'informational'
+  );
+  assert.equal(
+    inbox.find((item) => item.intentId === 'progress-1').payload.delivery.source,
+    'default'
+  );
+  assert.equal(
+    inbox.find((item) => item.intentId === 'task-1').payload.delivery.semantic,
+    'actionable'
+  );
 });
 
 test('readInbox enriches events with sender alias and project context', () => {
@@ -245,4 +348,149 @@ test('readInbox enriches events with sender alias and project context', () => {
   assert.equal(inbox.items[0].fromParticipantId, 'claude.b');
   assert.equal(inbox.items[0].fromAlias, 'claude');
   assert.equal(inbox.items[0].fromProjectName, 'intent-broker');
+});
+
+test('sendIntent reports which recipients are online over websocket', async (t) => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  broker.attachWebSocket(server.raw());
+  const port = server.address().port;
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });
+  broker.registerParticipant({ participantId: 'agent.online', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'online' });
+  broker.registerParticipant({ participantId: 'agent.offline', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'offline' });
+
+  const onlineSocket = new WebSocket(`ws://127.0.0.1:${port}/ws?participantId=agent.online`);
+  await once(onlineSocket, 'open');
+
+  t.after(async () => {
+    onlineSocket.close();
+    await server.close();
+  });
+
+  const result = broker.sendIntent({
+    intentId: 'int-online-state-1',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    taskId: 'task-online-state-1',
+    threadId: 'thread-online-state-1',
+    to: { mode: 'participant', participants: ['agent.online', 'agent.offline'] },
+    payload: { body: { summary: 'Check delivery status' } }
+  });
+
+  assert.deepEqual(result.recipients, ['agent.online', 'agent.offline']);
+  assert.deepEqual(result.onlineRecipients, ['agent.online']);
+  assert.deepEqual(result.offlineRecipients, ['agent.offline']);
+  assert.equal(result.deliveredCount, 1);
+});
+
+test('websocket lifecycle updates presence and broadcasts online and offline changes', async (t) => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  broker.attachWebSocket(server.raw());
+  const port = server.address().port;
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });
+  broker.registerParticipant({
+    participantId: 'agent.codex',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex4',
+    context: { projectName: 'intent-broker' }
+  });
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?participantId=agent.codex`);
+  await once(socket, 'open');
+
+  await waitFor(() => broker.getPresence('agent.codex')?.status === 'online');
+  await waitFor(() => broker.readInbox('human.song', { after: 0 }).items.length >= 1);
+
+  let inbox = broker.readInbox('human.song', { after: 0 });
+  assert.equal(inbox.items[0].kind, 'participant_presence_updated');
+  assert.equal(inbox.items[0].payload.participantId, 'agent.codex');
+  assert.equal(inbox.items[0].payload.status, 'online');
+
+  socket.close();
+
+  await waitFor(() => broker.getPresence('agent.codex')?.status === 'offline');
+  await waitFor(() => broker.readInbox('human.song', { after: 0 }).items.length >= 2);
+
+  inbox = broker.readInbox('human.song', { after: 0 });
+  assert.equal(inbox.items[1].kind, 'participant_presence_updated');
+  assert.equal(inbox.items[1].payload.participantId, 'agent.codex');
+  assert.equal(inbox.items[1].payload.status, 'offline');
+
+  t.after(async () => {
+    await server.close();
+  });
+});
+
+test('registerParticipant marks agent online and broadcasts presence without websocket', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath(), presenceSweepIntervalMs: 0 });
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });
+  broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex5',
+    context: { projectName: 'intent-broker' }
+  });
+
+  const presence = broker.getPresence('codex.session-1');
+  const humanInbox = broker.readInbox('human.song', { after: 0 });
+
+  assert.equal(presence?.status, 'online');
+  assert.equal(humanInbox.items.at(-1)?.kind, 'participant_presence_updated');
+  assert.equal(humanInbox.items.at(-1)?.payload.participantId, 'codex.session-1');
+  assert.equal(humanInbox.items.at(-1)?.payload.status, 'online');
+});
+
+test('presence sweep marks stale hook-only sessions offline and broadcasts the change', async () => {
+  const broker = createBrokerService({
+    dbPath: createTempDbPath(),
+    presenceTimeoutMs: 20,
+    presenceSweepIntervalMs: 5
+  });
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });
+  broker.registerParticipant({
+    participantId: 'claude.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'claude5',
+    context: { projectName: 'intent-broker' }
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  broker.sweepPresence();
+
+  assert.equal(broker.getPresence('claude.session-1')?.status, 'offline');
+  await waitFor(() => broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_presence_updated').length >= 2, {
+    timeoutMs: 1000,
+    intervalMs: 10
+  });
+
+  const events = broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_presence_updated');
+  assert.equal(events[0].payload.status, 'online');
+  assert.equal(events[1].payload.status, 'offline');
+});
+
+test('broker.close terminates active websocket clients so shutdown can complete', async () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  broker.attachWebSocket(server.raw());
+
+  const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws?participantId=agent.a`);
+  await once(socket, 'open');
+
+  broker.close();
+  await once(socket, 'close');
+  await server.close();
 });
