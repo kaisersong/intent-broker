@@ -6,18 +6,38 @@ Local-first collaboration broker for multi-agent workflows. It is not a chat ser
 
 Current release version: `0.1.1`
 
+`Intent Broker` is a coordination layer for one human and multiple coding agents working on the same project.
+
+Its value is not "letting agents send messages". Its value is reducing the coordination cost of parallel agent work: who is working on what, who should pick up the next task, who may conflict, who needs approval, and how collaboration survives restarts or disconnects.
+
+Without that layer, the human becomes the router, memory, and conflict detector for every Codex / Claude Code / OpenCode window. `Intent Broker` moves that coordination burden into a recoverable local system.
+
+## Why It Exists
+
+Multi-agent coding gets hard before model quality becomes the bottleneck.
+
+Even if you use multiple terminals, worktrees, or separate branches, the same coordination problems still appear:
+
+- a human has to remember which agent is doing which part of the project
+- agents do not naturally know who else is already active on the same repo
+- parallel work creates ownership confusion and conflict risk
+- approval, handoff, and progress updates get lost across chat windows
+- if a broker, client, or message channel restarts, the collaboration context often disappears
+
+`Intent Broker` is meant to solve that layer first. The human should set direction, approve risky steps, and make final calls. Routine synchronization, task handoff, recovery, and most negotiation should move into the brokered collaboration flow.
+
 ## Design Principles
 
-The focus of `Intent Broker` is not "letting multiple windows send messages to each other". The goal is to upgrade collaboration from ad hoc copy-paste into a recoverable, replayable, auditable protocol.
+The design target is straightforward: make multi-agent collaboration reliable enough that people can run several coding agents in parallel without becoming a full-time dispatcher.
 
-There are four core ideas:
+The current design follows four principles:
 
-- Event-first: every intent is written to a SQLite event log before inbox delivery and state aggregation.
-- Protocol-first: a small set of stable structural fields carries task semantics, while natural language bodies carry the concrete work intent.
-- Local-first: v1 solves single-machine collaboration without requiring remote services or permanently connected agents.
-- Reliability-first: `HTTP pull + ack cursor` is the primary consumption path, so losing a connection does not lose critical task context.
+- Coordination-first: model outputs matter, but the immediate product problem is coordination cost across agents on the same project.
+- Human-as-supervisor: the human should set goals, approve risky actions, and resolve disputes, not manually forward every update between agents.
+- Recoverable-by-default: tasks, threads, approvals, and delivery state should survive broker restarts, idle sessions, and reconnects.
+- Non-invasive integration: Codex, Claude Code, and similar tools should keep their native UX. Broker support should arrive through hooks, skills, adapters, and local bridge processes rather than wrappers that take over the tool.
 
-That means the broker is responsible for tasks, threads, approvals, routing, and replay. It does not replace the reasoning or tool execution done by each agent.
+In practice that means the broker owns shared collaboration state such as presence, work-state, routing, delivery, replay, and task/thread history. Each agent still keeps its own reasoning loop and tool execution.
 
 ## Use Cases
 
