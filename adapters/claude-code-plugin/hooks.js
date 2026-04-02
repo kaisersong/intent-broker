@@ -18,13 +18,19 @@ import {
   saveCursorState as saveCursorStateDefault
 } from '../session-bridge/state.js';
 import {
-  ensureRealtimeBridge as ensureRealtimeBridgeDefault
+  drainRealtimeQueue,
+  ensureRealtimeBridge as ensureRealtimeBridgeDefault,
+  loadRealtimeQueueState as loadRealtimeQueueStateDefault,
+  saveRealtimeQueueState as saveRealtimeQueueStateDefault
 } from '../session-bridge/realtime-bridge.js';
 import {
   ensureSessionKeeper as ensureSessionKeeperDefault,
   resolveObservedParentPid
 } from '../session-bridge/session-keeper.js';
-import { resolveParticipantStatePath } from '../hook-installer-core/state-paths.js';
+import {
+  resolveParticipantStatePath,
+  resolveRealtimeQueueStatePath
+} from '../hook-installer-core/state-paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const cliPath = path.resolve(path.dirname(__filename), 'bin', 'claude-code-broker.js');
@@ -43,6 +49,10 @@ function configFromHookInput(input, { env = process.env, cwd = process.cwd() } =
 
 function cursorPathForParticipant(participantId, homeDir) {
   return resolveParticipantStatePath('claude-code', participantId, { homeDir });
+}
+
+function queuePathForParticipant(participantId, homeDir) {
+  return resolveRealtimeQueueStatePath('claude-code', participantId, { homeDir });
 }
 
 async function safelyRunHook(work) {
@@ -111,6 +121,8 @@ export async function runUserPromptSubmitHook(
     cwd = process.cwd(),
     homeDir,
     loadCursorState = loadCursorStateDefault,
+    loadRealtimeQueueState = loadRealtimeQueueStateDefault,
+    saveRealtimeQueueState = saveRealtimeQueueStateDefault,
     registerParticipant = registerParticipantDefault,
     saveCursorState = saveCursorStateDefault,
     pollInbox = pollInboxDefault,
@@ -124,7 +136,30 @@ export async function runUserPromptSubmitHook(
   return safelyRunHook(async () => {
     const config = configFromHookInput(input, { env, cwd });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
+    const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
+    const drainedQueue = drainRealtimeQueue(loadRealtimeQueueState(queueStatePath));
+
+    if (drainedQueue.items.length) {
+      await registerParticipant(config);
+      const context = buildToolHookContext(drainedQueue.items, {
+        participantId: config.participantId,
+        sessionLabel: 'Claude Code session'
+      });
+      const lastSeenEventId = highestEventId(drainedQueue.items);
+
+      if (!context || !lastSeenEventId) {
+        return null;
+      }
+
+      await ackInbox(config, lastSeenEventId);
+      saveCursorState(statePath, {
+        lastSeenEventId: Math.max(state.lastSeenEventId, lastSeenEventId),
+        recentContext: pickRecentContext(drainedQueue.items) || state.recentContext
+      });
+      saveRealtimeQueueState(queueStatePath, drainedQueue.state);
+      return context;
+    }
 
     await registerParticipant(config);
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
@@ -140,11 +175,11 @@ export async function runUserPromptSubmitHook(
     }
 
     const lastSeenEventId = highestEventId(items);
+    await ackInbox(config, lastSeenEventId);
     saveCursorState(statePath, {
       lastSeenEventId,
       recentContext: pickRecentContext(items) || state.recentContext
     });
-    await ackInbox(config, lastSeenEventId);
     return context;
   });
 }

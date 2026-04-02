@@ -39,6 +39,12 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
     commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'user-prompt-submit')
   });
 
+  hooks.Stop = mergeManagedHookGroups(hooks.Stop || [], {
+    command: commands.stopCommand,
+    statusMessage: verbose ? managedHookStatusMessages.stop : undefined,
+    commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'stop')
+  });
+
   merged.hooks = hooks;
   return merged;
 }

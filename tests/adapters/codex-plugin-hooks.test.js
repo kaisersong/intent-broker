@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  runStopHook,
   runSessionStartHook,
   runUserPromptSubmitHook
 } from '../../adapters/codex-plugin/hooks.js';
@@ -177,6 +178,330 @@ test('user prompt submit hook injects context, saves cursor, and acks inbox with
   assert.deepEqual(acked, [{ participantId: 'codex-session-019d4489', eventId: 77 }]);
   assert.deepEqual(calls, [
     { type: 'register', participantId: 'codex-session-019d4489', alias: 'codex' }
+  ]);
+});
+
+test('user prompt submit hook prefers local realtime queue and does not poll when queued events exist', async () => {
+  const savedCursor = [];
+  const savedQueue = [];
+  const acked = [];
+  const calls = [];
+  const workStates = [];
+
+  const result = await runUserPromptSubmitHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      prompt: '继续处理'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      homeDir: '/tmp/intent-broker-hooks',
+      loadCursorState: () => ({ lastSeenEventId: 0 }),
+      saveCursorState: (statePath, state) => savedCursor.push({ statePath, state }),
+      loadRealtimeQueueState: () => ({
+        actionable: [
+          {
+            eventId: 77,
+            kind: 'request_task',
+            fromParticipantId: 'human.song',
+            fromAlias: 'song',
+            taskId: 'task-queue-1',
+            threadId: 'thread-queue-1',
+            payload: {
+              delivery: { semantic: 'actionable', source: 'default' },
+              body: { summary: '修复 broker 在线状态显示' }
+            }
+          }
+        ],
+        informational: [
+          {
+            eventId: 78,
+            kind: 'report_progress',
+            fromParticipantId: 'claude-peer',
+            fromAlias: 'claude2',
+            taskId: 'task-queue-1',
+            threadId: 'thread-queue-1',
+            payload: {
+              delivery: { semantic: 'informational', source: 'default' },
+              body: { summary: '我正在看 alias rename 广播' }
+            }
+          }
+        ],
+        lastEventId: 78
+      }),
+      saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state }),
+      registerParticipant: async (config) => {
+        calls.push({ type: 'register', participantId: config.participantId });
+        return { ok: true };
+      },
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      pollInbox: async () => {
+        calls.push({ type: 'poll' });
+        return { items: [] };
+      },
+      ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId })
+    }
+  );
+
+  assert.match(result, /Actionable items/);
+  assert.match(result, /Informational items/);
+  assert.match(result, /修复 broker 在线状态显示/);
+  assert.match(result, /我正在看 alias rename 广播/);
+  assert.deepEqual(calls, [{ type: 'register', participantId: 'codex-session-019d4489' }]);
+  assert.deepEqual(acked, [{ participantId: 'codex-session-019d4489', eventId: 78 }]);
+  assert.equal(savedCursor[0].state.lastSeenEventId, 78);
+  assert.equal(savedCursor[0].state.recentContext.fromParticipantId, 'claude-peer');
+  assert.deepEqual(savedQueue[0].state, {
+    actionable: [],
+    informational: [],
+    lastEventId: 78
+  });
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'implementing',
+        summary: '修复 broker 在线状态显示',
+        taskId: 'task-queue-1',
+        threadId: 'thread-queue-1'
+      }
+    }
+  ]);
+});
+
+test('user prompt submit hook marks runtime state as running', async () => {
+  const savedRuntime = [];
+  const workStates = [];
+
+  await runUserPromptSubmitHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-1',
+      prompt: '继续处理'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({
+        lastSeenEventId: 0,
+        recentContext: {
+          taskId: 'task-12',
+          threadId: 'thread-12',
+          summary: '继续处理 work-state 同步'
+        }
+      }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      registerParticipant: async () => ({ ok: true }),
+      pollInbox: async () => ({ items: [] })
+    }
+  );
+
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.equal(savedRuntime[0].state.turnId, 'turn-1');
+  assert.equal(savedRuntime[0].state.source, 'user-prompt-submit');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'implementing',
+        summary: '继续处理 work-state 同步',
+        taskId: 'task-12',
+        threadId: 'thread-12'
+      }
+    }
+  ]);
+});
+
+test('user prompt submit hook skips inbox sync during auto-dispatch resumes', async () => {
+  const savedRuntime = [];
+  const calls = [];
+  const workStates = [];
+
+  const result = await runUserPromptSubmitHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-1',
+      prompt: '自动续跑'
+    },
+    {
+      env: { INTENT_BROKER_SKIP_INBOX_SYNC: '1' },
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({
+        lastSeenEventId: 0,
+        recentContext: {
+          taskId: 'task-22',
+          threadId: 'thread-22',
+          summary: '自动续跑 broker 指令'
+        }
+      }),
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      registerParticipant: async () => {
+        calls.push('register');
+      },
+      pollInbox: async () => {
+        calls.push('poll');
+        return { items: [] };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, []);
+  assert.equal(savedRuntime[0].state.source, 'auto-dispatch');
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'implementing',
+        summary: '自动续跑 broker 指令',
+        taskId: 'task-22',
+        threadId: 'thread-22'
+      }
+    }
+  ]);
+});
+
+test('stop hook drains actionable queue into an auto-continue prompt and keeps runtime running', async () => {
+  const savedCursor = [];
+  const savedQueue = [];
+  const savedRuntime = [];
+  const acked = [];
+  const workStates = [];
+
+  const result = await runStopHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-2'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+      loadRuntimeState: () => ({ status: 'running', sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb' }),
+      loadRealtimeQueueState: () => ({
+        actionable: [
+          {
+            eventId: 77,
+            kind: 'request_task',
+            fromParticipantId: 'human.song',
+            fromAlias: 'song',
+            taskId: 'task-queue-1',
+            threadId: 'thread-queue-1',
+            payload: {
+              delivery: { semantic: 'actionable', source: 'default' },
+              body: { summary: '修复 broker 在线状态显示' }
+            }
+          }
+        ],
+        informational: [
+          {
+            eventId: 78,
+            kind: 'report_progress',
+            fromParticipantId: 'claude-peer',
+            fromAlias: 'claude2',
+            taskId: 'task-queue-1',
+            threadId: 'thread-queue-1',
+            payload: {
+              delivery: { semantic: 'informational', source: 'default' },
+              body: { summary: '我正在看 alias rename 广播' }
+            }
+          }
+        ],
+        lastEventId: 78
+      }),
+      saveCursorState: (statePath, state) => savedCursor.push({ statePath, state }),
+      saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state }),
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId })
+    }
+  );
+
+  assert.match(result, /Intent Broker auto-continue for codex-session-019d4489/);
+  assert.match(result, /修复 broker 在线状态显示/);
+  assert.deepEqual(acked, [{ participantId: 'codex-session-019d4489', eventId: 78 }]);
+  assert.equal(savedCursor[0].state.lastSeenEventId, 78);
+  assert.equal(savedCursor[0].state.recentContext.fromParticipantId, 'claude-peer');
+  assert.deepEqual(savedQueue[0].state, {
+    actionable: [],
+    informational: [],
+    lastEventId: 78
+  });
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.equal(savedRuntime[0].state.source, 'stop-hook');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'implementing',
+        summary: '修复 broker 在线状态显示',
+        taskId: 'task-queue-1',
+        threadId: 'thread-queue-1'
+      }
+    }
+  ]);
+});
+
+test('stop hook marks runtime idle when there is no actionable queue', async () => {
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await runStopHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-2'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({
+        lastSeenEventId: 10,
+        recentContext: {
+          taskId: 'task-33',
+          threadId: 'thread-33',
+          summary: '上一轮实现 alias 路由'
+        }
+      }),
+      loadRuntimeState: () => ({ status: 'running', sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb' }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [{ eventId: 12 }], lastEventId: 12 }),
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.equal(savedRuntime[0].state.status, 'idle');
+  assert.equal(savedRuntime[0].state.source, 'stop-hook');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'idle',
+        summary: null,
+        taskId: null,
+        threadId: null
+      }
+    }
   ]);
 });
 

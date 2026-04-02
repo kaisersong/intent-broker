@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
+  buildCodexAutoContinuePrompt,
   buildCodexHookContext,
   buildCodexHookOutput,
+  buildToolAutoContinuePrompt,
   buildToolHookContext,
   highestEventId,
   summarizeInboxItems
@@ -75,15 +77,81 @@ test('buildCodexHookContext produces actionable context for Codex', () => {
         fromParticipantId: 'claude-real-1',
         taskId: 'task-2',
         threadId: 'thread-2',
-        payload: { body: { summary: 'Please pick up regression triage' } }
+        payload: {
+          delivery: { semantic: 'actionable', source: 'explicit' },
+          body: { summary: 'Please pick up regression triage' }
+        }
       }
     ],
     { participantId: 'codex.main' }
   );
 
   assert.match(context, /Intent Broker update for codex\.main/);
+  assert.match(context, /Actionable items/);
   assert.match(context, /Please pick up regression triage/);
-  assert.match(context, /If relevant, respond in this turn/);
+  assert.match(context, /Treat the actionable items as commands or blocking asks/);
+});
+
+test('buildToolHookContext separates actionable and informational events', () => {
+  const context = buildToolHookContext(
+    [
+      {
+        eventId: 70,
+        kind: 'request_task',
+        fromParticipantId: 'human.song',
+        taskId: 'task-2',
+        threadId: 'thread-2',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: 'Please land the hotfix today' }
+        }
+      },
+      {
+        eventId: 71,
+        kind: 'report_progress',
+        fromParticipantId: 'codex.peer',
+        taskId: 'task-2',
+        threadId: 'thread-2',
+        payload: {
+          delivery: { semantic: 'informational', source: 'default' },
+          body: { summary: 'I am already touching the auth path' }
+        }
+      }
+    ],
+    { participantId: 'claude-code-session-aabbccdd', sessionLabel: 'Claude Code session' }
+  );
+
+  assert.match(context, /Actionable items/);
+  assert.match(context, /Informational items/);
+  assert.match(context, /Please land the hotfix today/);
+  assert.match(context, /I am already touching the auth path/);
+});
+
+test('buildCodexAutoContinuePrompt turns broker context into a continuation prompt', () => {
+  const prompt = buildCodexAutoContinuePrompt(
+    [
+      {
+        eventId: 70,
+        kind: 'request_task',
+        fromParticipantId: 'human.song',
+        taskId: 'task-2',
+        threadId: 'thread-2',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: 'Please land the hotfix today' }
+        }
+      }
+    ],
+    { participantId: 'codex.main' }
+  );
+
+  assert.match(prompt, /Intent Broker auto-continue for codex\.main/);
+  assert.match(prompt, /Continue immediately with the actionable items below/);
+  assert.match(prompt, /Please land the hotfix today/);
+});
+
+test('buildToolAutoContinuePrompt returns null when there are no items', () => {
+  assert.equal(buildToolAutoContinuePrompt([], { participantId: 'codex.main' }), null);
 });
 
 test('buildCodexHookOutput wraps additional context for SessionStart', () => {

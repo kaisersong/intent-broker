@@ -190,6 +190,82 @@ test('user prompt submit hook injects context, saves cursor, and acks inbox', as
   ]);
 });
 
+test('user prompt submit hook prefers local realtime queue and does not poll when queued events exist', async () => {
+  const savedCursor = [];
+  const savedQueue = [];
+  const acked = [];
+  const calls = [];
+
+  const result = await runUserPromptSubmitHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      prompt: 'continue'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      homeDir: '/tmp/intent-broker-hooks',
+      loadCursorState: () => ({ lastSeenEventId: 0 }),
+      saveCursorState: (statePath, state) => savedCursor.push({ statePath, state }),
+      loadRealtimeQueueState: () => ({
+        actionable: [
+          {
+            eventId: 77,
+            kind: 'request_task',
+            fromParticipantId: 'human.song',
+            fromAlias: 'song',
+            taskId: 'task-queue-1',
+            threadId: 'thread-queue-1',
+            payload: {
+              delivery: { semantic: 'actionable', source: 'default' },
+              body: { summary: 'Check broker reconnect behavior' }
+            }
+          }
+        ],
+        informational: [
+          {
+            eventId: 78,
+            kind: 'report_progress',
+            fromParticipantId: 'codex-peer',
+            fromAlias: 'codex2',
+            taskId: 'task-queue-1',
+            threadId: 'thread-queue-1',
+            payload: {
+              delivery: { semantic: 'informational', source: 'default' },
+              body: { summary: 'I am already reviewing the websocket bridge' }
+            }
+          }
+        ],
+        lastEventId: 78
+      }),
+      saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state }),
+      registerParticipant: async (config) => {
+        calls.push({ type: 'register', participantId: config.participantId });
+        return { ok: true };
+      },
+      pollInbox: async () => {
+        calls.push({ type: 'poll' });
+        return { items: [] };
+      },
+      ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId })
+    }
+  );
+
+  assert.match(result, /Actionable items/);
+  assert.match(result, /Informational items/);
+  assert.match(result, /Check broker reconnect behavior/);
+  assert.match(result, /I am already reviewing the websocket bridge/);
+  assert.deepEqual(calls, [{ type: 'register', participantId: 'claude-code-session-019d4489' }]);
+  assert.deepEqual(acked, [{ participantId: 'claude-code-session-019d4489', eventId: 78 }]);
+  assert.equal(savedCursor[0].state.lastSeenEventId, 78);
+  assert.equal(savedCursor[0].state.recentContext.fromParticipantId, 'codex-peer');
+  assert.deepEqual(savedQueue[0].state, {
+    actionable: [],
+    informational: [],
+    lastEventId: 78
+  });
+});
+
 test('session start hook degrades gracefully when broker is unavailable', async () => {
   const result = await runSessionStartHook(
     {

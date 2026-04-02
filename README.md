@@ -58,7 +58,7 @@ One practical scenario is a human coordinating multiple coding agents on the sam
 3. The human sends `@codex` a task from Yunzhijia such as "own the websocket reconnect fix", then sends `@claude` a parallel task such as "review the shutdown path and look for conflicts".
 4. Each agent updates its own work-state, publishes progress, and can ask the other agent for help without relying on copy-paste through the human.
 5. Before landing, one agent can query who else is touching the same project, warn about overlap, and negotiate handoff or conflict resolution through the same task/thread timeline.
-6. If broker restarts or one agent goes idle, the task context is still durable. The next prompt submit or inbox pull resumes from broker state instead of losing coordination.
+6. If broker restarts or one agent goes idle, the task context is still durable. Codex can auto-resume actionable broker work while idle, and Claude Code still resumes from broker state on the next prompt submit or explicit inbox pull instead of losing coordination.
 
 The point is not just "agents can chat". The point is that the human can delegate parallel work, and the agents can keep enough shared state to coordinate ownership, progress, approvals, and conflict handling with less manual relay.
 
@@ -71,6 +71,7 @@ The current prototype supports:
 - project-scoped participant discovery
 - current work-state tracking by participant
 - default delivery semantics for task, ask, note, and progress-style collaboration
+- actionable vs informational delivery semantics with default mapping by sender and intent kind
 - websocket-backed online / offline presence tracking
 - join / leave presence broadcasts for connected collaborators
 - `request_task`, `report_progress`, `request_approval`, `respond_approval`
@@ -85,6 +86,7 @@ The current prototype supports:
 - WebSocket real-time notification channel
 - verified Yunzhijia adapter inbound and outbound integration
 - non-invasive Codex hook integration for real session inbox injection
+- Codex idle auto-dispatch for actionable queue items plus post-turn continuation through the `Stop` hook
 - non-invasive Claude Code hook integration for project-level inbox injection
 - session-scoped realtime bridge queue with quiet reconnect after broker restart
 
@@ -412,6 +414,14 @@ On `SessionStart`, the local bridge also launches two quiet background helpers:
 - a presence keeper that re-registers after broker restart and marks the session offline when the parent exits
 - a realtime bridge that subscribes over websocket and appends incoming events into local queue state under `~/.intent-broker/<tool>/`
 
+Current bridge behavior by tool:
+
+- human channel -> agent defaults to actionable commands
+- agent `task` / `ask` defaults to actionable; agent `note` / `progress` / reply defaults to informational
+- Codex can auto-dispatch actionable queue items while idle, and auto-continue them after the current turn through the `Stop` hook
+- those Codex automatic execution paths also sync broker `work-state` between `idle` and `implementing`, so project peers and message channels can see who is actively working
+- Claude Code keeps the same queue semantics, but consumes queued work on the next prompt submit or explicit inbox pull
+
 ### 2. Pull work instead of assuming a permanent connection
 
 The reliable path is inbox pull:
@@ -538,11 +548,12 @@ The adapter will post a channel message grouped by `online` and `offline`, inclu
 
 ## Codex Integration
 
-The current best Codex UX is a non-invasive hook + skill bridge. It does not wrap how Codex starts. Instead, it installs two Codex hooks and one local skill:
+The current best Codex UX is a non-invasive hook + skill bridge. It does not wrap how Codex starts. Instead, it installs three Codex hooks and one local skill:
 
 - `SessionStart` hook: when a real Codex session starts or resumes, it silently registers the session to the broker, records the current `projectName`, publishes an initial `idle` work state, and launches a lightweight background keeper that keeps the session present while the TUI stays open.
 - `SessionStart` hook: it also launches a realtime bridge daemon that subscribes over websocket and persists inbound events into local queue state immediately.
 - `UserPromptSubmit` hook: before a real user prompt is submitted, it silently re-registers the session, then checks for newly arrived broker events and injects them into the turn only when there is pending collaboration context.
+- `Stop` hook: when the current Codex turn finishes, it checks whether actionable broker work arrived meanwhile and, if so, turns that queue into an auto-continue prompt for the next turn without interrupting the work that just finished.
 - `intent-broker` skill: gives the Codex session an explicit way to send task handoffs and progress updates.
 
 Normal flow:
@@ -551,7 +562,9 @@ Normal flow:
 - open Codex in the target project directory
 - let `SessionStart` auto-register the session on startup
 - let the background keeper keep presence alive and re-register after a broker restart even if the session is idle
-- let `UserPromptSubmit` inject context only when there is new collaboration work and the local session actually enters another prompt submit
+- let the realtime bridge auto-dispatch actionable queue items when the Codex session is idle
+- let `UserPromptSubmit` inject queued context first when the local session enters another prompt submit
+- let `Stop` auto-continue actionable queue items after the current turn finishes, so collaboration work is not lost and the current turn is not interrupted mid-flight
 
 ### Install the Codex bridge
 
@@ -572,7 +585,7 @@ This writes or updates:
 - `~/.codex/hooks.json`
 - `~/.codex/skills/intent-broker` (symlink)
 - `~/.local/bin/intent-broker` unified command shim
-- `~/.intent-broker/codex/*.json` local cursor state, realtime queue state, and helper metadata
+- `~/.intent-broker/codex/*.json` local cursor state, realtime queue state, runtime state, and helper metadata
 
 The Codex bridge now auto-registers the current project name using the current working directory basename by default. You can override it with `PROJECT_NAME`.
 
@@ -585,7 +598,12 @@ Notes:
 - Hook-provided `session_id` now takes precedence over inherited `CODEX_THREAD_ID`, so starting a new Codex from inside another agent environment will not accidentally reuse the parent participant id.
 - The background keeper keeps presence online while the Codex parent process is alive, and marks the participant offline after the parent exits.
 - The realtime bridge quietly reconnects after broker restart and keeps appending websocket events into local queue state.
-- This does not turn Codex into a fully real-time inbox consumer. Newly queued broker events are still injected on the next prompt submit or explicit local inbox pull.
+- On the next prompt submit, Codex now drains the local realtime queue before falling back to broker poll, so websocket-delivered items are injected first.
+- Hook-injected collaboration context now separates actionable items from informational items. Human-channel messages and `task` / `ask` default to actionable; `note` / `progress` default to informational.
+- If the Codex session is idle and actionable queue items arrive, the realtime bridge can auto-run `codex exec --json --full-auto resume ...` so work starts without a manual prompt.
+- If the Codex session is already busy, the `Stop` hook converts queued actionable work into an auto-continue prompt after the current turn completes.
+- Those automatic Codex transitions now also update broker `work-state`: active execution reports `implementing` with the current task/thread context, and an idle stop path returns to `idle`.
+- Informational-only queue items still wait for the next prompt submit or explicit local inbox pull instead of starting a new autonomous turn on their own.
 - If you move this repo, run `npm run codex:install` again so the hook command paths are refreshed.
 
 ### Send from a real Codex session
@@ -654,6 +672,7 @@ Once installed, an already-open real Codex session can naturally participate in 
 
 - it keeps its native startup flow
 - it receives broker context through hooks instead of a wrapper shell
+- it can auto-start actionable broker work while idle and auto-continue after busy turn boundaries
 - it can explicitly hand off tasks or publish progress with the same local bridge command set
 
 ## Claude Code Integration
@@ -691,6 +710,8 @@ Notes:
 - hook-provided `session_id` takes precedence over inherited session env, so nested launcher environments do not accidentally collapse multiple clients onto one participant id
 - the background keeper keeps Claude Code presence online while the parent session stays open, and marks it offline after the parent exits
 - the realtime bridge quietly reconnects after broker restart and keeps appending websocket events into local queue state
+- on the next prompt submit, Claude Code now drains the local realtime queue before falling back to broker poll, so websocket-delivered items are injected first
+- hook-injected collaboration context now separates actionable items from informational items. Human-channel messages and `task` / `ask` default to actionable; `note` / `progress` default to informational
 - Claude Code still consumes queued broker inbox context on the next prompt submit or explicit local inbox pull, not by silently acting on messages while idle
 - if you move this repo, run `npm run claude-code:install` again to refresh command paths
 

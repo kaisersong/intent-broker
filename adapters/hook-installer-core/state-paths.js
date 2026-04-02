@@ -16,3 +16,7 @@ export function resolveRealtimeQueueStatePath(toolName, participantId, { homeDir
 export function resolveRealtimeBridgeStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
   return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.bridge.json`);
 }
+
+export function resolveRuntimeStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
+  return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.runtime.json`);
+}

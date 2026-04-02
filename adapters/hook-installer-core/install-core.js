@@ -2,7 +2,8 @@ import { buildHookCommand } from './command.js';
 
 export const managedHookStatusMessages = {
   sessionStart: 'intent-broker session sync',
-  userPromptSubmit: 'intent-broker inbox sync'
+  userPromptSubmit: 'intent-broker inbox sync',
+  stop: 'intent-broker auto continue'
 };
 
 export function isManagedHookEntry(entry, { statusMessage, commandMatcher } = {}) {

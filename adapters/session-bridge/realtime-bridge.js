@@ -5,12 +5,32 @@ import path from 'node:path';
 import WebSocket from 'ws';
 
 import {
+  resolveParticipantStatePath,
   resolveRealtimeBridgeStatePath,
-  resolveRealtimeQueueStatePath
+  resolveRealtimeQueueStatePath,
+  resolveRuntimeStatePath
 } from '../hook-installer-core/state-paths.js';
-import { registerParticipant as registerParticipantDefault } from './api.js';
+import {
+  ackInbox as ackInboxDefault,
+  registerParticipant as registerParticipantDefault,
+  updateWorkState as updateWorkStateDefault
+} from './api.js';
+import {
+  buildAutomaticWorkState,
+  pickActiveWorkContext
+} from './automatic-work-state.js';
 import { deriveSessionBridgeConfig } from './config.js';
+import { buildCodexAutoContinuePrompt, highestEventId } from './codex-hooks.js';
+import { pickRecentContext } from './recent-context.js';
 import { isProcessAlive } from './session-keeper.js';
+import {
+  loadCursorState as loadCursorStateDefault,
+  saveCursorState as saveCursorStateDefault
+} from './state.js';
+import {
+  loadRuntimeState as loadRuntimeStateDefault,
+  saveRuntimeState as saveRuntimeStateDefault
+} from './runtime-state.js';
 
 const DEFAULT_RETRY_MS = 2000;
 
@@ -92,6 +112,115 @@ export function appendRealtimeEvent(state, event) {
   };
 }
 
+export function drainRealtimeQueue(state) {
+  const normalized = normalizeQueueState(state);
+  const items = [...normalized.actionable, ...normalized.informational]
+    .sort((left, right) => Number(left?.eventId || 0) - Number(right?.eventId || 0));
+
+  return {
+    items,
+    state: {
+      actionable: [],
+      informational: [],
+      lastEventId: normalized.lastEventId
+    }
+  };
+}
+
+export async function maybeAutoDispatchRealtimeQueue({
+  toolName,
+  config,
+  sessionId,
+  cwd = process.cwd(),
+  env = process.env,
+  queueStatePath,
+  cursorStatePath,
+  runtimeStatePath,
+  spawnImpl = spawnDefault,
+  ackInbox = ackInboxDefault,
+  updateWorkState = updateWorkStateDefault,
+  loadRealtimeQueueState: loadRealtimeQueueStateImpl = loadRealtimeQueueState,
+  saveRealtimeQueueState: saveRealtimeQueueStateImpl = saveRealtimeQueueState,
+  loadCursorState = loadCursorStateDefault,
+  saveCursorState = saveCursorStateDefault,
+  loadRuntimeState = loadRuntimeStateDefault,
+  saveRuntimeState = saveRuntimeStateDefault
+} = {}) {
+  if (toolName !== 'codex') {
+    return { dispatched: false, reason: 'unsupported-tool' };
+  }
+  if (env.INTENT_BROKER_DISABLE_AUTO_DISPATCH === '1') {
+    return { dispatched: false, reason: 'disabled' };
+  }
+  if (!sessionId) {
+    return { dispatched: false, reason: 'missing-session' };
+  }
+
+  const runtimeState = loadRuntimeState(runtimeStatePath);
+  if (runtimeState.status !== 'idle') {
+    return { dispatched: false, reason: 'busy' };
+  }
+
+  const queueState = loadRealtimeQueueStateImpl(queueStatePath);
+  if (!queueState.actionable.length) {
+    return { dispatched: false, reason: 'no-actionable' };
+  }
+
+  const drainedQueue = drainRealtimeQueue(queueState);
+  const cursorState = loadCursorState(cursorStatePath);
+  const recentContext = pickRecentContext(drainedQueue.items) || cursorState.recentContext;
+  const activeContext = pickActiveWorkContext(drainedQueue.items, recentContext);
+  const prompt = buildCodexAutoContinuePrompt(drainedQueue.items, { participantId: config.participantId });
+
+  if (!prompt) {
+    return { dispatched: false, reason: 'empty-prompt' };
+  }
+
+  const child = spawnImpl(
+    env.INTENT_BROKER_CODEX_COMMAND || 'codex',
+    ['exec', '--json', '--full-auto', 'resume', sessionId, prompt],
+    {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...env,
+        INTENT_BROKER_SKIP_INBOX_SYNC: '1'
+      }
+    }
+  );
+  child.unref?.();
+
+  const lastSeenEventId = highestEventId(drainedQueue.items);
+  if (lastSeenEventId) {
+    await ackInbox(config, lastSeenEventId);
+  }
+  saveCursorState(cursorStatePath, {
+    lastSeenEventId: Math.max(cursorState.lastSeenEventId, lastSeenEventId),
+    recentContext
+  });
+  saveRealtimeQueueStateImpl(queueStatePath, drainedQueue.state);
+  saveRuntimeState(runtimeStatePath, {
+    status: 'running',
+    sessionId,
+    turnId: null,
+    source: 'auto-dispatch',
+    taskId: activeContext?.taskId || null,
+    threadId: activeContext?.threadId || null,
+    updatedAt: new Date().toISOString()
+  });
+  await updateWorkState(
+    config,
+    buildAutomaticWorkState('implementing', activeContext)
+  ).catch(() => null);
+
+  return {
+    dispatched: true,
+    pid: child.pid,
+    lastSeenEventId
+  };
+}
+
 export async function ensureRealtimeBridge({
   toolName,
   cliPath,
@@ -170,11 +299,23 @@ export async function ensureRealtimeBridge({
 }
 
 async function connectRealtimeSocket({
+  toolName,
   config,
   queueStatePath,
+  cursorStatePath,
+  runtimeStatePath,
+  sessionId,
+  cwd = process.cwd(),
+  env = process.env,
   parentPid,
   isProcessAlive: isProcessAliveImpl = isProcessAlive,
-  registerParticipant = registerParticipantDefault
+  registerParticipant = registerParticipantDefault,
+  ackInbox = ackInboxDefault,
+  spawnImpl = spawnDefault,
+  loadCursorState = loadCursorStateDefault,
+  saveCursorState = saveCursorStateDefault,
+  loadRuntimeState = loadRuntimeStateDefault,
+  saveRuntimeState = saveRuntimeStateDefault
 } = {}) {
   try {
     await registerParticipant(config);
@@ -219,6 +360,24 @@ async function connectRealtimeSocket({
       const current = loadRealtimeQueueState(queueStatePath);
       const next = appendRealtimeEvent(current, message.event);
       saveRealtimeQueueState(queueStatePath, next);
+      void maybeAutoDispatchRealtimeQueue({
+        toolName,
+        config,
+        sessionId,
+        cwd,
+        env,
+        queueStatePath,
+        cursorStatePath,
+        runtimeStatePath,
+        spawnImpl,
+        ackInbox,
+        loadRealtimeQueueState: loadRealtimeQueueState,
+        saveRealtimeQueueState: saveRealtimeQueueState,
+        loadCursorState,
+        saveCursorState,
+        loadRuntimeState,
+        saveRuntimeState
+      }).catch(() => null);
     });
 
     socket.on('error', () => {
@@ -242,7 +401,13 @@ export async function runRealtimeBridgeProcess({
   retryMs = Number(env.INTENT_BROKER_REALTIME_RETRY_MS || DEFAULT_RETRY_MS),
   parentPid = env.INTENT_BROKER_REALTIME_PARENT_PID,
   registerParticipant = registerParticipantDefault,
+  ackInbox = ackInboxDefault,
   isProcessAlive: isProcessAliveImpl = isProcessAlive,
+  spawnImpl = spawnDefault,
+  loadCursorState = loadCursorStateDefault,
+  saveCursorState = saveCursorStateDefault,
+  loadRuntimeState = loadRuntimeStateDefault,
+  saveRuntimeState = saveRuntimeStateDefault,
   sleepImpl = sleep
 } = {}) {
   if (!toolName) {
@@ -252,8 +417,28 @@ export async function runRealtimeBridgeProcess({
   const config = deriveSessionBridgeConfig({ toolName, env, cwd });
   const resolvedQueueStatePath = queueStatePath
     || resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir: os.homedir() });
+  const cursorStatePath = resolveParticipantStatePath(toolName, config.participantId, { homeDir: os.homedir() });
+  const runtimeStatePath = resolveRuntimeStatePath(toolName, config.participantId, { homeDir: os.homedir() });
 
   saveRealtimeQueueState(resolvedQueueStatePath, loadRealtimeQueueState(resolvedQueueStatePath));
+  await maybeAutoDispatchRealtimeQueue({
+    toolName,
+    config,
+    sessionId: env.INTENT_BROKER_REALTIME_SESSION_ID || '',
+    cwd,
+    env,
+    queueStatePath: resolvedQueueStatePath,
+    cursorStatePath,
+    runtimeStatePath,
+    spawnImpl,
+    ackInbox,
+    loadRealtimeQueueState: loadRealtimeQueueState,
+    saveRealtimeQueueState: saveRealtimeQueueState,
+    loadCursorState,
+    saveCursorState,
+    loadRuntimeState,
+    saveRuntimeState
+  }).catch(() => null);
 
   if (statePath) {
     mkdirSync(path.dirname(statePath), { recursive: true });
@@ -269,11 +454,25 @@ export async function runRealtimeBridgeProcess({
   try {
     while (!normalizePid(parentPid) || isProcessAliveImpl(parentPid)) {
       await connectRealtimeSocket({
+        toolName,
         config,
         queueStatePath: resolvedQueueStatePath,
+        cursorStatePath,
+        runtimeStatePath,
+        sessionId: env.INTENT_BROKER_REALTIME_SESSION_ID || '',
+        cwd,
+        env,
         parentPid,
         isProcessAlive: isProcessAliveImpl,
-        registerParticipant
+        registerParticipant,
+        ackInbox,
+        spawnImpl,
+        loadRealtimeQueueState: loadRealtimeQueueState,
+        saveRealtimeQueueState: saveRealtimeQueueState,
+        loadCursorState,
+        saveCursorState,
+        loadRuntimeState,
+        saveRuntimeState
       });
 
       if (normalizePid(parentPid) && !isProcessAliveImpl(parentPid)) {

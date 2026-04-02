@@ -34,7 +34,7 @@ import {
   writeCodexConfig,
   writeHooksConfig
 } from '../install.js';
-import { runSessionStartHook, runUserPromptSubmitHook } from '../hooks.js';
+import { runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -57,7 +57,8 @@ function usage() {
   node adapters/codex-plugin/bin/codex-broker.js keepalive
   node adapters/codex-plugin/bin/codex-broker.js realtime-bridge
   node adapters/codex-plugin/bin/codex-broker.js hook session-start
-  node adapters/codex-plugin/bin/codex-broker.js hook user-prompt-submit`);
+  node adapters/codex-plugin/bin/codex-broker.js hook user-prompt-submit
+  node adapters/codex-plugin/bin/codex-broker.js hook stop`);
 }
 
 async function readJsonStdin() {
@@ -90,6 +91,20 @@ async function handleUserPromptSubmitHook() {
   process.stdout.write(JSON.stringify(buildCodexHookOutput('UserPromptSubmit', context)));
 }
 
+async function handleStopHook() {
+  const input = await readJsonStdin();
+  const continuationPrompt = await runStopHook(input);
+
+  if (!continuationPrompt) {
+    return;
+  }
+
+  process.stdout.write(JSON.stringify({
+    decision: 'block',
+    reason: continuationPrompt
+  }));
+}
+
 function parseInstallOptions(args = []) {
   return {
     verbose: args.includes('--verbose-hooks')
@@ -103,7 +118,8 @@ async function install(args = []) {
   const existingConfig = readHooksConfig(paths.hooksConfigPath);
   const mergedConfig = mergeIntentBrokerHooks(existingConfig, {
     sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
-    userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit')
+    userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
+    stopCommand: buildHookCommand(cliPath, 'stop')
   }, { verbose: options.verbose });
 
   writeCodexConfig(paths.configPath, enableCodexHooksFeature(configText));
@@ -306,6 +322,10 @@ switch (command) {
     }
     if (args[0] === 'user-prompt-submit') {
       await handleUserPromptSubmitHook();
+      break;
+    }
+    if (args[0] === 'stop') {
+      await handleStopHook();
       break;
     }
     usage();

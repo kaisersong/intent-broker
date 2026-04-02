@@ -40,7 +40,8 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
     {},
     {
       sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
-      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit'
+      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+      stopCommand: 'node "/repo/codex-broker.js" hook stop'
     }
   );
 
@@ -66,6 +67,16 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
             }
           ]
         }
+      ],
+      Stop: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/codex-broker.js" hook stop'
+            }
+          ]
+        }
       ]
     }
   });
@@ -76,13 +87,15 @@ test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
     {},
     {
       sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
-      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit'
+      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+      stopCommand: 'node "/repo/codex-broker.js" hook stop'
     },
     { verbose: true }
   );
 
   assert.equal(merged.hooks.SessionStart[0].hooks[0].statusMessage, 'intent-broker session sync');
   assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].statusMessage, 'intent-broker inbox sync');
+  assert.equal(merged.hooks.Stop[0].hooks[0].statusMessage, 'intent-broker auto continue');
 });
 
 test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preserves unrelated hooks', () => {
@@ -121,12 +134,24 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
               }
             ]
           }
+        ],
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'node old-intent-broker hook stop',
+                statusMessage: 'intent-broker auto continue'
+              }
+            ]
+          }
         ]
       }
     },
     {
       sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
-      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit'
+      userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+      stopCommand: 'node "/repo/codex-broker.js" hook stop'
     }
   );
 
@@ -140,12 +165,17 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
     merged.hooks.UserPromptSubmit[0].hooks[0].command,
     'node "/repo/codex-broker.js" hook user-prompt-submit'
   );
+  assert.equal(
+    merged.hooks.Stop[0].hooks[0].command,
+    'node "/repo/codex-broker.js" hook stop'
+  );
 });
 
 test('managedHookStatusMessages exposes stable hook status labels', () => {
   assert.deepEqual(managedHookStatusMessages, {
     sessionStart: 'intent-broker session sync',
-    userPromptSubmit: 'intent-broker inbox sync'
+    userPromptSubmit: 'intent-broker inbox sync',
+    stop: 'intent-broker auto continue'
   });
 });
 

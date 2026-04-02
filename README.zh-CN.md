@@ -58,7 +58,7 @@
 3. 人类在云之家里给 `@codex` 发任务，比如“负责 websocket 重连修复”，再给 `@claude` 发并行任务，比如“检查 shutdown 路径并提前看冲突”。
 4. 每个 agent 会更新自己的 work-state、持续同步 progress，也可以直接向另一个 agent 请求信息或交接，而不需要所有消息都靠人肉转发。
 5. 在准备提交前，某个 agent 可以先查询当前项目里还有谁正在工作，判断是否有重叠修改，再通过同一条 task/thread 时间线协商交接或冲突处理。
-6. 即使 broker 重启，或者某个 agent 暂时空闲，任务上下文也仍然保留；下一次 prompt submit 或 inbox pull 时，可以直接从 broker 状态恢复，不会把协作过程丢掉。
+6. 即使 broker 重启，或者某个 agent 暂时空闲，任务上下文也仍然保留；Codex 在空闲时可以自动续起可执行任务，Claude Code 也仍然可以在下一次 prompt submit 或显式 inbox pull 时从 broker 状态恢复，不会把协作过程丢掉。
 
 重点不是“让几个 agent 能聊天”，而是让人可以并行分派工作，同时让 agent 之间保留足够的共享状态，去协商任务归属、进度同步、审批以及冲突处理，减少人类来回转述和手工协调。
 
@@ -71,6 +71,7 @@
 - 按项目查询 participant
 - 记录并查询 participant 当前工作状态
 - `task`、`ask`、`note`、`progress` 协作的默认投递语义
+- 按发送方和 intent 类型区分 `actionable` / `informational` 的默认投递语义
 - 基于 websocket 的在线 / 离线 presence 追踪
 - 新 client 上线 / 离线时的 presence 广播
 - `request_task`、`report_progress`、`request_approval`、`respond_approval`
@@ -85,6 +86,7 @@
 - WebSocket 实时通知通道
 - 云之家 adapter 的真实入站 / 出站联调
 - 面向真实 Codex 会话的非侵入 hook 接入
+- Codex 对 `actionable` 队列的空闲自动起工，以及通过 `Stop` hook 的回合结束续跑
 - 面向真实 Claude Code 会话的非侵入 hook 接入
 - 带静默重连能力的 session 级 realtime bridge 本地队列
 
@@ -412,6 +414,13 @@ POST /participants/register
 - presence keeper：broker 重启后自动补注册，父会话退出后自动下线
 - realtime bridge：通过 websocket 收件，并把事件追加到 `~/.intent-broker/<tool>/` 下的本地队列
 
+当前各工具的 bridge 行为：
+
+- 人类消息通道 -> agent：默认按可执行命令处理
+- agent 发 `task` / `ask`：默认是 `actionable`；agent 发 `note` / `progress` / reply：默认是 `informational`
+- Codex 在空闲时可以自动派发 `actionable` 队列，并在当前 turn 结束后通过 `Stop` hook 自动续跑
+- Claude Code 保持相同的队列语义，但仍然是在下一次 prompt submit 或显式 inbox pull 时消费
+
 ### 2. 优先用 inbox pull，不要假设必须常连
 
 最可靠的消费路径是主动拉 inbox：
@@ -538,11 +547,12 @@ adapter 会在 channel 中回一条协作列表，按 `在线` / `离线` 分组
 
 ## Codex 接入
 
-当前最适合 Codex 的方式是“hook + skill”的非侵入接入，不改 Codex 原本启动方式，只是在本地安装两个 hook 和一个 skill：
+当前最适合 Codex 的方式是“hook + skill”的非侵入接入，不改 Codex 原本启动方式，只是在本地安装三个 hook 和一个 skill：
 
 - `SessionStart` hook：真实 Codex 会话启动或恢复时，静默向 broker 自动注册当前会话，记录当前 `projectName`，上报一个初始 `idle` 工作状态，并拉起一个轻量后台 keeper，在 TUI 打开期间持续保活 presence。
 - `SessionStart` hook：同时拉起 realtime bridge 守护进程，通过 websocket 收件并立即写入本地队列状态。
 - `UserPromptSubmit` hook：真实用户提交 prompt 前，会静默重注册当前会话，再检查是否有新到达的 broker 事件；只有确实存在待处理协作上下文时，才把它们注入当前 turn。
+- `Stop` hook：当前 Codex turn 结束时，如果期间新到了可执行 broker 任务，就把这批队列转成自动续跑 prompt，在不打断当前工作的前提下衔接下一轮。
 - `intent-broker` skill：给当前 Codex 会话一个明确的出站入口，用来发任务和发进度。
 
 正常使用流程：
@@ -551,7 +561,9 @@ adapter 会在 channel 中回一条协作列表，按 `在线` / `离线` 分组
 - 直接在目标项目目录里打开 Codex
 - 让 `SessionStart` 在会话启动时自动完成静默注册
 - 让后台 keeper 在会话空闲时也维持在线状态，并在 broker 重启后自动补注册
-- 让 `UserPromptSubmit` 只在下一次真实 prompt 提交时，按需把新协作上下文注入进来
+- 让 realtime bridge 在 Codex 空闲时自动派发 `actionable` 队列
+- 让 `UserPromptSubmit` 在下一次真实 prompt 提交时优先注入本地队列里的协作上下文
+- 让 `Stop` 在当前 turn 结束后把新到达的可执行队列自动续上，既不丢任务，也不打断当前回合
 
 ### 安装 Codex 桥接
 
@@ -572,7 +584,7 @@ node adapters/codex-plugin/bin/codex-broker.js install --verbose-hooks
 - `~/.codex/hooks.json`
 - `~/.codex/skills/intent-broker`（符号链接）
 - `~/.local/bin/intent-broker` 统一命令 shim
-- `~/.intent-broker/codex/*.json` 本地 cursor 状态、realtime 队列状态和辅助进程元数据
+- `~/.intent-broker/codex/*.json` 本地 cursor 状态、realtime 队列状态、runtime 状态和辅助进程元数据
 
 现在 Codex 桥接在注册时会默认使用当前工作目录名作为 `projectName`。如果你想手动指定，可以设置 `PROJECT_NAME`。
 
@@ -585,7 +597,11 @@ node adapters/codex-plugin/bin/codex-broker.js install --verbose-hooks
 - 现在 hook 输入里的 `session_id` 会优先于继承下来的 `CODEX_THREAD_ID`，所以即使你在一个 agent 环境里再拉起新的 Codex，也不会错误复用父会话的 participant id。
 - 后台 keeper 会在 Codex 父进程仍存活时持续保活 presence，在父进程退出后把 participant 标记为离线。
 - realtime bridge 会在 broker 重启后静默重连，并持续把 websocket 事件写入本地队列状态。
-- 这并不意味着 Codex 已经变成“完全实时收件”。broker 新消息仍然会在下一次 prompt submit，或你显式执行本地 inbox pull 时进入会话上下文。
+- 在下一次 prompt submit 时，Codex 会先 drain 本地 realtime 队列，再回退到 broker poll，因此 websocket 到达的事件会优先注入。
+- hook 注入的协作上下文会区分 `actionable` 和 `informational`。人类消息，以及 agent 的 `task` / `ask` 默认是 `actionable`；`note` / `progress` 默认是 `informational`。
+- 如果 Codex 当前空闲，而本地队列里来了 `actionable` 事件，realtime bridge 会自动执行 `codex exec --json --full-auto resume ...`，无需人工再补一个 prompt。
+- 如果 Codex 当前忙碌，`Stop` hook 会在当前 turn 完成后，把待处理的 `actionable` 队列转成自动续跑 prompt。
+- 只有 `informational` 的队列仍然会留到下一次 prompt submit，或你显式执行本地 inbox pull 时再消费。
 - 如果你把本仓库挪了位置，需要重新执行一次 `npm run codex:install`，刷新 hook 里的绝对路径。
 
 ### 在真实 Codex 会话里主动发消息
