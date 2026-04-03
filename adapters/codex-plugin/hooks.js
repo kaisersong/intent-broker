@@ -17,7 +17,10 @@ import {
   buildCodexHookContext,
   highestEventId
 } from '../session-bridge/codex-hooks.js';
-import { deriveSessionBridgeConfig } from '../session-bridge/config.js';
+import {
+  deriveSessionBridgeConfig,
+  resolveSessionCwdFromTranscript as resolveSessionCwdFromTranscriptDefault
+} from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
 import {
   markPendingReplyMirror as markPendingReplyMirrorDefault,
@@ -50,8 +53,17 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const cliPath = path.resolve(path.dirname(__filename), 'bin', 'codex-broker.js');
 
-function configFromHookInput(input, { env = process.env, cwd = process.cwd() } = {}) {
+function configFromHookInput(
+  input,
+  {
+    env = process.env,
+    cwd = process.cwd(),
+    homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault
+  } = {}
+) {
   const sessionId = input.session_id || env.CODEX_THREAD_ID || '';
+  const sessionCwd = resolveSessionCwdFromTranscript('codex', sessionId, { homeDir });
   return deriveSessionBridgeConfig({
     toolName: 'codex',
     env: {
@@ -59,7 +71,8 @@ function configFromHookInput(input, { env = process.env, cwd = process.cwd() } =
       INTENT_BROKER_INBOX_MODE: env.INTENT_BROKER_INBOX_MODE || 'realtime',
       CODEX_THREAD_ID: sessionId
     },
-    cwd
+    cwd,
+    sessionCwd
   });
 }
 
@@ -103,6 +116,7 @@ export async function runSessionStartHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
@@ -113,7 +127,7 @@ export async function runSessionStartHook(
   } = {}
 ) {
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd });
+    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
@@ -162,6 +176,7 @@ export async function runUserPromptSubmitHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
@@ -181,7 +196,7 @@ export async function runUserPromptSubmitHook(
   }
 
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd });
+    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
@@ -326,6 +341,7 @@ export async function runStopHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
     loadCursorState = loadCursorStateDefault,
     saveCursorState = saveCursorStateDefault,
     loadRuntimeState = loadRuntimeStateDefault,
@@ -340,7 +356,7 @@ export async function runStopHook(
   } = {}
 ) {
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd });
+    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);

@@ -106,6 +106,31 @@ test('session start hook prefers hook session id over inherited CODEX_THREAD_ID'
   assert.deepEqual(calls, ['codex-session-019d9999']);
 });
 
+test('session start hook prefers transcript session cwd over hook cwd for project name', async () => {
+  const calls = [];
+
+  await runSessionStartHook(
+    {
+      session_id: '019d7777-1234-5678-9999-aaaaaaaaaaaa'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects',
+      homeDir: '/Users/song',
+      loadCursorState: () => ({ lastSeenEventId: 0 }),
+      resolveSessionCwdFromTranscript: () => '/Users/song/projects/intent-broker',
+      registerParticipant: async (config) => {
+        calls.push(config.context);
+        return { ok: true };
+      },
+      updateWorkState: async () => ({ ok: true }),
+      pollInbox: async () => ({ items: [] })
+    }
+  );
+
+  assert.deepEqual(calls, [{ projectName: 'intent-broker' }]);
+});
+
 test('user prompt submit hook skips slash commands without registering', async () => {
   const calls = [];
   const result = await runUserPromptSubmitHook(

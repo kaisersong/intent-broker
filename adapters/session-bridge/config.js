@@ -1,8 +1,16 @@
+import { closeSync, openSync, readSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
-function deriveProjectName({ env, cwd }) {
+import { resolveTranscriptPath as resolveTranscriptPathDefault } from './reply-mirror.js';
+
+function deriveProjectName({ env, cwd, sessionCwd }) {
   if (env.PROJECT_NAME) {
     return env.PROJECT_NAME;
+  }
+
+  if (sessionCwd) {
+    return path.basename(sessionCwd);
   }
 
   if (!cwd) {
@@ -10,6 +18,82 @@ function deriveProjectName({ env, cwd }) {
   }
 
   return path.basename(cwd);
+}
+
+function readTranscriptHead(transcriptPath, { byteLimit = 32768 } = {}) {
+  let fd;
+
+  try {
+    fd = openSync(transcriptPath, 'r');
+    const buffer = Buffer.alloc(byteLimit);
+    const bytesRead = readSync(fd, buffer, 0, byteLimit, 0);
+    return buffer.toString('utf8', 0, bytesRead);
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      closeSync(fd);
+    }
+  }
+}
+
+function extractSessionCwdFromEntries(toolName, sessionId, rawHead = '') {
+  if (!rawHead) {
+    return null;
+  }
+
+  for (const line of rawHead.split('\n')) {
+    if (!line) {
+      continue;
+    }
+
+    try {
+      const entry = JSON.parse(line);
+
+      if (
+        toolName === 'codex'
+        && entry?.type === 'session_meta'
+        && entry?.payload?.id === sessionId
+        && typeof entry?.payload?.cwd === 'string'
+        && entry.payload.cwd
+      ) {
+        return entry.payload.cwd;
+      }
+
+      if (
+        toolName === 'claude-code'
+        && entry?.sessionId === sessionId
+        && typeof entry?.cwd === 'string'
+        && entry.cwd
+      ) {
+        return entry.cwd;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+export function resolveSessionCwdFromTranscript(
+  toolName,
+  sessionId,
+  {
+    homeDir = os.homedir(),
+    resolveTranscriptPath = resolveTranscriptPathDefault
+  } = {}
+) {
+  if (!sessionId) {
+    return null;
+  }
+
+  const transcriptPath = resolveTranscriptPath(toolName, sessionId, { homeDir });
+  if (!transcriptPath) {
+    return null;
+  }
+
+  return extractSessionCwdFromEntries(toolName, sessionId, readTranscriptHead(transcriptPath));
 }
 
 function deriveAlias({ toolName, env }) {
@@ -27,11 +111,16 @@ function deriveAlias({ toolName, env }) {
   return aliasMap[toolName] || toolName.replace(/-code$/, '');
 }
 
-export function deriveSessionBridgeConfig({ toolName, env = process.env, cwd = process.cwd() } = {}) {
+export function deriveSessionBridgeConfig({
+  toolName,
+  env = process.env,
+  cwd = process.cwd(),
+  sessionCwd = null
+} = {}) {
   const brokerUrl = env.BROKER_URL || 'http://127.0.0.1:4318';
   const explicitParticipantId = env.PARTICIPANT_ID;
   const threadId = env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || '';
-  const projectName = deriveProjectName({ env, cwd });
+  const projectName = deriveProjectName({ env, cwd, sessionCwd });
   const inboxMode = env.INTENT_BROKER_INBOX_MODE || 'pull';
 
   let participantId = explicitParticipantId;

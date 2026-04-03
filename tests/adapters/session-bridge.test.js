@@ -85,3 +85,14 @@ test('deriveSessionBridgeConfig honors explicit inbox mode override', () => {
 
   assert.equal(config.inboxMode, 'realtime');
 });
+
+test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd for project name', () => {
+  const config = deriveSessionBridgeConfig({
+    toolName: 'codex',
+    env: {},
+    cwd: '/Users/song/projects',
+    sessionCwd: '/Users/song/projects/intent-broker'
+  });
+
+  assert.deepEqual(config.context, { projectName: 'intent-broker' });
+});
