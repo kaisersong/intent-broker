@@ -101,6 +101,8 @@ test('Yunzhijia adapter translates inbound and outbound broker traffic', { concu
   const replay = await fetch(`${brokerUrl}/events/replay?after=0`).then((res) => res.json());
   assert.equal(replay.items.length, 1);
   assert.equal(replay.items[0].fromParticipantId, 'human.yzj_user_local');
+  assert.equal(replay.items[0].taskId, 'yzj-msg_local_1');
+  assert.equal(replay.items[0].threadId, 'yzj-msg_local_1');
   assert.equal(replay.items[0].payload.body.summary, 'ping from yzj');
 
   await fetch(`${brokerUrl}/intents`, {
@@ -127,6 +129,105 @@ test('Yunzhijia adapter translates inbound and outbound broker traffic', { concu
   assert.equal(outboundPosts[0].content, '【需要回答】reply to yzj');
   assert.deepEqual(outboundPosts[0].notifyParams[0].values, ['user_local']);
   assert.equal(outboundPosts[0].param.replyMsgId, 'msg_local_1');
+});
+
+test('Yunzhijia adapter shows which agent replied when forwarding broker progress back to the human', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({
+    participantId: 'claude.session.reply',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: ['broker.auto_dispatch'],
+    alias: 'claude2',
+    inboxMode: 'realtime'
+  });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+
+  t.after(async () => {
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@claude2 你在做什么',
+        msgId: 'msg_agent_reply_1'
+      }
+    })
+  );
+
+  await waitFor(() => adapter.userWebSockets.has('human.yzj_user_local'));
+  outboundPosts.length = 0;
+
+  await fetch(`${brokerUrl}/intents`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      intentId: 'progress-reply-1',
+      kind: 'report_progress',
+      fromParticipantId: 'claude.session.reply',
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      to: { mode: 'participant', participants: ['human.yzj_user_local'] },
+      payload: {
+        body: { summary: '我在处理 broker 自动回复链路。' },
+        metadata: { msgId: 'msg_agent_reply_1', yzjUserId: 'user_local' }
+      }
+    })
+  });
+
+  await waitFor(() => outboundPosts.length === 1);
+
+  assert.match(outboundPosts[0].content, /claude/i);
+  assert.match(outboundPosts[0].content, /我在处理 broker 自动回复链路/);
+  assert.equal(outboundPosts[0].param.replyMsgId, 'msg_agent_reply_1');
+  assert.deepEqual(outboundPosts[0].notifyParams[0].values, ['user_local']);
 });
 
 test('Yunzhijia adapter routes @alias, @all and replies on unknown aliases', { concurrency: false }, async (t) => {
@@ -570,6 +671,95 @@ test('Yunzhijia adapter tells humans when realtime agents are online but bridge 
   assert.match(outboundPosts[0].content, /@codex/);
 });
 
+test('Yunzhijia adapter tells humans when realtime delivery only reaches the local queue without auto-dispatch', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({
+    participantId: 'agent.receive-only',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'receiveonly',
+    inboxMode: 'realtime'
+  });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+  let agentSocket = null;
+
+  t.after(async () => {
+    adapter.stop();
+    if (agentSocket && agentSocket.readyState === WebSocket.OPEN) {
+      const closed = once(agentSocket, 'close').catch(() => null);
+      agentSocket.close();
+      await closed;
+    }
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  agentSocket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ws?participantId=agent.receive-only`);
+  await once(agentSocket, 'open');
+  await waitFor(() => broker.getPresence('agent.receive-only')?.status === 'online');
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@receiveonly 你在做什么，回复我',
+        msgId: 'msg_receive_only_1'
+      }
+    })
+  );
+
+  await waitFor(() => broker.readInbox('agent.receive-only', { after: 0 }).items.some((item) => item.kind === 'ask_clarification'));
+  await waitFor(() => outboundPosts.length >= 1);
+
+  assert.match(outboundPosts[0].content, /@receiveonly/);
+  assert.match(outboundPosts[0].content, /本地收件队列/);
+  assert.match(outboundPosts[0].content, /不会自动执行|下一次本地交互/);
+});
+
 test('Yunzhijia adapter tells humans when mentioned agents are truly offline', { concurrency: false }, async (t) => {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
@@ -650,7 +840,13 @@ test('Yunzhijia adapter tells humans which recipients were reached in realtime a
   const brokerPort = brokerServer.address().port;
   const brokerUrl = `http://127.0.0.1:${brokerPort}`;
 
-  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: ['broker.auto_dispatch'],
+    alias: 'codex'
+  });
   broker.registerParticipant({ participantId: 'claude.b', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'claude' });
   broker.updatePresence('claude.b', 'offline', { reason: 'test' });
 
@@ -684,12 +880,12 @@ test('Yunzhijia adapter tells humans which recipients were reached in realtime a
   let agentSocket = null;
 
   t.after(async () => {
+    adapter.stop();
     if (agentSocket && agentSocket.readyState === WebSocket.OPEN) {
       const closed = once(agentSocket, 'close').catch(() => null);
       agentSocket.close();
       await closed;
     }
-    adapter.stop();
     await new Promise((resolve) => yzjWss.close(resolve));
     await new Promise((resolve) => yzjServer.close(resolve));
     await brokerServer.close();
@@ -723,7 +919,7 @@ test('Yunzhijia adapter tells humans which recipients were reached in realtime a
   await waitFor(() => outboundPosts.some((post) => /当前不在线/.test(post.content)));
   await waitFor(() => outboundPosts.some((post) => /已实时投递给/.test(post.content)));
 
-  assert.ok(outboundPosts.some((post) => /已实时投递给/.test(post.content) && /@codex/.test(post.content)));
+  assert.ok(outboundPosts.some((post) => /自动起工/.test(post.content) && /@codex/.test(post.content)));
   assert.ok(outboundPosts.some((post) => /当前不在线/.test(post.content) && /@claude/.test(post.content)));
 });
 
@@ -812,7 +1008,10 @@ test('Yunzhijia adapter forwards new client online notifications to channel', { 
 
   await waitFor(() => outboundPosts.some((post) => /已上线/.test(post.content)));
 
-  const onlinePost = outboundPosts.find((post) => /已上线/.test(post.content));
+  const onlinePosts = outboundPosts.filter((post) => /已上线/.test(post.content));
+  assert.equal(onlinePosts.length, 1);
+
+  const onlinePost = onlinePosts[0];
   assert.match(onlinePost.content, /codex4/);
   assert.equal(onlinePost.notifyParams, undefined);
 

@@ -72,7 +72,11 @@ test('runReplyCommand reuses recent context and sends targeted progress reply', 
           fromParticipantId: 'claude.session',
           fromAlias: 'claude2',
           taskId: 'task-9',
-          threadId: 'thread-9'
+          threadId: 'thread-9',
+          metadata: {
+            msgId: 'msg-9',
+            yzjUserId: 'user_local'
+          }
         }
       }),
       sendProgress: async (config, payload) => {
@@ -91,6 +95,10 @@ test('runReplyCommand reuses recent context and sends targeted progress reply', 
   assert.equal(sent[0].payload.taskId, 'task-9');
   assert.equal(sent[0].payload.threadId, 'thread-9');
   assert.equal(sent[0].payload.summary, '已收到，开始处理');
+  assert.deepEqual(sent[0].payload.metadata, {
+    msgId: 'msg-9',
+    yzjUserId: 'user_local'
+  });
   assert.deepEqual(cleared, [{ toolName: 'codex', participantId: 'codex.main' }]);
   assert.match(outputs[0], /Replied to claude2/);
   assert.match(outputs[0], /task=task-9/);

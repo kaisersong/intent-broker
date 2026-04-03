@@ -8,6 +8,14 @@ function summarizePayload(payload = {}) {
   return '';
 }
 
+function copyMetadata(payload = {}) {
+  if (!payload?.metadata || typeof payload.metadata !== 'object') {
+    return null;
+  }
+
+  return { ...payload.metadata };
+}
+
 export function pickRecentContext(items = []) {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
@@ -26,7 +34,8 @@ export function pickRecentContext(items = []) {
       fromProjectName: item.fromProjectName ?? null,
       taskId: item.taskId,
       threadId: item.threadId,
-      summary: summarizePayload(item.payload)
+      summary: summarizePayload(item.payload),
+      metadata: copyMetadata(item.payload)
     };
   }
 

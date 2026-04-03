@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -164,6 +164,131 @@ test('ensureSessionKeeper replaces a live keeper when the persisted inbox mode i
   assert.equal(replaced.started, true);
   assert.deepEqual(kills, [5151]);
   assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 6161);
+});
+
+test('ensureSessionKeeper replaces a live keeper when the same session resumes under a new parent pid', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-'));
+  const kills = [];
+
+  await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    spawnImpl: () => ({
+      pid: 5151,
+      unref() {}
+    })
+  });
+
+  const replaced = await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 9898,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 6161,
+      unref() {}
+    })
+  });
+
+  assert.equal(replaced.started, true);
+  assert.deepEqual(kills, [5151]);
+  assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 6161);
+});
+
+test('ensureSessionKeeper replaces a live keeper when persisted state predates brokerUrl tracking', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-'));
+  const kills = [];
+
+  const initial = await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    spawnImpl: () => ({
+      pid: 5151,
+      unref() {}
+    })
+  });
+
+  const persisted = JSON.parse(readFileSync(initial.statePath, 'utf8'));
+  delete persisted.brokerUrl;
+  writeFileSync(initial.statePath, JSON.stringify(persisted, null, 2));
+
+  const replaced = await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 6161,
+      unref() {}
+    })
+  });
+
+  assert.equal(replaced.started, true);
+  assert.deepEqual(kills, [5151]);
+  assert.deepEqual(JSON.parse(readFileSync(replaced.statePath, 'utf8')), {
+    pid: 6161,
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    inboxMode: 'realtime',
+    brokerUrl: 'http://127.0.0.1:4318',
+    parentPid: 4242,
+    startedAt: JSON.parse(readFileSync(replaced.statePath, 'utf8')).startedAt
+  });
 });
 
 test('resolveObservedParentPid skips shell wrapper processes when possible', () => {

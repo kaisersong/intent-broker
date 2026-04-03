@@ -32,6 +32,7 @@ test('deriveSessionBridgeConfig derives participant id from codex thread id', ()
   assert.equal(config.brokerUrl, 'http://127.0.0.1:4318');
   assert.equal(config.participantId, 'codex-session-019d42b4');
   assert.equal(config.alias, 'codex');
+  assert.deepEqual(config.capabilities, ['broker.auto_dispatch']);
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
 });
 
@@ -46,6 +47,7 @@ test('deriveSessionBridgeConfig derives participant id from claude code session 
 
   assert.equal(config.participantId, 'claude-code-session-019d42d0');
   assert.equal(config.alias, 'claude');
+  assert.deepEqual(config.capabilities, ['broker.auto_dispatch']);
 });
 
 test('deriveSessionBridgeConfig falls back to tool name when no thread id exists', () => {

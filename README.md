@@ -4,7 +4,7 @@
 
 Local-first collaboration broker for multi-agent workflows. It is not a chat server and not a workflow platform. It is a reliable protocol layer that persists events before delivery, so agents like Codex, Claude Code, and OpenCode can collaborate with human participants around the same task object.
 
-Current release version: `0.1.2`
+Current release version: `0.1.3`
 
 `Intent Broker` is a coordination layer for one human and multiple coding agents working on the same project.
 
@@ -90,6 +90,7 @@ The current prototype supports:
 - non-invasive Claude Code hook integration for project-level inbox injection
 - automatic actionable-reply mirroring from real Codex / Claude Code transcript output back into broker, with explicit `intent-broker reply` fallback when transcript capture is unavailable
 - session-scoped realtime bridge queue with quiet reconnect after broker restart
+- Claude Code auto-dispatch recovery that resets stale runtime state and re-queues work when a non-interactive dispatch attempt fails
 
 ## Tech Stack
 
@@ -720,9 +721,11 @@ Notes:
 - the background keeper keeps Claude Code presence online while the parent session stays open, and marks it offline after the parent exits
 - the realtime bridge quietly reconnects after broker restart and keeps appending websocket events into local queue state
 - on the next prompt submit, Claude Code now drains the local realtime queue before falling back to broker poll, so websocket-delivered items are injected first
+- if a Claude Code non-interactive auto-dispatch attempt fails, the bridge now resets stale runtime state and re-queues the actionable item instead of dropping it
 - hook-injected collaboration context now separates actionable items from informational items. Human-channel messages and `task` / `ask` default to actionable; `note` / `progress` default to informational
 - broker-injected actionable items now prefer transcript-based automatic reply mirroring at `Stop` time; if transcript capture fails, explicit `intent-broker --tool claude-code reply ...` remains the fallback
 - Claude Code still consumes queued broker inbox context on the next prompt submit or explicit local inbox pull, not by silently acting on messages while idle
+- when the local Claude CLI cannot safely resume the active session for non-interactive execution, realtime delivery degrades to queued delivery for the next local interaction instead of pretending the message was handled
 - if you move this repo, run `npm run claude-code:install` again to refresh command paths
 
 ### Send from a real Claude Code session

@@ -39,6 +39,14 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
       return [];
     }
   };
+  const discovery = {
+    async start() {
+      order.push('discovery-start');
+    },
+    async stop() {
+      order.push('discovery-stop');
+    }
+  };
 
   const app = await startBrokerApp({
     cwd: '/Users/song/projects/intent-broker',
@@ -53,6 +61,7 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     createBroker: () => broker,
     createHttpServer: () => server,
     createChannelsRuntime: () => channels,
+    createCodexResumeDiscoveryRuntime: () => discovery,
     syncAgentBridges: async (options) => {
       order.push(`sync:${options.repoRoot}`);
       return [];
@@ -65,8 +74,9 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     'attach-ws',
     'channels-start'
   ]);
+  assert.equal(order[4], 'discovery-start');
 
   await app.close();
 
-  assert.deepEqual(order.slice(-3), ['channels-stop', 'broker-close', 'server-close']);
+  assert.deepEqual(order.slice(-4), ['discovery-stop', 'channels-stop', 'broker-close', 'server-close']);
 });

@@ -165,6 +165,37 @@ test('user prompt submit hook skips slash commands', async () => {
   assert.deepEqual(calls, []);
 });
 
+test('user prompt submit hook is a no-op during claude auto-dispatch print resumes', async () => {
+  const calls = [];
+
+  const result = await runUserPromptSubmitHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      prompt: 'auto reply'
+    },
+    {
+      env: { INTENT_BROKER_SKIP_INBOX_SYNC: '1' },
+      cwd: '/Users/song/projects/intent-broker',
+      ensureSessionKeeper: async () => {
+        calls.push('keeper');
+      },
+      ensureRealtimeBridge: async () => {
+        calls.push('bridge');
+      },
+      registerParticipant: async () => {
+        calls.push('register');
+      },
+      pollInbox: async () => {
+        calls.push('poll');
+        return { items: [] };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, []);
+});
+
 test('stop hook mirrors pending broker reply through transcript reader', async () => {
   const calls = [];
 
@@ -351,6 +382,36 @@ test('session start hook degrades gracefully when broker is unavailable', async 
   );
 
   assert.equal(result, null);
+});
+
+test('session start hook is a no-op during claude auto-dispatch print resumes', async () => {
+  const calls = [];
+
+  const result = await runSessionStartHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb'
+    },
+    {
+      env: { INTENT_BROKER_SKIP_INBOX_SYNC: '1' },
+      cwd: '/Users/song/projects/intent-broker',
+      ensureSessionKeeper: async () => {
+        calls.push('keeper');
+      },
+      ensureRealtimeBridge: async () => {
+        calls.push('bridge');
+      },
+      registerParticipant: async () => {
+        calls.push('register');
+      },
+      pollInbox: async () => {
+        calls.push('poll');
+        return { items: [] };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, []);
 });
 
 test('user prompt submit hook degrades gracefully when broker is unavailable', async () => {

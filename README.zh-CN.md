@@ -4,7 +4,7 @@
 
 本地优先的多 Agent 协作 broker。它不是聊天服务器，也不是工作流平台，而是一层可靠的协作协议中间层：先持久化事件，再进行投递；让 Codex、Claude Code、OpenCode 这类 agent 与人类参与方围绕同一任务对象协作。
 
-当前发布版本：`0.1.2`
+当前发布版本：`0.1.3`
 
 `Intent Broker` 是一个服务于“一个人 + 多个开发智能体”的协作协调层。
 
@@ -90,6 +90,7 @@
 - 面向真实 Claude Code 会话的非侵入 hook 接入
 - 来自真实 Codex / Claude Code transcript 的 `actionable` 自动回复镜像；拿不到 transcript 时自动降级回显式 `intent-broker reply`
 - 带静默重连能力的 session 级 realtime bridge 本地队列
+- Claude Code auto-dispatch 的自愈恢复：非交互派发失败时会重置卡住的 runtime，并把任务重新塞回本地队列
 
 ## 技术选型
 
@@ -716,8 +717,10 @@ node adapters/claude-code-plugin/bin/claude-code-broker.js install --verbose-hoo
 - 现在 hook 输入里的 `session_id` 会优先于继承下来的 session 环境变量，避免嵌套拉起时多个客户端错误共用同一个 participant id
 - 后台 keeper 会在 Claude Code 父会话仍存活时维持在线状态，退出后再自动标记离线
 - realtime bridge 会在 broker 重启后静默重连，并持续把 websocket 事件写入本地队列状态
+- 如果 Claude Code 的一次非交互 auto-dispatch 失败，bridge 现在会自动清掉卡住的 runtime，并把 `actionable` 任务重新放回本地队列，而不是直接丢掉
 - broker 注入的 `actionable` 现在会优先在 `Stop` 时做 transcript 自动回复镜像；如果 transcript 抓取失败，就继续走显式 `intent-broker --tool claude-code reply ...` 降级路径
 - Claude Code 仍然是在下一次 prompt submit，或你显式执行本地 inbox pull 时，才消费已排队的 broker 上下文，而不是空闲时静默自动执行
+- 当本地 Claude CLI 无法安全地以非交互方式恢复当前活跃会话时，realtime 投递会自动降级为“排队等待下一次本地交互”，而不是假装已经处理完成
 - 如果你把本仓库挪了位置，需要重新执行一次 `npm run claude-code:install`，刷新命令路径
 
 ### 在真实 Claude Code 会话里主动发消息

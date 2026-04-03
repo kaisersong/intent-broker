@@ -108,11 +108,18 @@ export async function ensureSessionKeeper({
   const statePath = resolveSessionKeeperStatePath(toolName, config.participantId, { homeDir });
   mkdirSync(path.dirname(statePath), { recursive: true });
   const desiredInboxMode = config.inboxMode || 'pull';
+  const normalizedParentPid = normalizePid(parentPid);
 
   const existing = readKeeperState(statePath);
+  const sameBrokerUrl = existing?.brokerUrl === config.brokerUrl;
+  const sameParentPid = normalizedParentPid
+    ? normalizePid(existing?.parentPid) === normalizedParentPid
+    : true;
   if (
     existing?.sessionId === sessionId &&
     existing?.inboxMode === desiredInboxMode &&
+    sameBrokerUrl &&
+    sameParentPid &&
     existing?.pid &&
     isProcessAliveImpl(existing.pid)
   ) {
@@ -127,7 +134,7 @@ export async function ensureSessionKeeper({
     existing?.sessionId === sessionId &&
     existing?.pid &&
     isProcessAliveImpl(existing.pid) &&
-    existing?.inboxMode !== desiredInboxMode
+    (existing?.inboxMode !== desiredInboxMode || !sameBrokerUrl || !sameParentPid)
   ) {
     try {
       killImpl(existing.pid);
@@ -166,7 +173,8 @@ export async function ensureSessionKeeper({
     pid: child.pid,
     sessionId: sessionId || '',
     inboxMode: desiredInboxMode,
-    parentPid: parentPid || null,
+    brokerUrl: config.brokerUrl,
+    parentPid: normalizedParentPid,
     startedAt: new Date().toISOString()
   }, null, 2));
 
@@ -236,6 +244,7 @@ export async function runSessionKeeperProcess({
       pid: process.pid,
       sessionId: env.INTENT_BROKER_KEEPALIVE_SESSION_ID || '',
       inboxMode: desiredInboxMode,
+      brokerUrl: config.brokerUrl,
       parentPid: normalizePid(parentPid),
       startedAt: new Date().toISOString()
     }, null, 2));

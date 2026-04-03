@@ -226,7 +226,8 @@ export async function runReplyCommand(
     taskId: recentContext.taskId,
     threadId: recentContext.threadId,
     toParticipantId: targetParticipantId,
-    summary
+    summary,
+    metadata: recentContext.metadata || undefined
   });
   clearPendingReplyMirror(toolName, config.participantId, { homeDir });
 

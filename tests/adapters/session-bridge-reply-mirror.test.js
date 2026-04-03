@@ -48,11 +48,16 @@ test('maybeMirrorPendingReply mirrors Codex final answer back through broker', a
       {
         sessionId: 'session-codex-1',
         transcriptLineCount: 1,
+        autoMirror: true,
         recentContext: {
           fromParticipantId: 'human.yzj',
           fromAlias: 'song',
           taskId: 'task-1',
-          threadId: 'thread-1'
+          threadId: 'thread-1',
+          metadata: {
+            msgId: 'msg-101',
+            yzjUserId: 'user_local'
+          }
         }
       },
       { homeDir }
@@ -114,6 +119,10 @@ test('maybeMirrorPendingReply mirrors Codex final answer back through broker', a
     assert.equal(sent[0].taskId, 'task-1');
     assert.equal(sent[0].threadId, 'thread-1');
     assert.equal(sent[0].summary, '我已经定位到问题，正在提交修复。');
+    assert.deepEqual(sent[0].metadata, {
+      msgId: 'msg-101',
+      yzjUserId: 'user_local'
+    });
 
     const state = loadReplyMirrorState('codex', 'codex-session-codex-1', { homeDir });
     assert.equal(state.pending, null);
@@ -153,11 +162,16 @@ test('maybeMirrorPendingReply mirrors Claude final answer text and ignores tool_
       {
         sessionId: 'claude-session-1',
         transcriptLineCount: 1,
+        autoMirror: true,
         recentContext: {
           fromParticipantId: 'codex-peer',
           fromAlias: 'codex4',
           taskId: 'task-2',
-          threadId: 'thread-2'
+          threadId: 'thread-2',
+          metadata: {
+            msgId: 'msg-202',
+            yzjUserId: 'user_local'
+          }
         }
       },
       { homeDir }
@@ -214,6 +228,10 @@ test('maybeMirrorPendingReply mirrors Claude final answer text and ignores tool_
     assert.equal(sent.length, 1);
     assert.equal(sent[0].toParticipantId, 'codex-peer');
     assert.equal(sent[0].summary, '我在修 intent-broker 的自动回复链路。');
+    assert.deepEqual(sent[0].metadata, {
+      msgId: 'msg-202',
+      yzjUserId: 'user_local'
+    });
 
     const state = loadReplyMirrorState('claude-code', 'claude-code-session-claude-session-1', { homeDir });
     assert.equal(state.pending, null);
@@ -252,6 +270,7 @@ test('maybeMirrorPendingReply degrades cleanly when transcript has no assistant 
       {
         sessionId: 'claude-session-2',
         transcriptLineCount: 1,
+        autoMirror: true,
         recentContext: {
           fromParticipantId: 'human.yzj',
           fromAlias: 'song',
@@ -285,6 +304,73 @@ test('maybeMirrorPendingReply degrades cleanly when transcript has no assistant 
     assert.equal(state.pending, null);
     assert.equal(state.lastFailure.reason, 'assistant-output-not-found');
     assert.match(readFileSync(transcriptPath, 'utf8'), /旧消息/);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('maybeMirrorPendingReply clears legacy manual pending replies without mirroring them', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-reply-mirror-'));
+  const transcriptPath = path.join(
+    homeDir,
+    '.claude',
+    'projects',
+    '-Users-song-projects',
+    'claude-session-3.jsonl'
+  );
+
+  try {
+    writeJsonl(transcriptPath, [
+      {
+        type: 'assistant',
+        sessionId: 'claude-session-3',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '这是一条本地旧回答' }],
+          stop_reason: 'end_turn'
+        }
+      }
+    ]);
+
+    markPendingReplyMirror(
+      'claude-code',
+      'claude-code-session-claude-session-3',
+      {
+        sessionId: 'claude-session-3',
+        transcriptLineCount: 0,
+        recentContext: {
+          fromParticipantId: 'human.yzj',
+          fromAlias: 'song',
+          taskId: 'task-4',
+          threadId: 'thread-4'
+        }
+      },
+      { homeDir }
+    );
+
+    const result = await maybeMirrorPendingReply(
+      {
+        brokerUrl: 'http://127.0.0.1:4318',
+        participantId: 'claude-code-session-claude-session-3',
+        context: { projectName: 'intent-broker' }
+      },
+      {
+        toolName: 'claude-code',
+        sessionId: 'claude-session-3',
+        homeDir,
+        sendProgress: async () => {
+          throw new Error('should_not_send');
+        }
+      }
+    );
+
+    assert.equal(result.mirrored, false);
+    assert.equal(result.reason, 'auto-mirror-disabled');
+
+    const state = loadReplyMirrorState('claude-code', 'claude-code-session-claude-session-3', { homeDir });
+    assert.equal(state.pending, null);
+    assert.equal(state.lastMirrored, null);
+    assert.equal(state.lastFailure, null);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }

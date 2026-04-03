@@ -203,6 +203,47 @@ test('sendProgress can target a specific participant for reply-style updates', a
   });
 });
 
+test('sendProgress forwards optional metadata for reply threading', async () => {
+  const { calls, fetchStub } = createFetchStub();
+
+  await sendProgress(
+    {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex.main'
+    },
+    {
+      intentId: 'intent-2c',
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      toParticipantId: 'human.yzj_user',
+      summary: '当前在修 broker reply threading',
+      metadata: {
+        msgId: 'msg-123',
+        yzjUserId: 'user_local'
+      }
+    },
+    fetchStub
+  );
+
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    intentId: 'intent-2c',
+    kind: 'report_progress',
+    fromParticipantId: 'codex.main',
+    taskId: 'task-1',
+    threadId: 'thread-1',
+    to: { mode: 'participant', participants: ['human.yzj_user'] },
+    payload: {
+      stage: 'in_progress',
+      body: { summary: '当前在修 broker reply threading' },
+      metadata: {
+        msgId: 'msg-123',
+        yzjUserId: 'user_local'
+      },
+      delivery: { semantic: 'informational', source: 'default' }
+    }
+  });
+});
+
 test('sendAsk posts ask_clarification intent with explicit actionable delivery', async () => {
   const { calls, fetchStub } = createFetchStub();
 

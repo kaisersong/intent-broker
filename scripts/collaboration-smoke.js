@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -17,6 +17,73 @@ function writeLog(logDir, name, content) {
 
 function writeJsonLog(logDir, name, payload) {
   writeLog(logDir, name, JSON.stringify(payload, null, 2));
+}
+
+function readJsonFile(filePath, fallback = null) {
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+async function waitForValue(description, readValue, { timeoutMs = 10000, intervalMs = 100 } = {}) {
+  const startedAt = Date.now();
+  let lastError = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const value = await readValue();
+      if (value) {
+        return value;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    await delay(intervalMs);
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error(`timeout_waiting_for:${description}`);
+}
+
+function createFakeClaudeCommand(logDir) {
+  const commandPath = join(logDir, 'fake-claude.cjs');
+  const invocationLogPath = join(logDir, 'fake-claude.invocations.json');
+
+  writeJsonLog(logDir, 'fake-claude.invocations.json', []);
+  writeFileSync(commandPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+
+const logPath = process.env.INTENT_BROKER_SMOKE_CLAUDE_LOG;
+const args = process.argv.slice(2);
+let invocations = [];
+
+try {
+  invocations = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+} catch {
+  invocations = [];
+}
+
+invocations.push({
+  args,
+  sessionId: args[1] || null,
+  prompt: args[3] || ''
+});
+
+fs.writeFileSync(logPath, JSON.stringify(invocations, null, 2));
+process.stdout.write('Smoke auto reply from Claude: verified collaboration smoke path\\n');
+`, 'utf8');
+  chmodSync(commandPath, 0o755);
+
+  return {
+    commandPath,
+    invocationLogPath
+  };
 }
 
 async function getFreePort() {
@@ -156,12 +223,6 @@ function parseJson(text) {
   return text.trim() ? JSON.parse(text) : null;
 }
 
-function extractInjectedContext(payload) {
-  return payload?.hookSpecificOutput?.additionalContext
-    ?? payload?.hookSpecificOutput?.additionalContext
-    ?? '';
-}
-
 function buildAnalysis(summary) {
   const claudeState = summary.finalWorkStates.find((item) => item.participantId === summary.claudeParticipantId);
   const codexState = summary.finalWorkStates.find((item) => item.participantId === summary.codexParticipantId);
@@ -172,10 +233,10 @@ function buildAnalysis(summary) {
     '## Result',
     '',
     '- Codex and Claude Code both auto-registered through their real hook entrypoints.',
-    '- Both sessions were immediately discoverable in the same project via `projectName=intent-broker`.',
-    '- Claude Code received the Codex task through the broker inbox injection path.',
-    '- Claude Code then claimed the task by publishing `work-state=implementing` and sent a progress event.',
-    '- The task thread remained replayable from broker state and logs.',
+    '- Both sessions were immediately discoverable in the same project via `projectName=intent-broker` and reached websocket-online presence.',
+    '- Claude Code received the Codex task through the realtime bridge auto-dispatch path.',
+    '- The realtime bridge invoked the configured Claude command once, captured its plain-text reply, and sent that reply back through broker as `report_progress`.',
+    '- Claude Code returned to `idle` after the automatic reply, so the session remained ready for the next command.',
     '',
     '## Final State',
     '',
@@ -188,10 +249,8 @@ function buildAnalysis(summary) {
     '- `broker.stdout.log`: broker startup and server binding.',
     '- `codex.session-start.stdout.log`: Codex hook output after silent auto-registration.',
     '- `claude.session-start.stdout.log`: Claude Code hook output after silent auto-registration.',
-    '- `codex.send-task.stdout.log`: broker accepted Codex task handoff.',
-    '- `claude.user-prompt-submit.stdout.log`: Claude Code received injected broker context.',
-    '- `claude.set-work-state.stdout.log`: Claude Code work ownership update accepted by broker.',
-    '- `claude.send-progress.stdout.log`: Claude Code progress event accepted by broker.'
+    '- `codex.send-task.stdout.log`: broker accepted the Codex task handoff and reported realtime delivery.',
+    '- `fake-claude.invocations.json`: realtime bridge invocation record, including session id and prompt sent to Claude.'
   ].join('\n');
 }
 
@@ -204,6 +263,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
   const claudeParticipantId = `claude-smoke-${runId}`;
   const homeDir = join(resolvedLogDir, '.home');
   mkdirSync(homeDir, { recursive: true });
+  const fakeClaude = createFakeClaudeCommand(resolvedLogDir);
 
   const port = await getFreePort();
   const brokerUrl = `http://127.0.0.1:${port}`;
@@ -221,7 +281,9 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     const baseEnv = {
       BROKER_URL: brokerUrl,
       PROJECT_NAME: 'intent-broker',
-      HOME: homeDir
+      HOME: homeDir,
+      INTENT_BROKER_CLAUDE_COMMAND: fakeClaude.commandPath,
+      INTENT_BROKER_SMOKE_CLAUDE_LOG: fakeClaude.invocationLogPath
     };
 
     const codexSessionStart = await runCommand({
@@ -254,6 +316,29 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     const initialWorkStates = await requestJson(`${brokerUrl}/work-state?projectName=intent-broker`);
     writeJsonLog(resolvedLogDir, 'broker.work-state.initial.json', initialWorkStates);
 
+    const realtimePresence = await waitForValue(
+      'codex and claude websocket presence',
+      async () => {
+        const [codexPresence, claudePresence] = await Promise.all([
+          requestJson(`${brokerUrl}/presence/${codexParticipantId}`),
+          requestJson(`${brokerUrl}/presence/${claudeParticipantId}`)
+        ]);
+
+        if (
+          codexPresence?.status === 'online'
+          && codexPresence?.metadata?.transport === 'websocket'
+          && claudePresence?.status === 'online'
+          && claudePresence?.metadata?.transport === 'websocket'
+        ) {
+          return { codexPresence, claudePresence };
+        }
+
+        return null;
+      },
+      { timeoutMs: 5000, intervalMs: 100 }
+    );
+    writeJsonLog(resolvedLogDir, 'broker.presence.realtime.json', realtimePresence);
+
     const codexSendTask = await runCommand({
       cwd: resolvedRepoRoot,
       env: {
@@ -272,60 +357,39 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
       ]
     });
 
-    const claudePromptSubmit = await runCommand({
-      cwd: resolvedRepoRoot,
-      env: {
-        ...baseEnv,
-        PARTICIPANT_ID: claudeParticipantId
+    const claudeAutoDispatchInvocations = await waitForValue(
+      'claude auto-dispatch invocation',
+      async () => {
+        const invocations = readJsonFile(fakeClaude.invocationLogPath, []);
+        return invocations.length ? invocations : null;
       },
-      logDir: resolvedLogDir,
-      logPrefix: 'claude.user-prompt-submit',
-      args: ['adapters/claude-code-plugin/bin/claude-code-broker.js', 'hook', 'user-prompt-submit'],
-      stdinText: JSON.stringify({
-        session_id: 'claude-smoke-session-1',
-        prompt: 'check collaboration context'
-      })
-    });
+      { timeoutMs: 5000, intervalMs: 100 }
+    );
 
-    const claudeSetWorkState = await runCommand({
-      cwd: resolvedRepoRoot,
-      env: {
-        ...baseEnv,
-        PARTICIPANT_ID: claudeParticipantId
+    const threadResponse = await waitForValue(
+      'claude auto-reply in thread',
+      async () => {
+        const value = await requestJson(`${brokerUrl}/threads/smoke-thread-1`);
+        const progressEvent = value?.thread?.events?.find(
+          (event) => event.kind === 'report_progress' && event.fromParticipantId === claudeParticipantId
+        );
+        return progressEvent ? value : null;
       },
-      logDir: resolvedLogDir,
-      logPrefix: 'claude.set-work-state',
-      args: [
-        'adapters/claude-code-plugin/bin/claude-code-broker.js',
-        'set-work-state',
-        'implementing',
-        'smoke-task-1',
-        'smoke-thread-1',
-        'Claimed the smoke task and started implementation'
-      ]
-    });
+      { timeoutMs: 5000, intervalMs: 100 }
+    );
 
-    const claudeSendProgress = await runCommand({
-      cwd: resolvedRepoRoot,
-      env: {
-        ...baseEnv,
-        PARTICIPANT_ID: claudeParticipantId
+    const finalWorkStates = await waitForValue(
+      'claude returned to idle',
+      async () => {
+        const value = await requestJson(`${brokerUrl}/work-state?projectName=intent-broker`);
+        const claudeState = value?.items?.find((item) => item.participantId === claudeParticipantId);
+        return claudeState?.status === 'idle' ? value : null;
       },
-      logDir: resolvedLogDir,
-      logPrefix: 'claude.send-progress',
-      args: [
-        'adapters/claude-code-plugin/bin/claude-code-broker.js',
-        'send-progress',
-        'smoke-task-1',
-        'smoke-thread-1',
-        'Smoke task claimed and verification in progress'
-      ]
-    });
-
-    const finalWorkStates = await requestJson(`${brokerUrl}/work-state?projectName=intent-broker`);
+      { timeoutMs: 5000, intervalMs: 100 }
+    );
     writeJsonLog(resolvedLogDir, 'broker.work-state.final.json', finalWorkStates);
 
-    const thread = await requestJson(`${brokerUrl}/threads/smoke-thread-1`);
+    const thread = threadResponse;
     writeJsonLog(resolvedLogDir, 'broker.thread.json', thread);
 
     const replay = await requestJson(`${brokerUrl}/events/replay?threadId=smoke-thread-1&after=0`);
@@ -343,12 +407,11 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
       finalWorkStates: finalWorkStates.items,
       thread: thread.thread,
       replayItems: replay.items,
+      realtimePresence,
       codexSessionStart: parseJson(codexSessionStart.stdout),
       claudeSessionStart: parseJson(claudeSessionStart.stdout),
       codexSendTask: parseJson(codexSendTask.stdout),
-      claudeInjectedContext: extractInjectedContext(parseJson(claudePromptSubmit.stdout)),
-      claudeSetWorkState: parseJson(claudeSetWorkState.stdout),
-      claudeSendProgress: parseJson(claudeSendProgress.stdout)
+      claudeAutoDispatchInvocations
     };
 
     writeJsonLog(resolvedLogDir, 'summary.json', summary);

@@ -4,6 +4,7 @@ import { createBrokerService } from '../broker/service.js';
 import { createServer } from '../http/server.js';
 import { loadIntentBrokerConfig } from '../config/load-config.js';
 import { syncAgentBridges as syncAgentBridgesDefault } from './bridge-install-sync.js';
+import { createCodexResumeDiscoveryRuntime as createCodexResumeDiscoveryRuntimeDefault } from './codex-resume-discovery.js';
 import { createManagedChannelsRuntime } from './managed-channels.js';
 
 export async function startBrokerApp({
@@ -14,6 +15,7 @@ export async function startBrokerApp({
   createBroker = createBrokerService,
   createHttpServer = createServer,
   createChannelsRuntime = createManagedChannelsRuntime,
+  createCodexResumeDiscoveryRuntime = createCodexResumeDiscoveryRuntimeDefault,
   syncAgentBridges = syncAgentBridgesDefault
 } = {}) {
   const config = loadConfig({ cwd, env });
@@ -37,10 +39,18 @@ export async function startBrokerApp({
     brokerUrl,
     channels: config.channels
   });
+  const codexResumeDiscovery = createCodexResumeDiscoveryRuntime({
+    brokerUrl,
+    repoRoot: cwd,
+    env,
+    logger
+  });
 
   try {
     await channels.startAll();
+    await codexResumeDiscovery.start();
   } catch (error) {
+    await codexResumeDiscovery.stop?.();
     await server.close();
     broker.close?.();
     throw error;
@@ -63,6 +73,7 @@ export async function startBrokerApp({
     channels,
     config,
     async close() {
+      await codexResumeDiscovery.stop?.();
       await channels.stopAll();
       broker.close?.();
       await server.close();

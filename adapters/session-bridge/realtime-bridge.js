@@ -1,7 +1,8 @@
-import { spawn as spawnDefault } from 'node:child_process';
+import { execFile as execFileCallback, spawn as spawnDefault } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import WebSocket from 'ws';
 
 import {
@@ -13,6 +14,7 @@ import {
 import {
   ackInbox as ackInboxDefault,
   registerParticipant as registerParticipantDefault,
+  sendProgress as sendProgressDefault,
   updateWorkState as updateWorkStateDefault
 } from './api.js';
 import {
@@ -20,8 +22,13 @@ import {
   pickActiveWorkContext
 } from './automatic-work-state.js';
 import { deriveSessionBridgeConfig } from './config.js';
-import { buildCodexAutoContinuePrompt, highestEventId } from './codex-hooks.js';
+import {
+  buildClaudeAutoContinuePrompt,
+  buildCodexAutoContinuePrompt,
+  highestEventId
+} from './codex-hooks.js';
 import { pickRecentContext } from './recent-context.js';
+import { markPendingReplyMirror as markPendingReplyMirrorDefault } from './reply-mirror.js';
 import { isProcessAlive } from './session-keeper.js';
 import {
   loadCursorState as loadCursorStateDefault,
@@ -33,6 +40,9 @@ import {
 } from './runtime-state.js';
 
 const DEFAULT_RETRY_MS = 2000;
+const DEFAULT_CLAUDE_MAX_BUFFER = 10 * 1024 * 1024;
+const DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS = 30 * 1000;
+const execFileDefault = promisify(execFileCallback);
 
 function normalizePid(value) {
   const pid = Number(value);
@@ -61,6 +71,11 @@ function normalizeQueueState(state) {
     informational: Array.isArray(state?.informational) ? state.informational : [],
     lastEventId: Number(state?.lastEventId || 0)
   };
+}
+
+function parseTimestampMs(value) {
+  const ms = Date.parse(String(value || ''));
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function hasEvent(state, eventId) {
@@ -127,6 +142,49 @@ export function drainRealtimeQueue(state) {
   };
 }
 
+function restoreRealtimeQueue(state, items = []) {
+  return [...items]
+    .sort((left, right) => Number(left?.eventId || 0) - Number(right?.eventId || 0))
+    .reduce((current, item) => appendRealtimeEvent(current, item), normalizeQueueState(state));
+}
+
+function shouldRecoverStaleAutoDispatchRuntime(toolName, runtimeState, staleMs) {
+  if (toolName !== 'claude-code') {
+    return false;
+  }
+  if (runtimeState?.status !== 'running' || runtimeState?.source !== 'auto-dispatch') {
+    return false;
+  }
+
+  const updatedAtMs = parseTimestampMs(runtimeState.updatedAt);
+  if (updatedAtMs === null) {
+    return true;
+  }
+
+  return Date.now() - updatedAtMs >= staleMs;
+}
+
+function buildAutoDispatchPrompt(toolName, items, participantId) {
+  if (toolName === 'codex') {
+    return buildCodexAutoContinuePrompt(items, { participantId });
+  }
+
+  if (toolName === 'claude-code') {
+    return buildClaudeAutoContinuePrompt(items, { participantId });
+  }
+
+  return null;
+}
+
+function normalizeAutoDispatchReply(output) {
+  const text = String(output || '').trim();
+  if (!text || text === 'NO_REPLY') {
+    return null;
+  }
+
+  return text;
+}
+
 export async function maybeAutoDispatchRealtimeQueue({
   toolName,
   config,
@@ -137,8 +195,11 @@ export async function maybeAutoDispatchRealtimeQueue({
   cursorStatePath,
   runtimeStatePath,
   spawnImpl = spawnDefault,
+  execFileImpl = execFileDefault,
   ackInbox = ackInboxDefault,
+  sendProgress = sendProgressDefault,
   updateWorkState = updateWorkStateDefault,
+  markPendingReplyMirror = markPendingReplyMirrorDefault,
   loadRealtimeQueueState: loadRealtimeQueueStateImpl = loadRealtimeQueueState,
   saveRealtimeQueueState: saveRealtimeQueueStateImpl = saveRealtimeQueueState,
   loadCursorState = loadCursorStateDefault,
@@ -146,7 +207,7 @@ export async function maybeAutoDispatchRealtimeQueue({
   loadRuntimeState = loadRuntimeStateDefault,
   saveRuntimeState = saveRuntimeStateDefault
 } = {}) {
-  if (toolName !== 'codex') {
+  if (toolName !== 'codex' && toolName !== 'claude-code') {
     return { dispatched: false, reason: 'unsupported-tool' };
   }
   if (env.INTENT_BROKER_DISABLE_AUTO_DISPATCH === '1') {
@@ -156,9 +217,28 @@ export async function maybeAutoDispatchRealtimeQueue({
     return { dispatched: false, reason: 'missing-session' };
   }
 
+  const staleAutoDispatchMs = Number(
+    env.INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS || DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS
+  );
   const runtimeState = loadRuntimeState(runtimeStatePath);
   if (runtimeState.status !== 'idle') {
-    return { dispatched: false, reason: 'busy' };
+    if (!shouldRecoverStaleAutoDispatchRuntime(toolName, runtimeState, staleAutoDispatchMs)) {
+      return { dispatched: false, reason: 'busy' };
+    }
+
+    saveRuntimeState(runtimeStatePath, {
+      status: 'idle',
+      sessionId: runtimeState.sessionId || sessionId,
+      turnId: null,
+      source: 'auto-dispatch-recovered',
+      taskId: null,
+      threadId: null,
+      updatedAt: new Date().toISOString()
+    });
+    await updateWorkState(
+      config,
+      buildAutomaticWorkState('idle')
+    ).catch(() => null);
   }
 
   const queueState = loadRealtimeQueueStateImpl(queueStatePath);
@@ -170,26 +250,11 @@ export async function maybeAutoDispatchRealtimeQueue({
   const cursorState = loadCursorState(cursorStatePath);
   const recentContext = pickRecentContext(drainedQueue.items) || cursorState.recentContext;
   const activeContext = pickActiveWorkContext(drainedQueue.items, recentContext);
-  const prompt = buildCodexAutoContinuePrompt(drainedQueue.items, { participantId: config.participantId });
+  const prompt = buildAutoDispatchPrompt(toolName, drainedQueue.items, config.participantId);
 
   if (!prompt) {
     return { dispatched: false, reason: 'empty-prompt' };
   }
-
-  const child = spawnImpl(
-    env.INTENT_BROKER_CODEX_COMMAND || 'codex',
-    ['exec', '--json', '--full-auto', 'resume', sessionId, prompt],
-    {
-      cwd,
-      detached: true,
-      stdio: 'ignore',
-      env: {
-        ...env,
-        INTENT_BROKER_SKIP_INBOX_SYNC: '1'
-      }
-    }
-  );
-  child.unref?.();
 
   const lastSeenEventId = highestEventId(drainedQueue.items);
   if (lastSeenEventId) {
@@ -214,11 +279,97 @@ export async function maybeAutoDispatchRealtimeQueue({
     buildAutomaticWorkState('implementing', activeContext)
   ).catch(() => null);
 
-  return {
-    dispatched: true,
-    pid: child.pid,
-    lastSeenEventId
-  };
+  if (toolName === 'codex') {
+    if (recentContext?.fromParticipantId && recentContext?.taskId && recentContext?.threadId) {
+      markPendingReplyMirror('codex', config.participantId, {
+        sessionId,
+        autoMirror: true,
+        recentContext
+      });
+    }
+
+    const child = spawnImpl(
+      env.INTENT_BROKER_CODEX_COMMAND || 'codex',
+      ['exec', '--json', '--full-auto', '--skip-git-repo-check', 'resume', sessionId, prompt],
+      {
+        cwd,
+        detached: true,
+        stdio: 'ignore',
+        env: {
+          ...env,
+          INTENT_BROKER_SKIP_INBOX_SYNC: '1'
+        }
+      }
+    );
+    child.unref?.();
+
+    return {
+      dispatched: true,
+      pid: child.pid,
+      lastSeenEventId
+    };
+  }
+
+  try {
+    const { stdout } = await execFileImpl(
+      env.INTENT_BROKER_CLAUDE_COMMAND || 'claude',
+      ['--resume', sessionId, '--print', prompt],
+      {
+        cwd,
+        env: {
+          ...env,
+          INTENT_BROKER_SKIP_INBOX_SYNC: '1'
+        },
+        encoding: 'utf8',
+        maxBuffer: DEFAULT_CLAUDE_MAX_BUFFER
+      }
+    );
+
+    const replySummary = normalizeAutoDispatchReply(stdout);
+    if (replySummary && recentContext?.fromParticipantId) {
+      await sendProgress(config, {
+        intentId: `${config.participantId}-auto-reply-${lastSeenEventId}`,
+        taskId: activeContext?.taskId || recentContext.taskId,
+        threadId: activeContext?.threadId || recentContext.threadId,
+        toParticipantId: recentContext.fromParticipantId,
+        summary: replySummary,
+        metadata: recentContext.metadata || undefined
+      }).catch(() => null);
+    }
+
+    return {
+      dispatched: true,
+      pid: null,
+      lastSeenEventId
+    };
+  } catch (error) {
+    saveRealtimeQueueStateImpl(
+      queueStatePath,
+      restoreRealtimeQueue(loadRealtimeQueueStateImpl(queueStatePath), drainedQueue.items)
+    );
+
+    return {
+      dispatched: false,
+      reason: 'dispatch-failed',
+      lastSeenEventId,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    saveRuntimeState(runtimeStatePath, {
+      status: 'idle',
+      sessionId,
+      turnId: null,
+      source: 'auto-dispatch-complete',
+      taskId: null,
+      threadId: null,
+      updatedAt: new Date().toISOString()
+    });
+    await updateWorkState(
+      config,
+      buildAutomaticWorkState('idle')
+    ).catch(() => null);
+  }
+
 }
 
 export async function ensureRealtimeBridge({
@@ -244,11 +395,18 @@ export async function ensureRealtimeBridge({
   const queueStatePath = resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir });
   mkdirSync(path.dirname(statePath), { recursive: true });
   const desiredInboxMode = config.inboxMode || 'pull';
+  const normalizedParentPid = normalizePid(parentPid);
 
   const existing = readProcessState(statePath);
+  const sameBrokerUrl = existing?.brokerUrl === config.brokerUrl;
+  const sameParentPid = normalizedParentPid
+    ? normalizePid(existing?.parentPid) === normalizedParentPid
+    : true;
   if (
     existing?.sessionId === sessionId &&
     existing?.inboxMode === desiredInboxMode &&
+    sameBrokerUrl &&
+    sameParentPid &&
     existing?.pid &&
     isProcessAliveImpl(existing.pid)
   ) {
@@ -264,7 +422,7 @@ export async function ensureRealtimeBridge({
     existing?.sessionId === sessionId &&
     existing?.pid &&
     isProcessAliveImpl(existing.pid) &&
-    existing?.inboxMode !== desiredInboxMode
+    (existing?.inboxMode !== desiredInboxMode || !sameBrokerUrl || !sameParentPid)
   ) {
     try {
       killImpl(existing.pid);
@@ -304,7 +462,8 @@ export async function ensureRealtimeBridge({
     pid: child.pid,
     sessionId: sessionId || '',
     inboxMode: desiredInboxMode,
-    parentPid: parentPid || null,
+    brokerUrl: config.brokerUrl,
+    parentPid: normalizedParentPid,
     queueStatePath,
     startedAt: new Date().toISOString()
   }, null, 2));
@@ -466,6 +625,7 @@ export async function runRealtimeBridgeProcess({
       pid: process.pid,
       sessionId: env.INTENT_BROKER_REALTIME_SESSION_ID || '',
       inboxMode: desiredInboxMode,
+      brokerUrl: config.brokerUrl,
       parentPid: normalizePid(parentPid),
       queueStatePath: resolvedQueueStatePath,
       startedAt: new Date().toISOString()

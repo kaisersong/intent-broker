@@ -111,6 +111,14 @@ function deriveAlias({ toolName, env }) {
   return aliasMap[toolName] || toolName.replace(/-code$/, '');
 }
 
+function deriveCapabilities({ toolName }) {
+  if (toolName === 'codex' || toolName === 'claude-code') {
+    return ['broker.auto_dispatch'];
+  }
+
+  return [];
+}
+
 export function deriveSessionBridgeConfig({
   toolName,
   env = process.env,
@@ -137,7 +145,7 @@ export function deriveSessionBridgeConfig({
     alias: deriveAlias({ toolName, env }),
     inboxMode,
     roles: ['coder'],
-    capabilities: [],
+    capabilities: deriveCapabilities({ toolName }),
     context: projectName ? { projectName } : {}
   };
 }

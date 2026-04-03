@@ -91,7 +91,14 @@ export function summarizeInboxItems(items = []) {
   return lines.join('\n');
 }
 
-export function buildToolHookContext(items = [], { participantId, sessionLabel = 'session' } = {}) {
+export function buildToolHookContext(
+  items = [],
+  {
+    participantId,
+    sessionLabel = 'session',
+    actionableReplyStyle = 'explicit'
+  } = {}
+) {
   if (!items.length) {
     return null;
   }
@@ -106,8 +113,14 @@ export function buildToolHookContext(items = [], { participantId, sessionLabel =
     lines.push('Actionable items:');
     lines.push(summarizeInboxItems(actionable));
     lines.push('Treat the actionable items as commands or blocking asks. Execute them in this turn unless you have a clear reason not to.');
-    lines.push('If an actionable item expects a response, send that response back through the broker in this turn instead of only answering locally.');
-    lines.push('Use `intent-broker reply "<summary>"` for the remembered task/thread, or `intent-broker progress <taskId> <threadId> "<summary>"` when you need to publish an intermediate status update.');
+    if (actionableReplyStyle === 'mirror') {
+      lines.push('If an actionable item expects a response, write that response as your final response in this turn.');
+      lines.push('The stop hook will auto-mirror your final response back through Intent Broker from the transcript.');
+      lines.push('Do not send a manual broker CLI reply or progress update from inside this auto-continue turn unless the task explicitly requires an out-of-band status update.');
+    } else {
+      lines.push('If an actionable item expects a response, send that response back through the broker in this turn instead of only answering locally.');
+      lines.push('Use `intent-broker reply "<summary>"` for the remembered task/thread, or `intent-broker progress <taskId> <threadId> "<summary>"` when you need to publish an intermediate status update.');
+    }
   }
 
   if (otherInformational.length || presenceUpdates.length) {
@@ -124,8 +137,19 @@ export function buildToolHookContext(items = [], { participantId, sessionLabel =
   return lines.join('\n');
 }
 
-export function buildToolAutoContinuePrompt(items = [], { participantId, sessionLabel = 'session' } = {}) {
-  const context = buildToolHookContext(items, { participantId, sessionLabel });
+export function buildToolAutoContinuePrompt(
+  items = [],
+  {
+    participantId,
+    sessionLabel = 'session',
+    actionableReplyStyle = 'explicit'
+  } = {}
+) {
+  const context = buildToolHookContext(items, {
+    participantId,
+    sessionLabel,
+    actionableReplyStyle
+  });
   if (!context) {
     return null;
   }
@@ -147,8 +171,29 @@ export function buildCodexHookContext(items = [], { participantId } = {}) {
 export function buildCodexAutoContinuePrompt(items = [], { participantId } = {}) {
   return buildToolAutoContinuePrompt(items, {
     participantId,
-    sessionLabel: 'Codex session'
+    sessionLabel: 'Codex session',
+    actionableReplyStyle: 'mirror'
   });
+}
+
+export function buildClaudeAutoContinuePrompt(items = [], { participantId } = {}) {
+  const context = buildToolHookContext(items, {
+    participantId,
+    sessionLabel: 'Claude Code session'
+  });
+
+  if (!context) {
+    return null;
+  }
+
+  return [
+    `Intent Broker auto-continue for ${participantId || 'this Claude Code session'}.`,
+    'The previous turn has completed. Continue immediately with the actionable items below without waiting for new local user input.',
+    'Handle the work, then output only the reply summary that should be sent back through Intent Broker as plain text.',
+    'Do not wrap the final reply in markdown fences or add commentary outside the reply itself.',
+    'If no reply should be sent, output exactly NO_REPLY.',
+    context
+  ].join('\n');
 }
 
 export function buildCodexHookOutput(hookEventName, additionalContext) {

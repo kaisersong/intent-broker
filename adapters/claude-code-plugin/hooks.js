@@ -110,6 +110,10 @@ export async function runSessionStartHook(
     pollInbox = pollInboxDefault
   } = {}
 ) {
+  if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
+    return null;
+  }
+
   return safelyRunHook(async () => {
     const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
@@ -166,6 +170,10 @@ export async function runUserPromptSubmitHook(
     ackInbox = ackInboxDefault
   } = {}
 ) {
+  if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
+    return null;
+  }
+
   if (typeof input.prompt === 'string' && input.prompt.trimStart().startsWith('/')) {
     return null;
   }

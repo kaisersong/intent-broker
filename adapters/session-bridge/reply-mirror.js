@@ -23,6 +23,10 @@ function normalizePending(pending) {
     fromAlias: normalizeOptionalString(pending.fromAlias),
     taskId: normalizeOptionalString(pending.taskId),
     threadId: normalizeOptionalString(pending.threadId),
+    autoMirror: pending.autoMirror === true,
+    metadata: pending.metadata && typeof pending.metadata === 'object'
+      ? { ...pending.metadata }
+      : null,
     createdAt: normalizeOptionalString(pending.createdAt)
   };
 }
@@ -290,6 +294,8 @@ function buildPendingRecord(toolName, payload, { homeDir }) {
     fromAlias: recentContext.fromAlias,
     taskId: recentContext.taskId,
     threadId: recentContext.threadId,
+    autoMirror: payload.autoMirror === true,
+    metadata: recentContext.metadata,
     createdAt: payload.createdAt || new Date().toISOString()
   });
 }
@@ -354,6 +360,18 @@ export async function maybeMirrorPendingReply(
   if (!pending) {
     return { mirrored: false, reason: 'no-pending' };
   }
+  if (!pending.autoMirror) {
+    saveReplyMirrorState(
+      toolName,
+      config.participantId,
+      {
+        ...state,
+        pending: null
+      },
+      { homeDir }
+    );
+    return { mirrored: false, reason: 'auto-mirror-disabled' };
+  }
   if (pending.sessionId && sessionId && pending.sessionId !== sessionId) {
     return { mirrored: false, reason: 'session-mismatch' };
   }
@@ -390,6 +408,7 @@ export async function maybeMirrorPendingReply(
     threadId: pending.threadId,
     toParticipantId: pending.fromParticipantId,
     summary,
+    metadata: pending.metadata || undefined,
     delivery: {
       semantic: 'informational',
       source: 'auto-mirror'

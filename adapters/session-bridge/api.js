@@ -213,6 +213,7 @@ export async function sendProgress(config, request, fetchImpl = fetch) {
       payload: {
         stage: 'in_progress',
         body: { summary: request.summary },
+        ...(request.metadata ? { metadata: request.metadata } : {}),
         delivery: normalizeDelivery(request.delivery, {
           semantic: 'informational',
           source: 'default'

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -85,6 +85,7 @@ test('drainRealtimeQueue returns items in event order and clears local buckets',
 test('maybeAutoDispatchRealtimeQueue resumes an idle codex session for actionable work', async () => {
   const spawnCalls = [];
   const acked = [];
+  const markedPending = [];
   const savedCursor = [];
   const savedRuntime = [];
   const savedQueue = [];
@@ -101,6 +102,9 @@ test('maybeAutoDispatchRealtimeQueue resumes an idle codex session for actionabl
     runtimeStatePath: '/tmp/runtime.json',
     loadRuntimeState: () => ({ status: 'idle', sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa' }),
     loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    markPendingReplyMirror: (toolName, participantId, payload) => {
+      markedPending.push({ toolName, participantId, payload });
+    },
     spawnImpl: (command, args, options) => {
       spawnCalls.push({ command, args, options });
       return { pid: 5151, unref() {} };
@@ -135,10 +139,34 @@ test('maybeAutoDispatchRealtimeQueue resumes an idle codex session for actionabl
 
   assert.equal(result.dispatched, true);
   assert.equal(spawnCalls[0].command, 'codex');
-  assert.deepEqual(spawnCalls[0].args.slice(0, 5), ['exec', '--json', '--full-auto', 'resume', '019d448e-1234-5678-9999-aaaaaaaaaaaa']);
-  assert.match(spawnCalls[0].args[5], /Intent Broker auto-continue/);
+  assert.deepEqual(
+    spawnCalls[0].args.slice(0, 6),
+    ['exec', '--json', '--full-auto', '--skip-git-repo-check', 'resume', '019d448e-1234-5678-9999-aaaaaaaaaaaa']
+  );
+  assert.match(spawnCalls[0].args[6], /Intent Broker auto-continue/);
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_SKIP_INBOX_SYNC, '1');
   assert.deepEqual(acked, [{ participantId: 'codex-session-019d448e', eventId: 77 }]);
+  assert.deepEqual(markedPending, [
+    {
+      toolName: 'codex',
+      participantId: 'codex-session-019d448e',
+      payload: {
+        sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+        autoMirror: true,
+        recentContext: {
+          eventId: 77,
+          kind: 'request_task',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          fromProjectName: null,
+          metadata: null,
+          taskId: 'task-queue-1',
+          threadId: 'thread-queue-1',
+          summary: '修复 broker 在线状态显示'
+        }
+      }
+    }
+  ]);
   assert.equal(savedCursor[0].state.lastSeenEventId, 77);
   assert.equal(savedRuntime[0].state.status, 'running');
   assert.equal(savedRuntime[0].state.source, 'auto-dispatch');
@@ -155,6 +183,318 @@ test('maybeAutoDispatchRealtimeQueue resumes an idle codex session for actionabl
         summary: '修复 broker 在线状态显示',
         taskId: 'task-queue-1',
         threadId: 'thread-queue-1'
+      }
+    }
+  ]);
+});
+
+test('maybeAutoDispatchRealtimeQueue resumes an idle claude code session for actionable work and sends the reply back through broker', async () => {
+  const execCalls = [];
+  const acked = [];
+  const savedCursor = [];
+  const savedRuntime = [];
+  const savedQueue = [];
+  const workStates = [];
+  const replies = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-019d448e' },
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {},
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({ status: 'idle', sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa' }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: '我正在处理 broker reconnect 问题，稍后给你完整结果。\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId }),
+    saveCursorState: (statePath, state) => savedCursor.push({ statePath, state }),
+    saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+    updateWorkState: async (config, state) => {
+      workStates.push({ participantId: config.participantId, state });
+      return { ok: true };
+    },
+    sendProgress: async (config, request) => {
+      replies.push({ participantId: config.participantId, request });
+      return { ok: true };
+    },
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 88,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-queue-2',
+          threadId: 'thread-queue-2',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            metadata: {
+              msgId: 'msg-yzj-88',
+              yzjUserId: 'user_local'
+            },
+            body: { summary: '你在做什么，回复我' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 88
+    }),
+    saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state })
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls[0].command, 'claude');
+  assert.deepEqual(execCalls[0].args.slice(0, 3), ['--resume', '019d448e-1234-5678-9999-aaaaaaaaaaaa', '--print']);
+  assert.match(execCalls[0].args[3], /Intent Broker auto-continue/);
+  assert.match(execCalls[0].args[3], /output only the reply summary/i);
+  assert.equal(execCalls[0].options.env.INTENT_BROKER_SKIP_INBOX_SYNC, '1');
+  assert.deepEqual(acked, [{ participantId: 'claude-code-session-019d448e', eventId: 88 }]);
+  assert.equal(savedCursor[0].state.lastSeenEventId, 88);
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.equal(savedRuntime.at(-1).state.status, 'idle');
+  assert.deepEqual(savedQueue[0].state, {
+    actionable: [],
+    informational: [],
+    lastEventId: 88
+  });
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'claude-code-session-019d448e',
+      state: {
+        status: 'implementing',
+        summary: '你在做什么，回复我',
+        taskId: 'task-queue-2',
+        threadId: 'thread-queue-2'
+      }
+    },
+    {
+      participantId: 'claude-code-session-019d448e',
+      state: {
+        status: 'idle',
+        summary: null,
+        taskId: null,
+        threadId: null
+      }
+    }
+  ]);
+  assert.deepEqual(replies, [
+    {
+      participantId: 'claude-code-session-019d448e',
+      request: {
+        intentId: 'claude-code-session-019d448e-auto-reply-88',
+        taskId: 'task-queue-2',
+        threadId: 'thread-queue-2',
+        toParticipantId: 'human.song',
+        summary: '我正在处理 broker reconnect 问题，稍后给你完整结果。',
+        metadata: {
+          msgId: 'msg-yzj-88',
+          yzjUserId: 'user_local'
+        }
+      }
+    }
+  ]);
+});
+
+test('maybeAutoDispatchRealtimeQueue recovers a stale claude code auto-dispatch runtime before resuming queued work', async () => {
+  const execCalls = [];
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-stale-1' },
+    sessionId: 'stale-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS: '1000'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({
+      status: 'running',
+      sessionId: 'stale-session-1234',
+      turnId: null,
+      source: 'auto-dispatch',
+      taskId: 'old-task',
+      threadId: 'old-thread',
+      updatedAt: '2000-01-01T00:00:00.000Z'
+    }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: 'CLAUDE_STALE_RUNTIME_RECOVERED\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+    updateWorkState: async (config, state) => {
+      workStates.push({ participantId: config.participantId, state });
+      return { ok: true };
+    },
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 91,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-stale-1',
+          threadId: 'thread-stale-1',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '请恢复后回复我' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 91
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 1);
+  assert.equal(savedRuntime[0].state.status, 'idle');
+  assert.equal(savedRuntime[0].state.source, 'auto-dispatch-recovered');
+  assert.equal(savedRuntime[1].state.status, 'running');
+  assert.equal(savedRuntime.at(-1).state.status, 'idle');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'claude-code-session-stale-1',
+      state: {
+        status: 'idle',
+        summary: null,
+        taskId: null,
+        threadId: null
+      }
+    },
+    {
+      participantId: 'claude-code-session-stale-1',
+      state: {
+        status: 'implementing',
+        summary: '请恢复后回复我',
+        taskId: 'task-stale-1',
+        threadId: 'thread-stale-1'
+      }
+    },
+    {
+      participantId: 'claude-code-session-stale-1',
+      state: {
+        status: 'idle',
+        summary: null,
+        taskId: null,
+        threadId: null
+      }
+    }
+  ]);
+});
+
+test('maybeAutoDispatchRealtimeQueue requeues claude code work when auto-dispatch execution fails', async () => {
+  const savedQueue = [];
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-fail-1' },
+    sessionId: 'failing-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {},
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({ status: 'idle', sessionId: 'failing-session-1234' }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async () => {
+      throw new Error('claude_print_failed');
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+    updateWorkState: async (config, state) => {
+      workStates.push({ participantId: config.participantId, state });
+      return { ok: true };
+    },
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 92,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-fail-1',
+          threadId: 'thread-fail-1',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '这次会失败' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 92
+    }),
+    saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state })
+  });
+
+  assert.equal(result.dispatched, false);
+  assert.equal(result.reason, 'dispatch-failed');
+  assert.match(result.error, /claude_print_failed/);
+  assert.deepEqual(savedQueue[0].state, {
+    actionable: [],
+    informational: [],
+    lastEventId: 92
+  });
+  assert.deepEqual(savedQueue.at(-1).state, {
+    actionable: [
+      {
+        eventId: 92,
+        kind: 'ask_clarification',
+        fromParticipantId: 'human.song',
+        fromAlias: 'song',
+        taskId: 'task-fail-1',
+        threadId: 'thread-fail-1',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: '这次会失败' }
+        }
+      }
+    ],
+    informational: [],
+    lastEventId: 92
+  });
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.equal(savedRuntime.at(-1).state.status, 'idle');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'claude-code-session-fail-1',
+      state: {
+        status: 'implementing',
+        summary: '这次会失败',
+        taskId: 'task-fail-1',
+        threadId: 'thread-fail-1'
+      }
+    },
+    {
+      participantId: 'claude-code-session-fail-1',
+      state: {
+        status: 'idle',
+        summary: null,
+        taskId: null,
+        threadId: null
       }
     }
   ]);
@@ -253,4 +593,130 @@ test('ensureRealtimeBridge replaces a live bridge when the persisted inbox mode 
   assert.equal(replaced.started, true);
   assert.deepEqual(kills, [6262]);
   assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 7272);
+});
+
+test('ensureRealtimeBridge replaces a live bridge when the same session resumes under a new parent pid', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-realtime-'));
+  const kills = [];
+
+  await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    spawnImpl: () => ({
+      pid: 6262,
+      unref() {}
+    })
+  });
+
+  const replaced = await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 9898,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 7272,
+      unref() {}
+    })
+  });
+
+  assert.equal(replaced.started, true);
+  assert.deepEqual(kills, [6262]);
+  assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 7272);
+});
+
+test('ensureRealtimeBridge replaces a live bridge when persisted state predates brokerUrl tracking', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-realtime-'));
+  const kills = [];
+
+  const initial = await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    spawnImpl: () => ({
+      pid: 6262,
+      unref() {}
+    })
+  });
+
+  const persisted = JSON.parse(readFileSync(initial.statePath, 'utf8'));
+  delete persisted.brokerUrl;
+  writeFileSync(initial.statePath, JSON.stringify(persisted, null, 2));
+
+  const replaced = await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 7272,
+      unref() {}
+    })
+  });
+
+  assert.equal(replaced.started, true);
+  assert.deepEqual(kills, [6262]);
+  assert.deepEqual(JSON.parse(readFileSync(replaced.statePath, 'utf8')), {
+    pid: 7272,
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    inboxMode: 'realtime',
+    brokerUrl: 'http://127.0.0.1:4318',
+    parentPid: 4242,
+    queueStatePath: JSON.parse(readFileSync(replaced.statePath, 'utf8')).queueStatePath,
+    startedAt: JSON.parse(readFileSync(replaced.statePath, 'utf8')).startedAt
+  });
 });

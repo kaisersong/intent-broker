@@ -233,6 +233,31 @@ test('buildCodexAutoContinuePrompt turns broker context into a continuation prom
   assert.match(prompt, /Please land the hotfix today/);
 });
 
+test('buildCodexAutoContinuePrompt relies on transcript mirroring instead of explicit broker reply commands', () => {
+  const prompt = buildCodexAutoContinuePrompt(
+    [
+      {
+        eventId: 71,
+        kind: 'ask_clarification',
+        fromParticipantId: 'human.song',
+        taskId: 'task-3',
+        threadId: 'thread-3',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: '你在做什么，回复我' }
+        }
+      }
+    ],
+    { participantId: 'codex.main' }
+  );
+
+  assert.match(prompt, /final response/i);
+  assert.match(prompt, /auto-mirror|transcript/i);
+  assert.match(prompt, /manual broker cli reply|out-of-band status update/i);
+  assert.doesNotMatch(prompt, /intent-broker reply/);
+  assert.doesNotMatch(prompt, /send that response back through the broker in this turn/i);
+});
+
 test('buildToolAutoContinuePrompt returns null when there are no items', () => {
   assert.equal(buildToolAutoContinuePrompt([], { participantId: 'codex.main' }), null);
 });

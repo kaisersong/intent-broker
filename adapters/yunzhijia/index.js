@@ -15,6 +15,25 @@ export function deriveWebSocketUrl(sendMsgUrl) {
   return `wss://${url.host}/xuntong/websocket?yzjtoken=${encodeURIComponent(token)}`;
 }
 
+function normalizeIdPart(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    || 'unknown';
+}
+
+function deriveMessageContextIds({ msgId, yzjUserId }) {
+  const identity = msgId
+    ? normalizeIdPart(msgId)
+    : `${normalizeIdPart(yzjUserId)}-${Date.now()}`;
+
+  return {
+    taskId: `yzj-${identity}`,
+    threadId: `yzj-${identity}`
+  };
+}
+
 export class YunzhijiaAdapter {
   constructor({
     brokerUrl = process.env.BROKER_URL || 'http://127.0.0.1:4318',
@@ -25,6 +44,7 @@ export class YunzhijiaAdapter {
     this.sendUrl = sendUrl;
     this.reconnectDelayMs = reconnectDelayMs;
     this.userMapping = new Map(); // yzjUserId -> participantId
+    this.participantLabels = new Map(); // participantId -> alias/label
     this.userWebSockets = new Map(); // participantId -> WebSocket
     this.brokerWs = null;
     this.yzjWs = null;
@@ -243,6 +263,8 @@ export class YunzhijiaAdapter {
       return;
     }
 
+    const messageContext = deriveMessageContextIds({ msgId, yzjUserId });
+
     const res = await fetch(`${this.brokerUrl}/intents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -250,8 +272,8 @@ export class YunzhijiaAdapter {
         intentId: `yzj-${msgId || Date.now()}`,
         kind: 'ask_clarification',
         fromParticipantId: participantId,
-        taskId: 'task-1',
-        threadId: 'thread-1',
+        taskId: messageContext.taskId,
+        threadId: messageContext.threadId,
         to: routing.to,
         payload: {
           body: { summary: routing.summary },
@@ -462,9 +484,14 @@ export class YunzhijiaAdapter {
       return;
     }
 
+    if (!routing?.participantsById) {
+      return;
+    }
+
     const { participants: presenceItems = [] } = await fetch(`${this.brokerUrl}/presence`).then((res) => res.json());
     const presenceById = new Map(presenceItems.map((item) => [item.participantId, item]));
-    const realtimeDelivered = [];
+    const autoDispatchDelivered = [];
+    const receiveOnlyDelivered = [];
 
     const onlineButDeferred = [];
     const offline = [];
@@ -472,7 +499,11 @@ export class YunzhijiaAdapter {
     for (const participantId of onlineRecipients) {
       const participant = routing?.participantsById?.[participantId];
       const label = participant?.alias ? `@${participant.alias}` : participantId;
-      realtimeDelivered.push(label);
+      if (participant?.capabilities?.includes('broker.auto_dispatch')) {
+        autoDispatchDelivered.push(label);
+      } else {
+        receiveOnlyDelivered.push(label);
+      }
     }
 
     for (const participantId of offlineRecipients) {
@@ -486,8 +517,11 @@ export class YunzhijiaAdapter {
     }
 
     const hints = [];
-    if (realtimeDelivered.length && offlineRecipients.length) {
-      hints.push(`已实时投递给 ${realtimeDelivered.join('、')}，这些在线会话现在可以立即收件。`);
+    if (autoDispatchDelivered.length) {
+      hints.push(`已实时投递给 ${autoDispatchDelivered.join('、')}，这些在线会话支持自动起工，会尽快处理并回复。`);
+    }
+    if (receiveOnlyDelivered.length) {
+      hints.push(`已实时投递到 ${receiveOnlyDelivered.join('、')} 的本地收件队列，但这些会话当前不会自动执行，需要目标会话下一次本地交互时处理。`);
     }
     if (onlineButDeferred.length) {
       const pullMode = [];
@@ -584,10 +618,13 @@ export class YunzhijiaAdapter {
 
   async handleMessageToUser(participantId, event) {
     const normalizedEvent = this.unwrapBrokerEvent(event);
+    if (normalizedEvent.kind === 'participant_presence_updated') {
+      return;
+    }
     const yzjUserId = this.findYunzhijiaUser(participantId);
     if (!yzjUserId) return;
 
-    const message = this.formatMessage(normalizedEvent);
+    const message = await this.formatMessage(normalizedEvent);
     const metadata = normalizedEvent.payload?.metadata || {};
     await this.sendToYunzhijia(yzjUserId, message, metadata.msgId);
   }
@@ -598,8 +635,15 @@ export class YunzhijiaAdapter {
 
     if (normalizedEvent.kind === 'participant_presence_updated') {
       if (normalizedEvent.payload?.participantKind === 'agent') {
-        await this.sendToChannel(this.formatMessage(normalizedEvent));
+        await this.sendToChannel(await this.formatMessage(normalizedEvent));
       }
+      return;
+    }
+
+    const metadata = normalizedEvent.payload?.metadata || {};
+    if (metadata.yzjUserId) {
+      const message = await this.formatMessage(normalizedEvent);
+      await this.sendToYunzhijia(metadata.yzjUserId, message, metadata.msgId);
       return;
     }
 
@@ -609,8 +653,7 @@ export class YunzhijiaAdapter {
     const yzjUserId = this.findYunzhijiaUser(targetParticipantId);
     if (!yzjUserId) return;
 
-    const message = this.formatMessage(normalizedEvent);
-    const metadata = normalizedEvent.payload?.metadata || {};
+    const message = await this.formatMessage(normalizedEvent);
     await this.sendToYunzhijia(yzjUserId, message, metadata.msgId);
   }
 
@@ -622,12 +665,60 @@ export class YunzhijiaAdapter {
     return current;
   }
 
-  formatMessage(event) {
+  async resolveParticipantLabel(participantId, hintedAlias = null) {
+    if (!participantId || participantId === 'broker.system') {
+      return null;
+    }
+
+    if (hintedAlias) {
+      this.participantLabels.set(participantId, hintedAlias);
+      return hintedAlias;
+    }
+
+    const cached = this.participantLabels.get(participantId);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const { participants = [] } = await fetch(`${this.brokerUrl}/participants`).then((res) => res.json());
+      for (const participant of participants) {
+        this.participantLabels.set(
+          participant.participantId,
+          participant.alias || participant.participantId
+        );
+      }
+    } catch {
+      // Fall back to the raw participant id when broker lookup fails.
+    }
+
+    return this.participantLabels.get(participantId) || participantId;
+  }
+
+  decorateSenderLabel(label) {
+    if (!label) {
+      return null;
+    }
+
+    if (label.startsWith('@')) {
+      return label;
+    }
+
+    return label.includes('.') ? label : `@${label}`;
+  }
+
+  async formatMessage(event) {
     const summary = event.payload?.body?.summary;
+    const senderLabel = event.kind === 'report_progress'
+      ? this.decorateSenderLabel(
+        await this.resolveParticipantLabel(event.fromParticipantId, event.fromAlias || null)
+      )
+      : null;
+    const progressTitle = senderLabel ? `${senderLabel} 进度` : '进度';
     const templates = {
       request_approval: summary ? `【需要审批】${summary}` : '【需要审批】',
       ask_clarification: summary ? `【需要回答】${summary}` : '【需要回答】',
-      report_progress: summary ? `【进度】${summary}` : '【进度】',
+      report_progress: summary ? `【${progressTitle}】${summary}` : `【${progressTitle}】`,
       participant_alias_updated: summary ? `【别名更新】${summary}` : '【别名更新】',
       participant_presence_updated: summary ? `【协作状态】${summary}` : '【协作状态】'
     };
