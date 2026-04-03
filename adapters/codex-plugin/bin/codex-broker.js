@@ -26,6 +26,7 @@ import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js'
 import {
   buildHookCommand,
   defaultInstallPaths,
+  ensureCodexInstall,
   ensureSkillLink,
   enableCodexHooksFeature,
   mergeIntentBrokerHooks,
@@ -113,17 +114,8 @@ function parseInstallOptions(args = []) {
 
 async function install(args = []) {
   const options = parseInstallOptions(args);
+  const result = ensureCodexInstall({ repoRoot, verbose: options.verbose });
   const paths = defaultInstallPaths({ repoRoot });
-  const configText = readCodexConfig(paths.configPath);
-  const existingConfig = readHooksConfig(paths.hooksConfigPath);
-  const mergedConfig = mergeIntentBrokerHooks(existingConfig, {
-    sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
-    userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
-    stopCommand: buildHookCommand(cliPath, 'stop')
-  }, { verbose: options.verbose });
-
-  writeCodexConfig(paths.configPath, enableCodexHooksFeature(configText));
-  writeHooksConfig(paths.hooksConfigPath, mergedConfig);
   ensureSkillLink(paths.skillSourcePath, paths.skillLinkPath);
   ensureCommandShim(paths.commandShimPath, buildCommandShimContent({ cliPath: paths.unifiedCliPath }));
 
@@ -137,7 +129,8 @@ async function install(args = []) {
         commandShimInPath: isPathDirAvailable(paths.commandShimPath),
         stateRoot: paths.stateRoot,
         cliPath,
-        verboseHooks: options.verbose
+        verboseHooks: options.verbose,
+        updated: result.updated
       },
       null,
       2

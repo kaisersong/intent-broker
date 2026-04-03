@@ -3,26 +3,37 @@ import { dirname, resolve } from 'node:path';
 import { createBrokerService } from '../broker/service.js';
 import { createServer } from '../http/server.js';
 import { loadIntentBrokerConfig } from '../config/load-config.js';
+import { syncAgentBridges as syncAgentBridgesDefault } from './bridge-install-sync.js';
 import { createManagedChannelsRuntime } from './managed-channels.js';
 
 export async function startBrokerApp({
   cwd = process.cwd(),
   env = process.env,
-  logger = console
+  logger = console,
+  loadConfig = loadIntentBrokerConfig,
+  createBroker = createBrokerService,
+  createHttpServer = createServer,
+  createChannelsRuntime = createManagedChannelsRuntime,
+  syncAgentBridges = syncAgentBridgesDefault
 } = {}) {
-  const config = loadIntentBrokerConfig({ cwd, env });
+  const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
 
   mkdirSync(dirname(dbPath), { recursive: true });
 
-  const broker = createBrokerService({ dbPath });
-  const server = createServer({ broker });
+  await syncAgentBridges({
+    repoRoot: cwd,
+    logger
+  });
+
+  const broker = createBroker({ dbPath });
+  const server = createHttpServer({ broker });
 
   await server.listen(config.server.port, config.server.host);
   broker.attachWebSocket(server.raw());
 
   const brokerUrl = `http://${config.server.host}:${server.address().port}`;
-  const channels = createManagedChannelsRuntime({
+  const channels = createChannelsRuntime({
     brokerUrl,
     channels: config.channels
   });

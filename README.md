@@ -115,6 +115,8 @@ npm start
 
 By default, `npm start` now reads [intent-broker.config.json](./intent-broker.config.json) and starts the broker-managed channels declared there. For the current prototype, that means you can let the broker manage the Yunzhijia channel instead of starting a separate adapter process.
 
+Broker startup also verifies the local Codex and Claude Code bridge installation against the current repo checkout. If hook files, command shims, or the Codex skill link are stale, broker refreshes them automatically before serving traffic. Sync failures are logged as warnings and do not block broker startup.
+
 Default listen address:
 
 - `http://127.0.0.1:4318`

@@ -26,6 +26,7 @@ import { buildClaudeCodeHookOutput } from '../format.js';
 import {
   buildHookCommand,
   defaultInstallPaths,
+  ensureClaudeCodeInstall,
   mergeIntentBrokerHooks,
   readClaudeSettings,
   writeClaudeSettings
@@ -101,15 +102,8 @@ function parseInstallOptions(args = []) {
 
 async function install(args = []) {
   const options = parseInstallOptions(args);
+  const result = ensureClaudeCodeInstall({ cwd: process.cwd(), verbose: options.verbose });
   const paths = defaultInstallPaths({ cwd: process.cwd() });
-  const existingConfig = readClaudeSettings(paths.settingsPath);
-  const mergedConfig = mergeIntentBrokerHooks(existingConfig, {
-    sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
-    userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
-    stopCommand: buildHookCommand(cliPath, 'stop')
-  }, { verbose: options.verbose });
-
-  writeClaudeSettings(paths.settingsPath, mergedConfig);
   ensureCommandShim(paths.commandShimPath, buildCommandShimContent({ cliPath: paths.unifiedCliPath }));
 
   console.log(
@@ -120,7 +114,8 @@ async function install(args = []) {
         commandShimInPath: isPathDirAvailable(paths.commandShimPath),
         stateRoot: paths.stateRoot,
         cliPath,
-        verboseHooks: options.verbose
+        verboseHooks: options.verbose,
+        updated: result.updated
       },
       null,
       2

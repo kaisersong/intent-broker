@@ -115,6 +115,8 @@ npm start
 
 现在 `npm start` 会默认读取 [intent-broker.config.json](./intent-broker.config.json)，并启动配置里声明的 broker 托管通道。对当前原型来说，这意味着云之家可以直接由 broker 托管，不需要用户再额外手动起一个 adapter 进程。
 
+broker 启动时还会按当前仓库内容自检本机 Codex / Claude Code bridge 是否是最新安装状态。如果 hooks、命令 shim 或 Codex skill 链接已经过期，broker 会在真正开始服务前自动补齐；如果同步失败，只记 warning 日志，不阻塞 broker 启动。
+
 默认监听：
 
 - `http://127.0.0.1:4318`

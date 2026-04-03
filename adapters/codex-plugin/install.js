@@ -1,9 +1,11 @@
-import { lstatSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import {
-  defaultCommandShimPath
+  buildCommandShimContent,
+  defaultCommandShimPath,
+  ensureCommandShim
 } from '../hook-installer-core/command-shim.js';
 import {
   buildHookCommand,
@@ -98,6 +100,114 @@ export function readHooksConfig(hooksConfigPath) {
 export function writeHooksConfig(hooksConfigPath, config) {
   mkdirSync(path.dirname(hooksConfigPath), { recursive: true });
   writeFileSync(hooksConfigPath, JSON.stringify(config, null, 2) + '\n');
+}
+
+function readOptionalText(filePath) {
+  try {
+    return readFileSync(filePath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function hasVisibleManagedHookEntries(config = {}) {
+  return Object.values(config?.hooks || {})
+    .flatMap((group) => group?.hooks || [])
+    .some((entry) => Object.values(managedHookStatusMessages).includes(entry?.statusMessage));
+}
+
+function isSkillLinkCurrent(skillLinkPath, skillSourcePath) {
+  try {
+    return lstatSync(skillLinkPath).isSymbolicLink() && readlinkSync(skillLinkPath) === skillSourcePath;
+  } catch {
+    return false;
+  }
+}
+
+function buildCodexInstallArtifacts({ repoRoot, homeDir = os.homedir(), verbose } = {}) {
+  const paths = defaultInstallPaths({ homeDir, repoRoot });
+  const cliPath = path.join(repoRoot, 'adapters', 'codex-plugin', 'bin', 'codex-broker.js');
+  const configText = readCodexConfig(paths.configPath);
+  const existingHooksConfig = readHooksConfig(paths.hooksConfigPath);
+  const effectiveVerbose = verbose ?? hasVisibleManagedHookEntries(existingHooksConfig);
+  const desiredHooksConfig = mergeIntentBrokerHooks(
+    existingHooksConfig,
+    {
+      sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
+      userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
+      stopCommand: buildHookCommand(cliPath, 'stop')
+    },
+    { verbose: effectiveVerbose }
+  );
+
+  return {
+    paths,
+    cliPath,
+    effectiveVerbose,
+    desiredConfigText: enableCodexHooksFeature(configText),
+    existingConfigText: configText,
+    existingHooksConfig,
+    desiredHooksConfig,
+    existingCommandShimContent: readOptionalText(paths.commandShimPath),
+    desiredCommandShimContent: buildCommandShimContent({ cliPath: paths.unifiedCliPath })
+  };
+}
+
+export function inspectCodexInstall(options = {}) {
+  const artifacts = buildCodexInstallArtifacts(options);
+  const updated = [];
+
+  if (artifacts.existingConfigText !== artifacts.desiredConfigText) {
+    updated.push('config');
+  }
+
+  if (JSON.stringify(artifacts.existingHooksConfig) !== JSON.stringify(artifacts.desiredHooksConfig)) {
+    updated.push('hooks');
+  }
+
+  if (artifacts.existingCommandShimContent !== artifacts.desiredCommandShimContent) {
+    updated.push('command-shim');
+  }
+
+  if (!isSkillLinkCurrent(artifacts.paths.skillLinkPath, artifacts.paths.skillSourcePath)) {
+    updated.push('skill-link');
+  }
+
+  return {
+    ...artifacts,
+    updated,
+    upToDate: updated.length === 0
+  };
+}
+
+export function ensureCodexInstall(options = {}) {
+  const inspection = inspectCodexInstall(options);
+
+  for (const item of inspection.updated) {
+    if (item === 'config') {
+      writeCodexConfig(inspection.paths.configPath, inspection.desiredConfigText);
+      continue;
+    }
+    if (item === 'hooks') {
+      writeHooksConfig(inspection.paths.hooksConfigPath, inspection.desiredHooksConfig);
+      continue;
+    }
+    if (item === 'command-shim') {
+      ensureCommandShim(inspection.paths.commandShimPath, inspection.desiredCommandShimContent);
+      continue;
+    }
+    if (item === 'skill-link') {
+      ensureSkillLink(inspection.paths.skillSourcePath, inspection.paths.skillLinkPath);
+    }
+  }
+
+  return {
+    changed: inspection.updated.length > 0,
+    updated: inspection.updated,
+    paths: inspection.paths,
+    cliPath: inspection.cliPath,
+    verboseHooks: inspection.effectiveVerbose
+  };
 }
 
 export function ensureSkillLink(skillSourcePath, skillLinkPath) {

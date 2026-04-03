@@ -7,6 +7,7 @@ import path from 'node:path';
 import {
   buildHookCommand,
   defaultInstallPaths,
+  ensureClaudeCodeInstall,
   mergeIntentBrokerHooks,
   readClaudeSettings,
   writeClaudeSettings
@@ -160,5 +161,27 @@ test('readClaudeSettings and writeClaudeSettings round-trip JSON config', () => 
     assert.match(readFileSync(settingsPath, 'utf8'), /intent-broker session sync/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ensureClaudeCodeInstall writes missing managed files and becomes stable on rerun', () => {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-repo-'));
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-home-'));
+
+  try {
+    const first = ensureClaudeCodeInstall({ cwd, homeDir });
+    assert.equal(first.changed, true);
+    assert.deepEqual(first.updated.sort(), ['command-shim', 'settings']);
+
+    const paths = defaultInstallPaths({ cwd, homeDir });
+    assert.match(readFileSync(paths.settingsPath, 'utf8'), /hook stop/);
+    assert.match(readFileSync(paths.commandShimPath, 'utf8'), /bin\/intent-broker\.js/);
+
+    const second = ensureClaudeCodeInstall({ cwd, homeDir });
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.updated, []);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   }
 });

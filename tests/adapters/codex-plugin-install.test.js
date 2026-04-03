@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
   defaultInstallPaths,
   buildHookCommand,
+  ensureCodexInstall,
   mergeIntentBrokerHooks
 } from '../../adapters/codex-plugin/install.js';
 import {
@@ -213,4 +216,28 @@ test('mergeManagedHookGroups replaces only matching intent-broker owned entries'
   assert.equal(merged.length, 2);
   assert.equal(merged[0].hooks[0].command, 'node keep-me');
   assert.equal(merged[1].hooks[0].command, 'node new-intent-broker');
+});
+
+test('ensureCodexInstall writes missing managed files and becomes stable on rerun', () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-codex-home-'));
+  const repoRoot = mkdtempSync(path.join(tmpdir(), 'intent-broker-codex-repo-'));
+
+  try {
+    const first = ensureCodexInstall({ homeDir, repoRoot });
+    assert.equal(first.changed, true);
+    assert.deepEqual(first.updated.sort(), ['command-shim', 'config', 'hooks', 'skill-link']);
+
+    const paths = defaultInstallPaths({ homeDir, repoRoot });
+    assert.match(readFileSync(paths.configPath, 'utf8'), /\[features\]\ncodex_hooks = true/);
+    assert.match(readFileSync(paths.hooksConfigPath, 'utf8'), /hook stop/);
+    assert.match(readFileSync(paths.commandShimPath, 'utf8'), /bin\/intent-broker\.js/);
+    assert.equal(lstatSync(paths.skillLinkPath).isSymbolicLink(), true);
+
+    const second = ensureCodexInstall({ homeDir, repoRoot });
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.updated, []);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
