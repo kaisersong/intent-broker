@@ -51,8 +51,27 @@ test('registerParticipant posts participant metadata to broker', async () => {
     roles: ['coder'],
     capabilities: ['backend.node'],
     alias: 'codex',
-    context: { projectName: 'intent-broker' }
+    context: { projectName: 'intent-broker' },
+    inboxMode: 'pull'
   });
+});
+
+test('registerParticipant preserves explicit inbox mode metadata', async () => {
+  const { calls, fetchStub } = createFetchStub();
+
+  await registerParticipant(
+    {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex.main',
+      roles: ['coder'],
+      capabilities: [],
+      alias: 'codex',
+      inboxMode: 'realtime'
+    },
+    fetchStub
+  );
+
+  assert.equal(JSON.parse(calls[0].options.body).inboxMode, 'realtime');
 });
 
 test('pollInbox pulls inbox with after cursor and limit', async () => {

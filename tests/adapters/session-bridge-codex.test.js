@@ -127,6 +127,67 @@ test('buildToolHookContext separates actionable and informational events', () =>
   assert.match(context, /I am already touching the auth path/);
 });
 
+test('buildToolHookContext coalesces noisy presence updates in informational items', () => {
+  const context = buildToolHookContext(
+    [
+      {
+        eventId: 80,
+        kind: 'participant_presence_updated',
+        fromParticipantId: 'broker.system',
+        payload: {
+          participantId: 'claude-peer',
+          body: { summary: '@claude3 已上线，项目 intent-broker' }
+        }
+      },
+      {
+        eventId: 81,
+        kind: 'participant_presence_updated',
+        fromParticipantId: 'broker.system',
+        payload: {
+          participantId: 'claude-peer',
+          body: { summary: '@claude3 已离线，项目 intent-broker' }
+        }
+      },
+      {
+        eventId: 82,
+        kind: 'participant_presence_updated',
+        fromParticipantId: 'broker.system',
+        payload: {
+          participantId: 'codex-peer',
+          body: { summary: '@codex4 已上线，项目 intent-broker' }
+        }
+      },
+      {
+        eventId: 83,
+        kind: 'participant_presence_updated',
+        fromParticipantId: 'broker.system',
+        payload: {
+          participantId: 'codex-peer',
+          body: { summary: '@codex4 已离线，项目 intent-broker' }
+        }
+      },
+      {
+        eventId: 84,
+        kind: 'participant_presence_updated',
+        fromParticipantId: 'broker.system',
+        payload: {
+          participantId: 'claude-another',
+          body: { summary: '@claude5 已上线，项目 intent-broker' }
+        }
+      }
+    ],
+    { participantId: 'codex.main' }
+  );
+
+  assert.match(context, /Informational items/);
+  assert.match(context, /presence updates collapsed/i);
+  assert.match(context, /@claude3 已离线/);
+  assert.match(context, /@codex4 已离线/);
+  assert.match(context, /@claude5 已上线/);
+  assert.doesNotMatch(context, /@claude3 已上线/);
+  assert.doesNotMatch(context, /@codex4 已上线/);
+});
+
 test('buildCodexAutoContinuePrompt turns broker context into a continuation prompt', () => {
   const prompt = buildCodexAutoContinuePrompt(
     [

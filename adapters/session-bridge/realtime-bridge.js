@@ -233,6 +233,7 @@ export async function ensureRealtimeBridge({
   retryMs = DEFAULT_RETRY_MS,
   nodePath = process.execPath,
   spawnImpl = spawnDefault,
+  killImpl = process.kill.bind(process),
   isProcessAlive: isProcessAliveImpl = isProcessAlive
 } = {}) {
   if (!cliPath) {
@@ -242,10 +243,12 @@ export async function ensureRealtimeBridge({
   const statePath = resolveRealtimeBridgeStatePath(toolName, config.participantId, { homeDir });
   const queueStatePath = resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir });
   mkdirSync(path.dirname(statePath), { recursive: true });
+  const desiredInboxMode = config.inboxMode || 'pull';
 
   const existing = readProcessState(statePath);
   if (
     existing?.sessionId === sessionId &&
+    existing?.inboxMode === desiredInboxMode &&
     existing?.pid &&
     isProcessAliveImpl(existing.pid)
   ) {
@@ -255,6 +258,20 @@ export async function ensureRealtimeBridge({
       statePath,
       queueStatePath
     };
+  }
+
+  if (
+    existing?.sessionId === sessionId &&
+    existing?.pid &&
+    isProcessAliveImpl(existing.pid) &&
+    existing?.inboxMode !== desiredInboxMode
+  ) {
+    try {
+      killImpl(existing.pid);
+    } catch {
+      // best effort only
+    }
+    removeProcessState(statePath);
   }
 
   if (existing?.pid && !isProcessAliveImpl(existing.pid)) {
@@ -271,6 +288,7 @@ export async function ensureRealtimeBridge({
       PARTICIPANT_ID: config.participantId,
       ALIAS: config.alias,
       PROJECT_NAME: config.context?.projectName || '',
+      INTENT_BROKER_INBOX_MODE: desiredInboxMode,
       INTENT_BROKER_REALTIME_PARENT_PID: String(parentPid || ''),
       INTENT_BROKER_REALTIME_RETRY_MS: String(retryMs),
       INTENT_BROKER_REALTIME_STATE_PATH: statePath,
@@ -285,6 +303,7 @@ export async function ensureRealtimeBridge({
   writeFileSync(statePath, JSON.stringify({
     pid: child.pid,
     sessionId: sessionId || '',
+    inboxMode: desiredInboxMode,
     parentPid: parentPid || null,
     queueStatePath,
     startedAt: new Date().toISOString()
@@ -442,9 +461,11 @@ export async function runRealtimeBridgeProcess({
 
   if (statePath) {
     mkdirSync(path.dirname(statePath), { recursive: true });
+    const desiredInboxMode = config.inboxMode || 'pull';
     writeFileSync(statePath, JSON.stringify({
       pid: process.pid,
       sessionId: env.INTENT_BROKER_REALTIME_SESSION_ID || '',
+      inboxMode: desiredInboxMode,
       parentPid: normalizePid(parentPid),
       queueStatePath: resolvedQueueStatePath,
       startedAt: new Date().toISOString()

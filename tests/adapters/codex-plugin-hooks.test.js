@@ -46,6 +46,7 @@ test('session start hook always registers and returns no output when inbox is em
   assert.equal(calls[1].input.config.participantId, 'codex-session-019d448e');
   assert.equal(calls[2].type, 'register');
   assert.equal(calls[2].config.participantId, 'codex-session-019d448e');
+  assert.equal(calls[2].config.inboxMode, 'realtime');
   assert.deepEqual(calls[2].config.context, { projectName: 'intent-broker' });
   assert.equal(calls[3].type, 'work-state');
   assert.deepEqual(calls[3].state, { status: 'idle', summary: null });
@@ -143,9 +144,22 @@ test('user prompt submit hook injects context, saves cursor, and acks inbox with
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+      saveRealtimeQueueState: () => {},
       saveCursorState: (statePath, state) => saved.push({ statePath, state }),
+      ensureSessionKeeper: async (input) => {
+        calls.push({ type: 'keeper', participantId: input.config.participantId, inboxMode: input.config.inboxMode });
+      },
+      ensureRealtimeBridge: async (input) => {
+        calls.push({ type: 'bridge', participantId: input.config.participantId, inboxMode: input.config.inboxMode });
+      },
       registerParticipant: async (config) => {
-        calls.push({ type: 'register', participantId: config.participantId, alias: config.alias });
+        calls.push({
+          type: 'register',
+          participantId: config.participantId,
+          alias: config.alias,
+          inboxMode: config.inboxMode
+        });
         return { ok: true };
       },
       pollInbox: async () => ({
@@ -177,7 +191,9 @@ test('user prompt submit hook injects context, saves cursor, and acks inbox with
   assert.equal(saved[0].state.recentContext.threadId, 'real-thread-1');
   assert.deepEqual(acked, [{ participantId: 'codex-session-019d4489', eventId: 77 }]);
   assert.deepEqual(calls, [
-    { type: 'register', participantId: 'codex-session-019d4489', alias: 'codex' }
+    { type: 'keeper', participantId: 'codex-session-019d4489', inboxMode: 'realtime' },
+    { type: 'bridge', participantId: 'codex-session-019d4489', inboxMode: 'realtime' },
+    { type: 'register', participantId: 'codex-session-019d4489', alias: 'codex', inboxMode: 'realtime' }
   ]);
 });
 
@@ -517,6 +533,8 @@ test('user prompt submit hook can poll inbox without prior register call in the 
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+      saveRealtimeQueueState: () => {},
       saveCursorState: () => {},
       registerParticipant: async (config) => {
         calls.push({ type: 'register', participantId: config.participantId });
@@ -558,6 +576,8 @@ test('user prompt submit hook surfaces alias rename broadcasts in injected conte
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+      saveRealtimeQueueState: () => {},
       saveCursorState: () => {},
       registerParticipant: async () => ({ ok: true }),
       updateWorkState: async () => ({ ok: true }),
@@ -614,6 +634,8 @@ test('user prompt submit hook degrades gracefully when broker is unavailable', a
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+      saveRealtimeQueueState: () => {},
       pollInbox: async () => {
         throw new Error('fetch failed');
       }

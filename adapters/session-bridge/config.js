@@ -32,6 +32,7 @@ export function deriveSessionBridgeConfig({ toolName, env = process.env, cwd = p
   const explicitParticipantId = env.PARTICIPANT_ID;
   const threadId = env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || '';
   const projectName = deriveProjectName({ env, cwd });
+  const inboxMode = env.INTENT_BROKER_INBOX_MODE || 'pull';
 
   let participantId = explicitParticipantId;
   if (!participantId && threadId) {
@@ -45,6 +46,7 @@ export function deriveSessionBridgeConfig({ toolName, env = process.env, cwd = p
     brokerUrl,
     participantId,
     alias: deriveAlias({ toolName, env }),
+    inboxMode,
     roles: ['coder'],
     capabilities: [],
     context: projectName ? { projectName } : {}

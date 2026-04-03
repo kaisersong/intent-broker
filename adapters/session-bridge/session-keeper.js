@@ -98,6 +98,7 @@ export async function ensureSessionKeeper({
   intervalMs = DEFAULT_INTERVAL_MS,
   nodePath = process.execPath,
   spawnImpl = spawnDefault,
+  killImpl = process.kill.bind(process),
   isProcessAlive: isProcessAliveImpl = isProcessAlive
 } = {}) {
   if (!cliPath) {
@@ -106,10 +107,12 @@ export async function ensureSessionKeeper({
 
   const statePath = resolveSessionKeeperStatePath(toolName, config.participantId, { homeDir });
   mkdirSync(path.dirname(statePath), { recursive: true });
+  const desiredInboxMode = config.inboxMode || 'pull';
 
   const existing = readKeeperState(statePath);
   if (
     existing?.sessionId === sessionId &&
+    existing?.inboxMode === desiredInboxMode &&
     existing?.pid &&
     isProcessAliveImpl(existing.pid)
   ) {
@@ -118,6 +121,20 @@ export async function ensureSessionKeeper({
       pid: existing.pid,
       statePath
     };
+  }
+
+  if (
+    existing?.sessionId === sessionId &&
+    existing?.pid &&
+    isProcessAliveImpl(existing.pid) &&
+    existing?.inboxMode !== desiredInboxMode
+  ) {
+    try {
+      killImpl(existing.pid);
+    } catch {
+      // best effort only
+    }
+    removeKeeperState(statePath);
   }
 
   if (existing?.pid && !isProcessAliveImpl(existing.pid)) {
@@ -134,6 +151,7 @@ export async function ensureSessionKeeper({
       PARTICIPANT_ID: config.participantId,
       ALIAS: config.alias,
       PROJECT_NAME: config.context?.projectName || '',
+      INTENT_BROKER_INBOX_MODE: desiredInboxMode,
       INTENT_BROKER_KEEPALIVE_PARENT_PID: String(parentPid || ''),
       INTENT_BROKER_KEEPALIVE_INTERVAL_MS: String(intervalMs),
       INTENT_BROKER_KEEPALIVE_STATE_PATH: statePath,
@@ -147,6 +165,7 @@ export async function ensureSessionKeeper({
   writeFileSync(statePath, JSON.stringify({
     pid: child.pid,
     sessionId: sessionId || '',
+    inboxMode: desiredInboxMode,
     parentPid: parentPid || null,
     startedAt: new Date().toISOString()
   }, null, 2));
@@ -212,9 +231,11 @@ export async function runSessionKeeperProcess({
   const config = deriveSessionBridgeConfig({ toolName, env, cwd });
   if (statePath) {
     mkdirSync(path.dirname(statePath), { recursive: true });
+    const desiredInboxMode = config.inboxMode || 'pull';
     writeFileSync(statePath, JSON.stringify({
       pid: process.pid,
       sessionId: env.INTENT_BROKER_KEEPALIVE_SESSION_ID || '',
+      inboxMode: desiredInboxMode,
       parentPid: normalizePid(parentPid),
       startedAt: new Date().toISOString()
     }, null, 2));

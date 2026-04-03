@@ -25,6 +25,7 @@ test('ensureSessionKeeper spawns a detached background keeper and records its pi
       brokerUrl: 'http://127.0.0.1:4318',
       participantId: 'codex-session-019d448e',
       alias: 'codex',
+      inboxMode: 'realtime',
       roles: ['coder'],
       capabilities: [],
       context: { projectName: 'intent-broker' }
@@ -43,6 +44,7 @@ test('ensureSessionKeeper spawns a detached background keeper and records its pi
   assert.deepEqual(spawnCalls[0].args.slice(-1), ['keepalive']);
   assert.equal(spawnCalls[0].options.detached, true);
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_KEEPALIVE_PARENT_PID, '4242');
+  assert.equal(spawnCalls[0].options.env.INTENT_BROKER_INBOX_MODE, 'realtime');
   assert.equal(
     JSON.parse(readFileSync(result.statePath, 'utf8')).pid,
     5151
@@ -63,6 +65,7 @@ test('ensureSessionKeeper reuses a live keeper for the same session', async () =
       brokerUrl: 'http://127.0.0.1:4318',
       participantId: 'codex-session-019d448e',
       alias: 'codex',
+      inboxMode: 'realtime',
       roles: ['coder'],
       capabilities: [],
       context: { projectName: 'intent-broker' }
@@ -86,6 +89,7 @@ test('ensureSessionKeeper reuses a live keeper for the same session', async () =
       brokerUrl: 'http://127.0.0.1:4318',
       participantId: 'codex-session-019d448e',
       alias: 'codex',
+      inboxMode: 'realtime',
       roles: ['coder'],
       capabilities: [],
       context: { projectName: 'intent-broker' }
@@ -103,6 +107,63 @@ test('ensureSessionKeeper reuses a live keeper for the same session', async () =
   assert.equal(reused.started, false);
   assert.equal(reused.pid, 5151);
   assert.equal(spawnedAgain, false);
+});
+
+test('ensureSessionKeeper replaces a live keeper when the persisted inbox mode is stale', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-'));
+  const kills = [];
+
+  await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'pull',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    spawnImpl: () => ({
+      pid: 5151,
+      unref() {}
+    })
+  });
+
+  const replaced = await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 6161,
+      unref() {}
+    })
+  });
+
+  assert.equal(replaced.started, true);
+  assert.deepEqual(kills, [5151]);
+  assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 6161);
 });
 
 test('resolveObservedParentPid skips shell wrapper processes when possible', () => {

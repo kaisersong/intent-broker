@@ -73,3 +73,15 @@ test('deriveSessionBridgeConfig prefers explicit alias override', () => {
 
   assert.equal(config.alias, 'backend');
 });
+
+test('deriveSessionBridgeConfig honors explicit inbox mode override', () => {
+  const config = deriveSessionBridgeConfig({
+    toolName: 'codex',
+    env: {
+      INTENT_BROKER_INBOX_MODE: 'realtime'
+    },
+    cwd: '/Users/song/projects/intent-broker'
+  });
+
+  assert.equal(config.inboxMode, 'realtime');
+});

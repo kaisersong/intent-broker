@@ -18,15 +18,18 @@ export function deriveWebSocketUrl(sendMsgUrl) {
 export class YunzhijiaAdapter {
   constructor({
     brokerUrl = process.env.BROKER_URL || 'http://127.0.0.1:4318',
-    sendUrl = process.env.YZJ_SEND_URL
+    sendUrl = process.env.YZJ_SEND_URL,
+    reconnectDelayMs = 5000
   } = {}) {
     this.brokerUrl = brokerUrl;
     this.sendUrl = sendUrl;
+    this.reconnectDelayMs = reconnectDelayMs;
     this.userMapping = new Map(); // yzjUserId -> participantId
     this.userWebSockets = new Map(); // participantId -> WebSocket
     this.brokerWs = null;
     this.yzjWs = null;
     this.stopped = false;
+    this.brokerReconnectTimer = null;
   }
 
   async start() {
@@ -57,13 +60,35 @@ export class YunzhijiaAdapter {
   }
 
   async connectBrokerWebSocket() {
-    this.brokerWs = new WebSocket(`${this.brokerUrl.replace('http', 'ws')}/ws?participantId=${ADAPTER_ID}`);
-    this.brokerWs.on('open', () => console.log('✓ Broker WebSocket connected'));
-    this.brokerWs.on('message', (data) => {
+    if (this.stopped) {
+      return;
+    }
+
+    const ws = new WebSocket(`${this.brokerUrl.replace('http', 'ws')}/ws?participantId=${ADAPTER_ID}`);
+    this.brokerWs = ws;
+
+    ws.on('open', () => {
+      this.clearBrokerReconnectTimer();
+      console.log('✓ Broker WebSocket connected');
+    });
+
+    ws.on('message', (data) => {
       const event = JSON.parse(data.toString());
       if (event.type === 'new_intent') this.handleBrokerEvent(event.event);
     });
-    this.brokerWs.on('error', (err) => console.error('Broker WebSocket error:', err));
+
+    ws.on('error', (err) => console.error('Broker WebSocket error:', err));
+
+    ws.on('close', () => {
+      if (this.brokerWs === ws) {
+        this.brokerWs = null;
+      }
+      if (this.stopped) {
+        return;
+      }
+      console.log('Broker WebSocket closed, reconnecting...');
+      this.scheduleBrokerReconnect();
+    });
   }
 
   async connectYunzhijiaWebSocket() {
@@ -95,8 +120,34 @@ export class YunzhijiaAdapter {
       console.log('Yunzhijia WebSocket closed, reconnecting...');
       setTimeout(() => {
         if (!this.stopped) this.connectYunzhijiaWebSocket();
-      }, 5000);
+      }, this.reconnectDelayMs);
     });
+  }
+
+  clearBrokerReconnectTimer() {
+    if (!this.brokerReconnectTimer) {
+      return;
+    }
+    clearTimeout(this.brokerReconnectTimer);
+    this.brokerReconnectTimer = null;
+  }
+
+  scheduleBrokerReconnect() {
+    if (this.stopped || this.brokerReconnectTimer) {
+      return;
+    }
+
+    this.brokerReconnectTimer = setTimeout(async () => {
+      this.brokerReconnectTimer = null;
+
+      try {
+        await this.registerToBroker();
+        await this.connectBrokerWebSocket();
+      } catch (error) {
+        console.error('Failed to reconnect broker WebSocket:', error);
+        this.scheduleBrokerReconnect();
+      }
+    }, this.reconnectDelayMs);
   }
 
   isControlMessage(message) {
@@ -379,7 +430,35 @@ export class YunzhijiaAdapter {
 
     const hints = [];
     if (onlineButDeferred.length) {
-      hints.push(`消息已写入 broker inbox，${onlineButDeferred.join('、')} 会话在线，但当前不是实时收件模式，需要目标会话下一次本地交互时才会看到。`);
+      const pullMode = [];
+      const realtimeUnavailable = [];
+      const registeredOnly = [];
+
+      for (const participantId of offlineRecipients) {
+        if (!presenceById.get(participantId)?.status || presenceById.get(participantId)?.status !== 'online') {
+          continue;
+        }
+
+        const participant = routing?.participantsById?.[participantId];
+        const label = participant?.alias ? `@${participant.alias}` : participantId;
+        if (participant?.inboxMode === 'pull') {
+          pullMode.push(label);
+        } else if (participant?.inboxMode === 'realtime') {
+          realtimeUnavailable.push(label);
+        } else {
+          registeredOnly.push(label);
+        }
+      }
+
+      if (pullMode.length) {
+        hints.push(`消息已写入 broker inbox，${pullMode.join('、')} 会话在线，但当前不是实时收件模式，需要目标会话下一次本地交互时才会看到。`);
+      }
+      if (realtimeUnavailable.length) {
+        hints.push(`消息已写入 broker inbox，${realtimeUnavailable.join('、')} 会话在线，但 realtime bridge 当前未连接，已退化为 inbox 投递，需要目标会话下一次本地交互时才会看到。`);
+      }
+      if (registeredOnly.length) {
+        hints.push(`消息已写入 broker inbox，但 ${registeredOnly.join('、')} 仅已注册、当前没有活动会话，不能自动回复。`);
+      }
     }
     if (offline.length) {
       hints.push(`消息已写入 broker inbox，但 ${offline.join('、')} 当前不在线，恢复后才能看到。`);
@@ -431,7 +510,7 @@ export class YunzhijiaAdapter {
       if (!this.stopped) {
         setTimeout(() => {
           if (!this.stopped) this.connectUserWebSocket(participantId);
-        }, 5000);
+        }, this.reconnectDelayMs);
       }
     });
 
@@ -547,6 +626,7 @@ export class YunzhijiaAdapter {
 
   stop() {
     this.stopped = true;
+    this.clearBrokerReconnectTimer();
     this.closeSocket(this.brokerWs);
     this.closeSocket(this.yzjWs);
     for (const ws of this.userWebSockets.values()) {

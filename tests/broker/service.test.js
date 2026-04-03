@@ -428,6 +428,56 @@ test('websocket lifecycle updates presence and broadcasts online and offline cha
   });
 });
 
+test('websocket heartbeat keeps realtime participants online across presence sweeps', async (t) => {
+  const broker = createBrokerService({
+    dbPath: createTempDbPath(),
+    presenceTimeoutMs: 50,
+    presenceSweepIntervalMs: 10,
+    websocketHeartbeatIntervalMs: 10
+  });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  broker.attachWebSocket(server.raw());
+  const port = server.address().port;
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });
+  broker.registerParticipant({
+    participantId: 'adapter.yunzhijia',
+    kind: 'adapter',
+    roles: ['message_gateway'],
+    capabilities: ['yunzhijia.im'],
+    alias: 'yunzhijia'
+  });
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?participantId=adapter.yunzhijia`);
+  await once(socket, 'open');
+
+  t.after(async () => {
+    socket.close();
+    await server.close();
+  });
+
+  await waitFor(() => broker.getPresence('adapter.yunzhijia')?.status === 'online');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  const stillOnline = broker.getPresence('adapter.yunzhijia');
+  assert.equal(stillOnline?.status, 'online');
+
+  const inboxWhileConnected = broker.readInbox('human.song', { after: 0 }).items
+    .filter((item) => item.kind === 'participant_presence_updated' && item.payload.participantId === 'adapter.yunzhijia');
+  assert.equal(inboxWhileConnected.length, 1);
+  assert.equal(inboxWhileConnected[0].payload.status, 'online');
+
+  socket.close();
+
+  await waitFor(() => broker.getPresence('adapter.yunzhijia')?.status === 'offline');
+
+  const inboxAfterClose = broker.readInbox('human.song', { after: 0 }).items
+    .filter((item) => item.kind === 'participant_presence_updated' && item.payload.participantId === 'adapter.yunzhijia');
+  assert.equal(inboxAfterClose.length, 2);
+  assert.equal(inboxAfterClose[1].payload.status, 'offline');
+});
+
 test('registerParticipant marks agent online and broadcasts presence without websocket', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath(), presenceSweepIntervalMs: 0 });
 

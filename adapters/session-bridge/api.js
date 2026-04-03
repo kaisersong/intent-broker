@@ -66,7 +66,8 @@ export async function registerParticipant(config, fetchImpl = fetch) {
       roles: config.roles,
       capabilities: config.capabilities,
       alias: config.alias,
-      context: config.context || {}
+      context: config.context || {},
+      inboxMode: config.inboxMode ?? 'pull'
     })
   }, { fetchImpl });
 }

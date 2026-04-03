@@ -22,6 +22,47 @@ function deliverySemanticForItem(item = {}) {
   return 'informational';
 }
 
+function isPresenceUpdate(item = {}) {
+  return item?.kind === 'participant_presence_updated';
+}
+
+function summarizePresenceItems(items = [], { limit = 8 } = {}) {
+  if (!items.length) {
+    return '';
+  }
+
+  const latestByParticipant = new Map();
+  for (const item of items) {
+    const participantId = item?.payload?.participantId || item?.participantId || String(item?.eventId || '');
+    const existing = latestByParticipant.get(participantId);
+    if (!existing || Number(item?.eventId || 0) >= Number(existing?.eventId || 0)) {
+      latestByParticipant.set(participantId, item);
+    }
+  }
+
+  const latestItems = [...latestByParticipant.values()]
+    .sort((left, right) => Number(left?.eventId || 0) - Number(right?.eventId || 0));
+  const visibleItems = latestItems.slice(-limit);
+  const hiddenCount = latestItems.length - visibleItems.length;
+  const lines = [
+    `${items.length} broker presence update${items.length === 1 ? '' : 's'} collapsed into ${latestItems.length} latest collaborator state${latestItems.length === 1 ? '' : 's'}:`
+  ];
+
+  for (const item of visibleItems) {
+    const summary = summarizePayload(item.payload);
+    if (summary) {
+      lines.push(`- ${summary}`);
+    }
+  }
+
+  if (hiddenCount > 0) {
+    lines.push(`- ... and ${hiddenCount} more collaborator state update${hiddenCount === 1 ? '' : 's'}`);
+  }
+  lines.push('Use `intent-broker who` if you need the full live roster.');
+
+  return lines.join('\n');
+}
+
 export function summarizeInboxItems(items = []) {
   if (!items.length) {
     return '0 new broker events.';
@@ -57,6 +98,8 @@ export function buildToolHookContext(items = [], { participantId, sessionLabel =
 
   const actionable = items.filter((item) => deliverySemanticForItem(item) === 'actionable');
   const informational = items.filter((item) => deliverySemanticForItem(item) !== 'actionable');
+  const presenceUpdates = informational.filter(isPresenceUpdate);
+  const otherInformational = informational.filter((item) => !isPresenceUpdate(item));
   const lines = [`Intent Broker update for ${participantId || `this ${sessionLabel}`}:`];
 
   if (actionable.length) {
@@ -65,9 +108,14 @@ export function buildToolHookContext(items = [], { participantId, sessionLabel =
     lines.push('Treat the actionable items as commands or blocking asks. Execute them in this turn unless you have a clear reason not to.');
   }
 
-  if (informational.length) {
+  if (otherInformational.length || presenceUpdates.length) {
     lines.push('Informational items:');
-    lines.push(summarizeInboxItems(informational));
+    if (otherInformational.length) {
+      lines.push(summarizeInboxItems(otherInformational));
+    }
+    if (presenceUpdates.length) {
+      lines.push(summarizePresenceItems(presenceUpdates));
+    }
     lines.push('Informational items are context updates by default. Acknowledge or use them only when relevant.');
   }
 

@@ -7,7 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { createBrokerService } from '../../src/broker/service.js';
 import { createServer } from '../../src/http/server.js';
 import { createTempDbPath } from '../fixtures/temp-dir.js';
-import { YunzhijiaAdapter } from '../../adapters/yunzhijia/index.js';
+import { ADAPTER_ID, YunzhijiaAdapter } from '../../adapters/yunzhijia/index.js';
 
 async function waitFor(predicate, { timeoutMs = 3000, intervalMs = 25 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -341,7 +341,7 @@ test('Yunzhijia adapter can rename participant alias through message command and
   assert.ok(outboundPosts.some((post) => /codex\.a alias updated: codex -> reviewer/.test(post.content)));
 });
 
-test('Yunzhijia adapter tells humans when mentioned agents are online but not real-time reachable', { concurrency: false }, async (t) => {
+test('Yunzhijia adapter tells humans when mentioned agents are online in pull inbox mode', { concurrency: false }, async (t) => {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
   const broker = createBrokerService({ dbPath: createTempDbPath() });
@@ -351,7 +351,14 @@ test('Yunzhijia adapter tells humans when mentioned agents are online but not re
   const brokerPort = brokerServer.address().port;
   const brokerUrl = `http://127.0.0.1:${brokerPort}`;
 
-  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    inboxMode: 'pull'
+  });
 
   const outboundPosts = [];
   const yzjServer = https.createServer(
@@ -414,6 +421,153 @@ test('Yunzhijia adapter tells humans when mentioned agents are online but not re
   );
   assert.match(outboundPosts[0].content, /会话在线/);
   assert.match(outboundPosts[0].content, /不是实时收件模式/);
+  assert.match(outboundPosts[0].content, /@codex/);
+});
+
+test('Yunzhijia adapter tells humans when mentioned agents are only registered placeholders', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({ participantId: 'probe.agent', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'probe1' });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+
+  t.after(async () => {
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@probe1 你在做什么，回复我',
+        msgId: 'msg_placeholder_1'
+      }
+    })
+  );
+
+  await waitFor(() => outboundPosts.length === 1);
+  assert.match(outboundPosts[0].content, /已注册/);
+  assert.match(outboundPosts[0].content, /没有活动会话/);
+  assert.match(outboundPosts[0].content, /@probe1/);
+});
+
+test('Yunzhijia adapter tells humans when realtime agents are online but bridge delivery is currently degraded', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    inboxMode: 'realtime'
+  });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+
+  t.after(async () => {
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@codex 你在做什么，回复我',
+        msgId: 'msg_realtime_degraded_1'
+      }
+    })
+  );
+
+  await waitFor(() => outboundPosts.length === 1);
+  assert.match(outboundPosts[0].content, /realtime bridge/);
+  assert.match(outboundPosts[0].content, /当前未连接/);
   assert.match(outboundPosts[0].content, /@codex/);
 });
 
@@ -760,4 +914,89 @@ test('Yunzhijia adapter broadcasts agent online and offline presence to channel'
 
   await waitFor(() => outboundPosts.some((post) => /已离线/.test(post.content)));
   assert.match(outboundPosts.find((post) => /已离线/.test(post.content)).content, /@codex4/);
+});
+
+test('Yunzhijia adapter reconnects broker websocket after disconnect and keeps forwarding presence updates', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl,
+    reconnectDelayMs: 10
+  });
+  let agentSocket = null;
+
+  t.after(async () => {
+    if (agentSocket && agentSocket.readyState === WebSocket.OPEN) {
+      const closed = once(agentSocket, 'close').catch(() => null);
+      agentSocket.close();
+      await closed;
+    }
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  const firstBrokerWs = adapter.brokerWs;
+  const closed = once(firstBrokerWs, 'close').catch(() => null);
+  firstBrokerWs.close();
+  await closed;
+
+  await waitFor(() => (
+    adapter.brokerWs
+    && adapter.brokerWs !== firstBrokerWs
+    && adapter.brokerWs.readyState === WebSocket.OPEN
+  ), { timeoutMs: 2000 });
+
+  await waitFor(() => broker.getPresence(ADAPTER_ID)?.status === 'online');
+
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex4',
+    context: { projectName: 'intent-broker' }
+  });
+
+  agentSocket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ws?participantId=codex.a`);
+  await once(agentSocket, 'open');
+
+  await waitFor(() => outboundPosts.some((post) => /@codex4 已上线/.test(post.content)), { timeoutMs: 2000 });
 });

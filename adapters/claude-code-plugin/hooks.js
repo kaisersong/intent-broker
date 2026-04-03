@@ -41,6 +41,7 @@ function configFromHookInput(input, { env = process.env, cwd = process.cwd() } =
     toolName: 'claude-code',
     env: {
       ...env,
+      INTENT_BROKER_INBOX_MODE: env.INTENT_BROKER_INBOX_MODE || 'realtime',
       CLAUDE_CODE_SESSION_ID: sessionId
     },
     cwd
@@ -120,6 +121,8 @@ export async function runUserPromptSubmitHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    ensureSessionKeeper = ensureSessionKeeperDefault,
+    ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
     loadRealtimeQueueState = loadRealtimeQueueStateDefault,
     saveRealtimeQueueState = saveRealtimeQueueStateDefault,
@@ -138,6 +141,28 @@ export async function runUserPromptSubmitHook(
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
+
+    await ensureSessionKeeper({
+      toolName: 'claude-code',
+      cliPath,
+      config,
+      sessionId: input.session_id,
+      cwd,
+      env,
+      homeDir,
+      parentPid: resolveObservedParentPid()
+    }).catch(() => null);
+    await ensureRealtimeBridge({
+      toolName: 'claude-code',
+      cliPath,
+      config,
+      sessionId: input.session_id,
+      cwd,
+      env,
+      homeDir,
+      parentPid: resolveObservedParentPid()
+    }).catch(() => null);
+
     const drainedQueue = drainRealtimeQueue(loadRealtimeQueueState(queueStatePath));
 
     if (drainedQueue.items.length) {

@@ -44,14 +44,17 @@ function deriveDeliverySemantic({ kind, fromParticipant }) {
 export function createBrokerService({
   dbPath,
   presenceTimeoutMs = 600000,
-  presenceSweepIntervalMs = 5000
+  presenceSweepIntervalMs = 5000,
+  websocketHeartbeatIntervalMs = 30000
 }) {
   const participants = new Map();
   const aliases = new Map();
   const workStates = new Map();
   const store = createEventStore({ dbPath });
   const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs });
-  const wsNotifier = createWebSocketNotifier();
+  const wsNotifier = createWebSocketNotifier({
+    heartbeatIntervalMs: websocketHeartbeatIntervalMs
+  });
 
   function resolveRecipients(fromParticipantId, to = { mode: 'broadcast' }) {
     if (to.mode === 'participant') {
@@ -362,6 +365,7 @@ export function createBrokerService({
           }),
           existing?.alias || null
         ),
+        inboxMode: participant.inboxMode ?? existing?.inboxMode ?? null,
         context: participant.context || {}
       };
       participants.set(normalized.participantId, normalized);
@@ -530,6 +534,12 @@ export function createBrokerService({
     attachWebSocket(httpServer) {
       wsNotifier.attachToServer(httpServer, {
         onConnect: ({ participantId, connectionCount }) => {
+          setPresence(participantId, 'online', {
+            transport: 'websocket',
+            connectionCount
+          });
+        },
+        onHeartbeat: ({ participantId, connectionCount }) => {
           setPresence(participantId, 'online', {
             transport: 'websocket',
             connectionCount

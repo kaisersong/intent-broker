@@ -51,6 +51,7 @@ function configFromHookInput(input, { env = process.env, cwd = process.cwd() } =
     toolName: 'codex',
     env: {
       ...env,
+      INTENT_BROKER_INBOX_MODE: env.INTENT_BROKER_INBOX_MODE || 'realtime',
       CODEX_THREAD_ID: sessionId
     },
     cwd
@@ -142,6 +143,8 @@ export async function runUserPromptSubmitHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    ensureSessionKeeper = ensureSessionKeeperDefault,
+    ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
     saveRuntimeState = saveRuntimeStateDefault,
     loadRealtimeQueueState = loadRealtimeQueueStateDefault,
@@ -163,6 +166,27 @@ export async function runUserPromptSubmitHook(
     const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
+
+    await ensureSessionKeeper({
+      toolName: 'codex',
+      cliPath,
+      config,
+      sessionId: input.session_id,
+      cwd,
+      env,
+      homeDir,
+      parentPid: resolveObservedParentPid()
+    }).catch(() => null);
+    await ensureRealtimeBridge({
+      toolName: 'codex',
+      cliPath,
+      config,
+      sessionId: input.session_id,
+      cwd,
+      env,
+      homeDir,
+      parentPid: resolveObservedParentPid()
+    }).catch(() => null);
 
     if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
       const activeContext = pickActiveWorkContext([], state.recentContext);

@@ -175,6 +175,7 @@ test('ensureRealtimeBridge spawns a detached background bridge and records its p
       brokerUrl: 'http://127.0.0.1:4318',
       participantId: 'codex-session-019d448e',
       alias: 'codex',
+      inboxMode: 'realtime',
       roles: ['coder'],
       capabilities: [],
       context: { projectName: 'intent-broker' }
@@ -193,5 +194,63 @@ test('ensureRealtimeBridge spawns a detached background bridge and records its p
   assert.deepEqual(spawnCalls[0].args.slice(-1), ['realtime-bridge']);
   assert.equal(spawnCalls[0].options.detached, true);
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_REALTIME_PARENT_PID, '4242');
+  assert.equal(spawnCalls[0].options.env.INTENT_BROKER_INBOX_MODE, 'realtime');
   assert.equal(JSON.parse(readFileSync(result.statePath, 'utf8')).pid, 6262);
+});
+
+test('ensureRealtimeBridge replaces a live bridge when the persisted inbox mode is stale', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-realtime-'));
+  const kills = [];
+
+  await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'pull',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    spawnImpl: () => ({
+      pid: 6262,
+      unref() {}
+    })
+  });
+
+  const replaced = await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 7272,
+      unref() {}
+    })
+  });
+
+  assert.equal(replaced.started, true);
+  assert.deepEqual(kills, [6262]);
+  assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 7272);
 });
