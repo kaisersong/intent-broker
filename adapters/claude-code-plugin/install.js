@@ -59,6 +59,12 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
     commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'user-prompt-submit')
   });
 
+  hooks.Stop = mergeManagedHookGroups(hooks.Stop || [], {
+    command: commands.stopCommand,
+    statusMessage: verbose ? managedHookStatusMessages.stop : undefined,
+    commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'stop')
+  });
+
   merged.hooks = hooks;
   return merged;
 }

@@ -5,6 +5,7 @@ import {
   ackInbox as ackInboxDefault,
   pollInbox as pollInboxDefault,
   registerParticipant as registerParticipantDefault,
+  sendProgress as sendProgressDefault,
   updateWorkState as updateWorkStateDefault
 } from '../session-bridge/api.js';
 import {
@@ -18,6 +19,10 @@ import {
 } from '../session-bridge/codex-hooks.js';
 import { deriveSessionBridgeConfig } from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
+import {
+  markPendingReplyMirror as markPendingReplyMirrorDefault,
+  maybeMirrorPendingReply as maybeMirrorPendingReplyDefault
+} from '../session-bridge/reply-mirror.js';
 import {
   loadCursorState as loadCursorStateDefault,
   saveCursorState as saveCursorStateDefault
@@ -76,6 +81,20 @@ async function safelyRunHook(work) {
   } catch {
     return null;
   }
+}
+
+function isActionableItem(item = {}) {
+  if (item?.payload?.delivery?.semantic === 'actionable') {
+    return true;
+  }
+
+  return item?.kind === 'request_task'
+    || item?.kind === 'ask_clarification'
+    || item?.kind === 'request_approval';
+}
+
+function pickActionableReplyContext(items = []) {
+  return pickRecentContext(items.filter(isActionableItem));
 }
 
 export async function runSessionStartHook(
@@ -149,6 +168,7 @@ export async function runUserPromptSubmitHook(
     saveRuntimeState = saveRuntimeStateDefault,
     loadRealtimeQueueState = loadRealtimeQueueStateDefault,
     saveRealtimeQueueState = saveRealtimeQueueStateDefault,
+    markPendingReplyMirror = markPendingReplyMirrorDefault,
     registerParticipant = registerParticipantDefault,
     updateWorkState = updateWorkStateDefault,
     saveCursorState = saveCursorStateDefault,
@@ -238,6 +258,19 @@ export async function runUserPromptSubmitHook(
         config,
         buildAutomaticWorkState('implementing', activeContext)
       ).catch(() => null);
+      const replyContext = pickActionableReplyContext(drainedQueue.items);
+      if (replyContext) {
+        markPendingReplyMirror(
+          'codex',
+          config.participantId,
+          {
+            sessionId: input.session_id || null,
+            turnId: input.turn_id || null,
+            recentContext: replyContext
+          },
+          { homeDir }
+        );
+      }
       return context;
     }
 
@@ -270,6 +303,19 @@ export async function runUserPromptSubmitHook(
       lastSeenEventId,
       recentContext: pickRecentContext(items) || state.recentContext
     });
+    const replyContext = pickActionableReplyContext(items);
+    if (replyContext) {
+      markPendingReplyMirror(
+        'codex',
+        config.participantId,
+        {
+          sessionId: input.session_id || null,
+          turnId: input.turn_id || null,
+          recentContext: replyContext
+        },
+        { homeDir }
+      );
+    }
     return context;
   });
 }
@@ -286,6 +332,9 @@ export async function runStopHook(
     saveRuntimeState = saveRuntimeStateDefault,
     loadRealtimeQueueState = loadRealtimeQueueStateDefault,
     saveRealtimeQueueState = saveRealtimeQueueStateDefault,
+    maybeMirrorPendingReply = maybeMirrorPendingReplyDefault,
+    markPendingReplyMirror = markPendingReplyMirrorDefault,
+    sendProgress = sendProgressDefault,
     updateWorkState = updateWorkStateDefault,
     ackInbox = ackInboxDefault
   } = {}
@@ -298,6 +347,14 @@ export async function runStopHook(
     const cursorState = loadCursorState(statePath);
     const runtimeState = loadRuntimeState(runtimeStatePath);
     const queueState = loadRealtimeQueueState(queueStatePath);
+
+    await maybeMirrorPendingReply(config, {
+      toolName: 'codex',
+      sessionId: input.session_id || runtimeState.sessionId || null,
+      turnId: input.turn_id || null,
+      homeDir,
+      sendProgress
+    });
 
     if (!queueState.actionable.length) {
       saveRuntimeState(runtimeStatePath, {
@@ -342,6 +399,18 @@ export async function runStopHook(
       config,
       buildAutomaticWorkState('implementing', activeContext)
     ).catch(() => null);
+    const replyContext = pickActionableReplyContext(items);
+    if (replyContext) {
+      markPendingReplyMirror(
+        'codex',
+        config.participantId,
+        {
+          sessionId: input.session_id || runtimeState.sessionId || null,
+          recentContext: replyContext
+        },
+        { homeDir }
+      );
+    }
 
     return buildCodexAutoContinuePrompt(items, { participantId: config.participantId });
   });

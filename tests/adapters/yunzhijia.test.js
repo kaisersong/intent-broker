@@ -141,7 +141,6 @@ test('Yunzhijia adapter routes @alias, @all and replies on unknown aliases', { c
 
   broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
   broker.registerParticipant({ participantId: 'claude.b', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'claude' });
-
   const outboundPosts = [];
   const yzjServer = https.createServer(
     {
@@ -639,6 +638,93 @@ test('Yunzhijia adapter tells humans when mentioned agents are truly offline', {
   await waitFor(() => outboundPosts.length >= 1);
   assert.match(outboundPosts[0].content, /当前不在线/);
   assert.match(outboundPosts[0].content, /@codex/);
+});
+
+test('Yunzhijia adapter tells humans which recipients were reached in realtime and which stayed offline', { concurrency: false }, async (t) => {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const brokerServer = createServer({ broker });
+  await brokerServer.listen(0, '127.0.0.1');
+  broker.attachWebSocket(brokerServer.raw());
+  const brokerPort = brokerServer.address().port;
+  const brokerUrl = `http://127.0.0.1:${brokerPort}`;
+
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
+  broker.registerParticipant({ participantId: 'claude.b', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'claude' });
+  broker.updatePresence('claude.b', 'offline', { reason: 'test' });
+
+  const outboundPosts = [];
+  const yzjServer = https.createServer(
+    {
+      key: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/key.pem', import.meta.url)),
+      cert: fs.readFileSync(new URL('../fixtures/yunzhijia-tls/cert.pem', import.meta.url))
+    },
+    (req, res) => {
+      let raw = '';
+      req.on('data', (chunk) => {
+        raw += chunk;
+      });
+      req.on('end', () => {
+        outboundPosts.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    }
+  );
+  const yzjWss = new WebSocketServer({ server: yzjServer, path: '/xuntong/websocket' });
+  await new Promise((resolve) => yzjServer.listen(0, '127.0.0.1', resolve));
+  const yzjPort = yzjServer.address().port;
+  const yzjSendUrl = `https://127.0.0.1:${yzjPort}/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken`;
+
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl,
+    sendUrl: yzjSendUrl
+  });
+  let agentSocket = null;
+
+  t.after(async () => {
+    if (agentSocket && agentSocket.readyState === WebSocket.OPEN) {
+      const closed = once(agentSocket, 'close').catch(() => null);
+      agentSocket.close();
+      await closed;
+    }
+    adapter.stop();
+    await new Promise((resolve) => yzjWss.close(resolve));
+    await new Promise((resolve) => yzjServer.close(resolve));
+    await brokerServer.close();
+  });
+
+  await adapter.registerToBroker();
+  await adapter.connectBrokerWebSocket();
+  await adapter.connectYunzhijiaWebSocket();
+  await once(yzjWss, 'connection');
+
+  agentSocket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ws?participantId=codex.a`);
+  await once(agentSocket, 'open');
+  await waitFor(() => broker.getPresence('codex.a')?.status === 'online');
+
+  outboundPosts.length = 0;
+
+  const yzjSockets = Array.from(yzjWss.clients);
+  yzjSockets[0].send(
+    JSON.stringify({
+      msg: {
+        robotId: 'robot_local',
+        operatorOpenid: 'user_local',
+        content: '@all 现在报一下状态',
+        msgId: 'msg_mixed_delivery_1'
+      }
+    })
+  );
+
+  await waitFor(() => broker.readInbox('codex.a', { after: 0 }).items.some((item) => item.kind === 'ask_clarification'));
+  await waitFor(() => broker.readInbox('claude.b', { after: 0 }).items.some((item) => item.kind === 'ask_clarification'));
+  await waitFor(() => outboundPosts.some((post) => /当前不在线/.test(post.content)));
+  await waitFor(() => outboundPosts.some((post) => /已实时投递给/.test(post.content)));
+
+  assert.ok(outboundPosts.some((post) => /已实时投递给/.test(post.content) && /@codex/.test(post.content)));
+  assert.ok(outboundPosts.some((post) => /当前不在线/.test(post.content) && /@claude/.test(post.content)));
 });
 
 test('Yunzhijia adapter forwards new client online notifications to channel', { concurrency: false }, async (t) => {

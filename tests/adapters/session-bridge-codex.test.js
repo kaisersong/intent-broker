@@ -92,6 +92,28 @@ test('buildCodexHookContext produces actionable context for Codex', () => {
   assert.match(context, /Treat the actionable items as commands or blocking asks/);
 });
 
+test('buildToolHookContext tells the agent to reply through broker for actionable asks', () => {
+  const context = buildToolHookContext(
+    [
+      {
+        eventId: 72,
+        kind: 'ask_clarification',
+        fromParticipantId: 'human.song',
+        taskId: 'task-3',
+        threadId: 'thread-3',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: '你在做什么，回复我' }
+        }
+      }
+    ],
+    { participantId: 'codex.main' }
+  );
+
+  assert.match(context, /intent-broker reply/);
+  assert.match(context, /instead of only answering locally/i);
+});
+
 test('buildToolHookContext separates actionable and informational events', () => {
   const context = buildToolHookContext(
     [

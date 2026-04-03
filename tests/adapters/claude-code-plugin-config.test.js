@@ -33,10 +33,11 @@ test('defaultInstallPaths targets project .claude settings and claude state root
   assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
-test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', () => {
+test('mergeIntentBrokerHooks adds session start, user prompt submit, and stop hooks', () => {
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
-    userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
+    userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+    stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
   });
 
   assert.deepEqual(merged, {
@@ -61,6 +62,16 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', (
             }
           ]
         }
+      ],
+      Stop: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/claude-code-broker.js" hook stop'
+            }
+          ]
+        }
       ]
     }
   });
@@ -69,11 +80,13 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit hooks', (
 test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
-    userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
+    userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+    stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
   }, { verbose: true });
 
   assert.equal(merged.hooks.SessionStart[0].hooks[0].statusMessage, 'intent-broker session sync');
   assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].statusMessage, 'intent-broker inbox sync');
+  assert.equal(merged.hooks.Stop[0].hooks[0].statusMessage, 'intent-broker auto continue');
 });
 
 test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing intent-broker hooks', () => {
@@ -106,7 +119,8 @@ test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing int
     },
     {
       sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
-      userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit'
+      userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+      stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
     }
   );
 
@@ -114,6 +128,7 @@ test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing int
   assert.equal(merged.hooks.SessionStart[0].hooks[0].command, 'node keep-me');
   assert.equal(merged.hooks.SessionStart[1].hooks[0].command, 'node "/repo/claude-code-broker.js" hook session-start');
   assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook user-prompt-submit');
+  assert.equal(merged.hooks.Stop[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook stop');
 });
 
 test('readClaudeSettings and writeClaudeSettings round-trip JSON config', () => {

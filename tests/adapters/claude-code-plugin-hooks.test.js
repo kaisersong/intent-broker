@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { buildClaudeCodeHookOutput } from '../../adapters/claude-code-plugin/format.js';
 import {
+  runStopHook,
   runSessionStartHook,
   runUserPromptSubmitHook
 } from '../../adapters/claude-code-plugin/hooks.js';
@@ -137,6 +138,33 @@ test('user prompt submit hook skips slash commands', async () => {
 
   assert.equal(result, null);
   assert.deepEqual(calls, []);
+});
+
+test('stop hook mirrors pending broker reply through transcript reader', async () => {
+  const calls = [];
+
+  const result = await runStopHook(
+    {
+      session_id: 'claude-session-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      maybeMirrorPendingReply: async (config, options) => {
+        calls.push({ participantId: config.participantId, sessionId: options.sessionId, toolName: options.toolName });
+        return { mirrored: true };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, [
+    {
+      participantId: 'claude-code-session-claude-s',
+      sessionId: 'claude-session-1',
+      toolName: 'claude-code'
+    }
+  ]);
 });
 
 test('user prompt submit hook injects context, saves cursor, and acks inbox', async () => {

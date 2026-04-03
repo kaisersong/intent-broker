@@ -55,6 +55,7 @@ test('runInboxCommand prints unread events, saves recent context, and acks highe
 test('runReplyCommand reuses recent context and sends targeted progress reply', async () => {
   const outputs = [];
   const sent = [];
+  const cleared = [];
 
   const result = await runReplyCommand(
     {
@@ -78,6 +79,9 @@ test('runReplyCommand reuses recent context and sends targeted progress reply', 
         sent.push({ participantId: config.participantId, payload });
         return { eventId: 91, recipients: ['claude.session'] };
       },
+      clearPendingReplyMirror: (toolName, participantId) => {
+        cleared.push({ toolName, participantId });
+      },
       out: (line) => outputs.push(line)
     }
   );
@@ -87,6 +91,7 @@ test('runReplyCommand reuses recent context and sends targeted progress reply', 
   assert.equal(sent[0].payload.taskId, 'task-9');
   assert.equal(sent[0].payload.threadId, 'thread-9');
   assert.equal(sent[0].payload.summary, '已收到，开始处理');
+  assert.deepEqual(cleared, [{ toolName: 'codex', participantId: 'codex.main' }]);
   assert.match(outputs[0], /Replied to claude2/);
   assert.match(outputs[0], /task=task-9/);
 });

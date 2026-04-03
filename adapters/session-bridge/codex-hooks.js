@@ -106,6 +106,8 @@ export function buildToolHookContext(items = [], { participantId, sessionLabel =
     lines.push('Actionable items:');
     lines.push(summarizeInboxItems(actionable));
     lines.push('Treat the actionable items as commands or blocking asks. Execute them in this turn unless you have a clear reason not to.');
+    lines.push('If an actionable item expects a response, send that response back through the broker in this turn instead of only answering locally.');
+    lines.push('Use `intent-broker reply "<summary>"` for the remembered task/thread, or `intent-broker progress <taskId> <threadId> "<summary>"` when you need to publish an intermediate status update.');
   }
 
   if (otherInformational.length || presenceUpdates.length) {

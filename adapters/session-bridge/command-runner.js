@@ -11,6 +11,7 @@ import {
 } from './api.js';
 import { highestEventId } from './codex-hooks.js';
 import { pickRecentContext } from './recent-context.js';
+import { clearPendingReplyMirror as clearPendingReplyMirrorDefault } from './reply-mirror.js';
 import {
   loadCursorState as loadCursorStateDefault,
   saveCursorState as saveCursorStateDefault
@@ -183,6 +184,7 @@ export async function runReplyCommand(
   {
     toolName,
     homeDir = os.homedir(),
+    clearPendingReplyMirror = clearPendingReplyMirrorDefault,
     loadCursorState = loadCursorStateDefault,
     resolveParticipantAliases = resolveParticipantAliasesDefault,
     sendProgress = sendProgressDefault,
@@ -226,6 +228,7 @@ export async function runReplyCommand(
     toParticipantId: targetParticipantId,
     summary
   });
+  clearPendingReplyMirror(toolName, config.participantId, { homeDir });
 
   out(`Replied to ${resolvedAlias} task=${recentContext.taskId} thread=${recentContext.threadId}`);
 

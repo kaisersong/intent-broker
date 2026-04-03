@@ -4,7 +4,7 @@
 
 Local-first collaboration broker for multi-agent workflows. It is not a chat server and not a workflow platform. It is a reliable protocol layer that persists events before delivery, so agents like Codex, Claude Code, and OpenCode can collaborate with human participants around the same task object.
 
-Current release version: `0.1.1`
+Current release version: `0.1.2`
 
 `Intent Broker` is a coordination layer for one human and multiple coding agents working on the same project.
 
@@ -56,7 +56,7 @@ One practical scenario is a human coordinating multiple coding agents on the sam
 1. A human opens one Codex session and one Claude Code session in the same repo.
 2. Both sessions auto-register to `Intent Broker` with the same `projectName`, publish presence, and expose short aliases such as `@codex` and `@claude`.
 3. The human sends `@codex` a task from Yunzhijia such as "own the websocket reconnect fix", then sends `@claude` a parallel task such as "review the shutdown path and look for conflicts".
-4. Each agent updates its own work-state, publishes progress, and can ask the other agent for help without relying on copy-paste through the human.
+4. Each agent updates its own work-state, publishes progress, and can ask the other agent for help without relying on copy-paste through the human. When a broker-injected actionable item expects a reply, the agent can answer normally in its local TUI and let the bridge mirror that answer back into broker.
 5. Before landing, one agent can query who else is touching the same project, warn about overlap, and negotiate handoff or conflict resolution through the same task/thread timeline.
 6. If broker restarts or one agent goes idle, the task context is still durable. Codex can auto-resume actionable broker work while idle, and Claude Code still resumes from broker state on the next prompt submit or explicit inbox pull instead of losing coordination.
 
@@ -88,6 +88,7 @@ The current prototype supports:
 - non-invasive Codex hook integration for real session inbox injection
 - Codex idle auto-dispatch for actionable queue items plus post-turn continuation through the `Stop` hook
 - non-invasive Claude Code hook integration for project-level inbox injection
+- automatic actionable-reply mirroring from real Codex / Claude Code transcript output back into broker, with explicit `intent-broker reply` fallback when transcript capture is unavailable
 - session-scoped realtime bridge queue with quiet reconnect after broker restart
 
 ## Tech Stack
@@ -420,6 +421,8 @@ Current bridge behavior by tool:
 - agent `task` / `ask` defaults to actionable; agent `note` / `progress` / reply defaults to informational
 - Codex can auto-dispatch actionable queue items while idle, and auto-continue them after the current turn through the `Stop` hook
 - those Codex automatic execution paths also sync broker `work-state` between `idle` and `implementing`, so project peers and message channels can see who is actively working
+- broker-injected actionable work now prefers "normal local answer, automatic broker mirror" over "answer locally and then manually retype a reply"
+- if transcript capture fails, explicit `intent-broker reply ...` remains the safe fallback and no automatic reply is sent
 - Claude Code keeps the same queue semantics, but consumes queued work on the next prompt submit or explicit inbox pull
 
 ### 2. Pull work instead of assuming a permanent connection
@@ -602,8 +605,10 @@ Notes:
 - Hook-injected collaboration context now separates actionable items from informational items. Human-channel messages and `task` / `ask` default to actionable; `note` / `progress` default to informational.
 - If the Codex session is idle and actionable queue items arrive, the realtime bridge can auto-run `codex exec --json --full-auto resume ...` so work starts without a manual prompt.
 - If the Codex session is already busy, the `Stop` hook converts queued actionable work into an auto-continue prompt after the current turn completes.
+- If a broker-injected actionable item is answered inside the Codex TUI, the bridge now tries to mirror the final local answer back to the original broker participant at `Stop` time, so humans or peer agents receive the reply without a separate manual command.
 - Those automatic Codex transitions now also update broker `work-state`: active execution reports `implementing` with the current task/thread context, and an idle stop path returns to `idle`.
 - Informational-only queue items still wait for the next prompt submit or explicit local inbox pull instead of starting a new autonomous turn on their own.
+- If transcript extraction is unavailable for that turn, Codex falls back to the explicit `intent-broker reply ...` path instead of guessing.
 - If you move this repo, run `npm run codex:install` again so the hook command paths are refreshed.
 
 ### Send from a real Codex session
@@ -645,7 +650,8 @@ See who is active on the same project and what they are doing:
 intent-broker who
 ```
 
-Reply on the latest remembered `taskId/threadId` context:
+Reply on the latest remembered `taskId/threadId` context.
+This is the fallback path when transcript-based auto-mirroring cannot infer the local final answer:
 
 ```bash
 intent-broker reply "Received, starting now"
@@ -682,6 +688,7 @@ Claude Code now has the same non-invasive hook bridge model as Codex, but instal
 - `SessionStart` hook: auto-registers the Claude Code session into broker context, publishes an initial `idle` work state, and launches the same lightweight background keeper so presence survives idle time and broker restarts
 - `SessionStart` hook: also launches the same realtime bridge daemon so websocket events land in local queue state immediately
 - `UserPromptSubmit` hook: silently re-registers after broker restart and injects only newly arrived broker inbox context before prompt submission
+- `Stop` hook: after a Claude Code turn finishes, the bridge tries to mirror the final local answer for the latest broker-injected actionable item back into broker, without requiring a separate manual reply command
 
 ### Install the Claude Code bridge
 
@@ -712,6 +719,7 @@ Notes:
 - the realtime bridge quietly reconnects after broker restart and keeps appending websocket events into local queue state
 - on the next prompt submit, Claude Code now drains the local realtime queue before falling back to broker poll, so websocket-delivered items are injected first
 - hook-injected collaboration context now separates actionable items from informational items. Human-channel messages and `task` / `ask` default to actionable; `note` / `progress` default to informational
+- broker-injected actionable items now prefer transcript-based automatic reply mirroring at `Stop` time; if transcript capture fails, explicit `intent-broker --tool claude-code reply ...` remains the fallback
 - Claude Code still consumes queued broker inbox context on the next prompt submit or explicit local inbox pull, not by silently acting on messages while idle
 - if you move this repo, run `npm run claude-code:install` again to refresh command paths
 
@@ -754,7 +762,8 @@ See same-project collaborators and work-state:
 intent-broker --tool claude-code who
 ```
 
-Reply on the latest remembered collaboration context:
+Reply on the latest remembered collaboration context.
+This remains the fallback when automatic transcript mirroring is unavailable:
 
 ```bash
 intent-broker --tool claude-code reply "Received, starting now"

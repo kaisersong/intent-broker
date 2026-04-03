@@ -30,7 +30,7 @@ import {
   readClaudeSettings,
   writeClaudeSettings
 } from '../install.js';
-import { runSessionStartHook, runUserPromptSubmitHook } from '../hooks.js';
+import { runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -53,7 +53,8 @@ function usage() {
   node adapters/claude-code-plugin/bin/claude-code-broker.js keepalive
   node adapters/claude-code-plugin/bin/claude-code-broker.js realtime-bridge
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook session-start
-  node adapters/claude-code-plugin/bin/claude-code-broker.js hook user-prompt-submit`);
+  node adapters/claude-code-plugin/bin/claude-code-broker.js hook user-prompt-submit
+  node adapters/claude-code-plugin/bin/claude-code-broker.js hook stop`);
 }
 
 async function readJsonStdin() {
@@ -87,6 +88,11 @@ async function handleUserPromptSubmitHook() {
   process.stdout.write(JSON.stringify(buildClaudeCodeHookOutput('UserPromptSubmit', context)));
 }
 
+async function handleStopHook() {
+  const input = await readJsonStdin();
+  await runStopHook(input);
+}
+
 function parseInstallOptions(args = []) {
   return {
     verbose: args.includes('--verbose-hooks')
@@ -99,7 +105,8 @@ async function install(args = []) {
   const existingConfig = readClaudeSettings(paths.settingsPath);
   const mergedConfig = mergeIntentBrokerHooks(existingConfig, {
     sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
-    userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit')
+    userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
+    stopCommand: buildHookCommand(cliPath, 'stop')
   }, { verbose: options.verbose });
 
   writeClaudeSettings(paths.settingsPath, mergedConfig);
@@ -298,6 +305,10 @@ switch (command) {
     }
     if (args[0] === 'user-prompt-submit') {
       await handleUserPromptSubmitHook();
+      break;
+    }
+    if (args[0] === 'stop') {
+      await handleStopHook();
       break;
     }
     usage();

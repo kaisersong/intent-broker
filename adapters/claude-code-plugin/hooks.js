@@ -14,6 +14,10 @@ import {
 import { deriveSessionBridgeConfig } from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
 import {
+  markPendingReplyMirror as markPendingReplyMirrorDefault,
+  maybeMirrorPendingReply as maybeMirrorPendingReplyDefault
+} from '../session-bridge/reply-mirror.js';
+import {
   loadCursorState as loadCursorStateDefault,
   saveCursorState as saveCursorStateDefault
 } from '../session-bridge/state.js';
@@ -62,6 +66,20 @@ async function safelyRunHook(work) {
   } catch {
     return null;
   }
+}
+
+function isActionableItem(item = {}) {
+  if (item?.payload?.delivery?.semantic === 'actionable') {
+    return true;
+  }
+
+  return item?.kind === 'request_task'
+    || item?.kind === 'ask_clarification'
+    || item?.kind === 'request_approval';
+}
+
+function pickActionableReplyContext(items = []) {
+  return pickRecentContext(items.filter(isActionableItem));
 }
 
 export async function runSessionStartHook(
@@ -125,6 +143,7 @@ export async function runUserPromptSubmitHook(
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
     loadRealtimeQueueState = loadRealtimeQueueStateDefault,
+    markPendingReplyMirror = markPendingReplyMirrorDefault,
     saveRealtimeQueueState = saveRealtimeQueueStateDefault,
     registerParticipant = registerParticipantDefault,
     saveCursorState = saveCursorStateDefault,
@@ -183,6 +202,18 @@ export async function runUserPromptSubmitHook(
         recentContext: pickRecentContext(drainedQueue.items) || state.recentContext
       });
       saveRealtimeQueueState(queueStatePath, drainedQueue.state);
+      const replyContext = pickActionableReplyContext(drainedQueue.items);
+      if (replyContext) {
+        markPendingReplyMirror(
+          'claude-code',
+          config.participantId,
+          {
+            sessionId: input.session_id || null,
+            recentContext: replyContext
+          },
+          { homeDir }
+        );
+      }
       return context;
     }
 
@@ -205,6 +236,38 @@ export async function runUserPromptSubmitHook(
       lastSeenEventId,
       recentContext: pickRecentContext(items) || state.recentContext
     });
+    const replyContext = pickActionableReplyContext(items);
+    if (replyContext) {
+      markPendingReplyMirror(
+        'claude-code',
+        config.participantId,
+        {
+          sessionId: input.session_id || null,
+          recentContext: replyContext
+        },
+        { homeDir }
+      );
+    }
     return context;
+  });
+}
+
+export async function runStopHook(
+  input,
+  {
+    env = process.env,
+    cwd = process.cwd(),
+    homeDir,
+    maybeMirrorPendingReply = maybeMirrorPendingReplyDefault
+  } = {}
+) {
+  return safelyRunHook(async () => {
+    const config = configFromHookInput(input, { env, cwd });
+    await maybeMirrorPendingReply(config, {
+      toolName: 'claude-code',
+      sessionId: input.session_id || null,
+      homeDir
+    });
+    return null;
   });
 }

@@ -30,6 +30,8 @@ export class YunzhijiaAdapter {
     this.yzjWs = null;
     this.stopped = false;
     this.brokerReconnectTimer = null;
+    this.yzjReconnectTimer = null;
+    this.userReconnectTimers = new Map();
   }
 
   async start() {
@@ -92,6 +94,10 @@ export class YunzhijiaAdapter {
   }
 
   async connectYunzhijiaWebSocket() {
+    if (this.stopped) {
+      return;
+    }
+
     const wsUrl = deriveWebSocketUrl(this.sendUrl);
     console.log(`Connecting to Yunzhijia: ${wsUrl}`);
 
@@ -118,9 +124,7 @@ export class YunzhijiaAdapter {
     this.yzjWs.on('close', () => {
       if (this.stopped) return;
       console.log('Yunzhijia WebSocket closed, reconnecting...');
-      setTimeout(() => {
-        if (!this.stopped) this.connectYunzhijiaWebSocket();
-      }, this.reconnectDelayMs);
+      this.scheduleYunzhijiaReconnect();
     });
   }
 
@@ -139,15 +143,60 @@ export class YunzhijiaAdapter {
 
     this.brokerReconnectTimer = setTimeout(async () => {
       this.brokerReconnectTimer = null;
+      if (this.stopped) {
+        return;
+      }
 
       try {
         await this.registerToBroker();
         await this.connectBrokerWebSocket();
       } catch (error) {
+        if (this.stopped) {
+          return;
+        }
         console.error('Failed to reconnect broker WebSocket:', error);
         this.scheduleBrokerReconnect();
       }
     }, this.reconnectDelayMs);
+  }
+
+  clearYunzhijiaReconnectTimer() {
+    if (!this.yzjReconnectTimer) {
+      return;
+    }
+    clearTimeout(this.yzjReconnectTimer);
+    this.yzjReconnectTimer = null;
+  }
+
+  scheduleYunzhijiaReconnect() {
+    if (this.stopped || this.yzjReconnectTimer) {
+      return;
+    }
+
+    this.yzjReconnectTimer = setTimeout(async () => {
+      this.yzjReconnectTimer = null;
+      if (this.stopped) {
+        return;
+      }
+      try {
+        await this.connectYunzhijiaWebSocket();
+      } catch (error) {
+        if (this.stopped) {
+          return;
+        }
+        console.error('Failed to reconnect Yunzhijia WebSocket:', error);
+        this.scheduleYunzhijiaReconnect();
+      }
+    }, this.reconnectDelayMs);
+  }
+
+  clearUserReconnectTimer(participantId) {
+    const timer = this.userReconnectTimers.get(participantId);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    this.userReconnectTimers.delete(participantId);
   }
 
   isControlMessage(message) {
@@ -407,16 +456,24 @@ export class YunzhijiaAdapter {
   }
 
   async sendOfflineDeliveryHint({ yzjUserId, replyMsgId, delivery, routing }) {
+    const onlineRecipients = delivery?.onlineRecipients || [];
     const offlineRecipients = delivery?.offlineRecipients || [];
-    if (!offlineRecipients.length) {
+    if (!onlineRecipients.length && !offlineRecipients.length) {
       return;
     }
 
     const { participants: presenceItems = [] } = await fetch(`${this.brokerUrl}/presence`).then((res) => res.json());
     const presenceById = new Map(presenceItems.map((item) => [item.participantId, item]));
+    const realtimeDelivered = [];
 
     const onlineButDeferred = [];
     const offline = [];
+
+    for (const participantId of onlineRecipients) {
+      const participant = routing?.participantsById?.[participantId];
+      const label = participant?.alias ? `@${participant.alias}` : participantId;
+      realtimeDelivered.push(label);
+    }
 
     for (const participantId of offlineRecipients) {
       const participant = routing?.participantsById?.[participantId];
@@ -429,6 +486,9 @@ export class YunzhijiaAdapter {
     }
 
     const hints = [];
+    if (realtimeDelivered.length && offlineRecipients.length) {
+      hints.push(`已实时投递给 ${realtimeDelivered.join('、')}，这些在线会话现在可以立即收件。`);
+    }
     if (onlineButDeferred.length) {
       const pullMode = [];
       const realtimeUnavailable = [];
@@ -485,11 +545,13 @@ export class YunzhijiaAdapter {
   }
 
   connectUserWebSocket(participantId) {
+    if (this.stopped) return;
     if (this.userWebSockets.has(participantId)) return;
 
     const ws = new WebSocket(`${this.brokerUrl.replace('http', 'ws')}/ws?participantId=${participantId}`);
 
     ws.on('open', () => {
+      this.clearUserReconnectTimer(participantId);
       console.log(`✓ User WebSocket connected: ${participantId}`);
     });
 
@@ -508,9 +570,12 @@ export class YunzhijiaAdapter {
       console.log(`User WebSocket closed: ${participantId}, reconnecting...`);
       this.userWebSockets.delete(participantId);
       if (!this.stopped) {
-        setTimeout(() => {
+        this.clearUserReconnectTimer(participantId);
+        const timer = setTimeout(() => {
+          this.userReconnectTimers.delete(participantId);
           if (!this.stopped) this.connectUserWebSocket(participantId);
         }, this.reconnectDelayMs);
+        this.userReconnectTimers.set(participantId, timer);
       }
     });
 
@@ -627,6 +692,10 @@ export class YunzhijiaAdapter {
   stop() {
     this.stopped = true;
     this.clearBrokerReconnectTimer();
+    this.clearYunzhijiaReconnectTimer();
+    for (const participantId of this.userReconnectTimers.keys()) {
+      this.clearUserReconnectTimer(participantId);
+    }
     this.closeSocket(this.brokerWs);
     this.closeSocket(this.yzjWs);
     for (const ws of this.userWebSockets.values()) {
