@@ -17,6 +17,7 @@ import {
   runReplyCommand,
   runWhoCommand
 } from './command-runner.js';
+import { runCliMain } from './cli-errors.js';
 
 function usage() {
   console.log(`Usage:
@@ -135,62 +136,66 @@ async function setWorkState(config, status, taskId, threadId, summary) {
   );
 }
 
-const [, , command, toolNameArg = 'codex', ...args] = process.argv;
-if (!command) {
-  usage();
-  process.exit(1);
-}
-
-const config = deriveSessionBridgeConfig({ toolName: toolNameArg });
-
-switch (command) {
-  case 'register':
-    await register(config);
-    break;
-  case 'poll':
-    await poll(config, args[0] || '0');
-    break;
-  case 'ack':
-    await ack(config, args[0]);
-    break;
-  case 'inbox':
-    await runInboxCommand(config, { toolName: toolNameArg });
-    break;
-  case 'who':
-    await runWhoCommand(config, {
-      listParticipants,
-      listWorkStates
-    });
-    break;
-  case 'reply':
-    await runReplyCommand(config, args, {
-      toolName: toolNameArg,
-      resolveParticipantAliases,
-      sendProgress: sendProgressIntent
-    });
-    break;
-  case 'task':
-    await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));
-    break;
-  case 'ask':
-    await sendAsk(config, args[0], args[1], args[2], args.slice(3).join(' '));
-    break;
-  case 'note':
-    await sendNote(config, args[0], args[1], args[2], args.slice(3).join(' '));
-    break;
-  case 'progress':
-    await sendProgress(config, args[0], args[1], args.slice(2).join(' '));
-    break;
-  case 'send-task':
-    await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));
-    break;
-  case 'send-progress':
-    await sendProgress(config, args[0], args[1], args.slice(2).join(' '));
-    break;
-  case 'set-work-state':
-    await setWorkState(config, args[0], args[1], args[2], args.slice(3).join(' '));
-    break;
-  default:
+async function main() {
+  const [, , command, toolNameArg = 'codex', ...args] = process.argv;
+  if (!command) {
     usage();
     process.exit(1);
+  }
+
+  const config = deriveSessionBridgeConfig({ toolName: toolNameArg });
+
+  switch (command) {
+    case 'register':
+      await register(config);
+      break;
+    case 'poll':
+      await poll(config, args[0] || '0');
+      break;
+    case 'ack':
+      await ack(config, args[0]);
+      break;
+    case 'inbox':
+      await runInboxCommand(config, { toolName: toolNameArg });
+      break;
+    case 'who':
+      await runWhoCommand(config, {
+        listParticipants,
+        listWorkStates
+      });
+      break;
+    case 'reply':
+      await runReplyCommand(config, args, {
+        toolName: toolNameArg,
+        resolveParticipantAliases,
+        sendProgress: sendProgressIntent
+      });
+      break;
+    case 'task':
+      await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));
+      break;
+    case 'ask':
+      await sendAsk(config, args[0], args[1], args[2], args.slice(3).join(' '));
+      break;
+    case 'note':
+      await sendNote(config, args[0], args[1], args[2], args.slice(3).join(' '));
+      break;
+    case 'progress':
+      await sendProgress(config, args[0], args[1], args.slice(2).join(' '));
+      break;
+    case 'send-task':
+      await sendTask(config, args[0], args[1], args[2], args.slice(3).join(' '));
+      break;
+    case 'send-progress':
+      await sendProgress(config, args[0], args[1], args.slice(2).join(' '));
+      break;
+    case 'set-work-state':
+      await setWorkState(config, args[0], args[1], args[2], args.slice(3).join(' '));
+      break;
+    default:
+      usage();
+      process.exit(1);
+  }
 }
+
+await runCliMain(main);

@@ -87,6 +87,7 @@ The current prototype supports:
 - verified Yunzhijia adapter inbound and outbound integration
 - non-invasive Codex hook integration for real session inbox injection
 - Codex idle auto-dispatch for actionable queue items plus post-turn continuation through the `Stop` hook
+- Codex auto-dispatch resumes now keep the main session sidecars stable, avoiding false online/offline presence flaps during `@all` fan-out or queued work pickup
 - non-invasive Claude Code hook integration for project-level inbox injection
 - automatic actionable-reply mirroring from real Codex / Claude Code transcript output back into broker, with explicit `intent-broker reply` fallback when transcript capture is unavailable
 - session-scoped realtime bridge queue with quiet reconnect after broker restart
@@ -607,6 +608,7 @@ Notes:
 - On the next prompt submit, Codex now drains the local realtime queue before falling back to broker poll, so websocket-delivered items are injected first.
 - Hook-injected collaboration context now separates actionable items from informational items. Human-channel messages and `task` / `ask` default to actionable; `note` / `progress` default to informational.
 - If the Codex session is idle and actionable queue items arrive, the realtime bridge can auto-run `codex exec --json --full-auto resume ...` so work starts without a manual prompt.
+- Those auto-dispatch child resumes now short-circuit the Codex broker hooks instead of re-launching keeper / realtime-bridge sidecars, so the main session does not emit noisy offline/online presence churn while queued work is being picked up.
 - If the Codex session is already busy, the `Stop` hook converts queued actionable work into an auto-continue prompt after the current turn completes.
 - If a broker-injected actionable item is answered inside the Codex TUI, the bridge now tries to mirror the final local answer back to the original broker participant at `Stop` time, so humans or peer agents receive the reply without a separate manual command.
 - Those automatic Codex transitions now also update broker `work-state`: active execution reports `implementing` with the current task/thread context, and an idle stop path returns to `idle`.
@@ -645,6 +647,12 @@ Check unread collaboration context without querying broker by hand:
 
 ```bash
 intent-broker inbox
+```
+
+If the broker is not running, the CLI exits with a friendly error instead of a Node stack trace:
+
+```text
+Intent Broker is unavailable at http://127.0.0.1:4318. Start it with "npm start" and retry.
 ```
 
 See who is active on the same project and what they are doing:
@@ -753,6 +761,12 @@ Send a directed note or a blocking question:
 ```bash
 intent-broker --tool claude-code note codex-real-1 real-task-1 real-thread-1 "Reconnect path is green locally"
 intent-broker --tool claude-code ask codex-real-1 real-task-1 real-thread-1 "Please review the handoff semantics"
+```
+
+When broker is offline, these local bridge commands fail with the same friendly hint instead of a Node stack trace:
+
+```text
+Intent Broker is unavailable at http://127.0.0.1:4318. Start it with "npm start" and retry.
 ```
 
 Check unread collaboration context:

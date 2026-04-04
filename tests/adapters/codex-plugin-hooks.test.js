@@ -362,10 +362,8 @@ test('user prompt submit hook marks runtime state as running', async () => {
   ]);
 });
 
-test('user prompt submit hook skips inbox sync during auto-dispatch resumes', async () => {
-  const savedRuntime = [];
+test('user prompt submit hook is a no-op during codex auto-dispatch resumes', async () => {
   const calls = [];
-  const workStates = [];
 
   const result = await runUserPromptSubmitHook(
     {
@@ -376,18 +374,11 @@ test('user prompt submit hook skips inbox sync during auto-dispatch resumes', as
     {
       env: { INTENT_BROKER_SKIP_INBOX_SYNC: '1' },
       cwd: '/Users/song/projects/intent-broker',
-      loadCursorState: () => ({
-        lastSeenEventId: 0,
-        recentContext: {
-          taskId: 'task-22',
-          threadId: 'thread-22',
-          summary: '自动续跑 broker 指令'
-        }
-      }),
-      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
-      updateWorkState: async (config, state) => {
-        workStates.push({ participantId: config.participantId, state });
-        return { ok: true };
+      ensureSessionKeeper: async () => {
+        calls.push('keeper');
+      },
+      ensureRealtimeBridge: async () => {
+        calls.push('bridge');
       },
       registerParticipant: async () => {
         calls.push('register');
@@ -401,19 +392,6 @@ test('user prompt submit hook skips inbox sync during auto-dispatch resumes', as
 
   assert.equal(result, null);
   assert.deepEqual(calls, []);
-  assert.equal(savedRuntime[0].state.source, 'auto-dispatch');
-  assert.equal(savedRuntime[0].state.status, 'running');
-  assert.deepEqual(workStates, [
-    {
-      participantId: 'codex-session-019d4489',
-      state: {
-        status: 'implementing',
-        summary: '自动续跑 broker 指令',
-        taskId: 'task-22',
-        threadId: 'thread-22'
-      }
-    }
-  ]);
 });
 
 test('stop hook drains actionable queue into an auto-continue prompt and keeps runtime running', async () => {
@@ -647,6 +625,36 @@ test('session start hook degrades gracefully when broker is unavailable', async 
   );
 
   assert.equal(result, null);
+});
+
+test('session start hook is a no-op during codex auto-dispatch resumes', async () => {
+  const calls = [];
+
+  const result = await runSessionStartHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb'
+    },
+    {
+      env: { INTENT_BROKER_SKIP_INBOX_SYNC: '1' },
+      cwd: '/Users/song/projects/intent-broker',
+      ensureSessionKeeper: async () => {
+        calls.push('keeper');
+      },
+      ensureRealtimeBridge: async () => {
+        calls.push('bridge');
+      },
+      registerParticipant: async () => {
+        calls.push('register');
+      },
+      pollInbox: async () => {
+        calls.push('poll');
+        return { items: [] };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(calls, []);
 });
 
 test('user prompt submit hook degrades gracefully when broker is unavailable', async () => {

@@ -126,6 +126,10 @@ export async function runSessionStartHook(
     pollInbox = pollInboxDefault
   } = {}
 ) {
+  if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
+    return null;
+  }
+
   return safelyRunHook(async () => {
     const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
@@ -191,6 +195,10 @@ export async function runUserPromptSubmitHook(
     ackInbox = ackInboxDefault
   } = {}
 ) {
+  if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
+    return null;
+  }
+
   if (typeof input.prompt === 'string' && input.prompt.trimStart().startsWith('/')) {
     return null;
   }
@@ -222,24 +230,6 @@ export async function runUserPromptSubmitHook(
       homeDir,
       parentPid: resolveObservedParentPid()
     }).catch(() => null);
-
-    if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
-      const activeContext = pickActiveWorkContext([], state.recentContext);
-      saveRuntimeState(runtimeStatePath, {
-        status: 'running',
-        sessionId: input.session_id || null,
-        turnId: input.turn_id || null,
-        source: 'auto-dispatch',
-        taskId: activeContext?.taskId || null,
-        threadId: activeContext?.threadId || null,
-        updatedAt: new Date().toISOString()
-      });
-      await updateWorkState(
-        config,
-        buildAutomaticWorkState('implementing', activeContext)
-      ).catch(() => null);
-      return null;
-    }
 
     const drainedQueue = drainRealtimeQueue(loadRealtimeQueueState(queueStatePath));
 

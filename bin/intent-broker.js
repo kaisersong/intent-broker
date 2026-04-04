@@ -17,6 +17,7 @@ import {
   runReplyCommand,
   runWhoCommand
 } from '../adapters/session-bridge/command-runner.js';
+import { runCliMain } from '../adapters/session-bridge/cli-errors.js';
 
 function usage() {
   console.log(`Usage:
@@ -116,64 +117,68 @@ async function runProgressCommand(config, args) {
   });
 }
 
-const parsed = parseArgs();
-if (!parsed.command) {
-  usage();
-  process.exit(1);
-}
-
-const config = deriveSessionBridgeConfig({ toolName: parsed.toolName });
-
-switch (parsed.command) {
-  case 'register':
-    console.log(JSON.stringify(await registerParticipant(config), null, 2));
-    break;
-  case 'inbox':
-    await runInboxCommand(config, { toolName: parsed.toolName });
-    break;
-  case 'who':
-    await runWhoCommand(config, { listParticipants, listWorkStates });
-    break;
-  case 'reply':
-    await runReplyCommand(config, parsed.args, {
-      toolName: parsed.toolName,
-      resolveParticipantAliases,
-      sendProgress
-    });
-    break;
-  case 'poll':
-    console.log(JSON.stringify(await pollInbox(config, { after: parsed.args[0] || '0', limit: 50 }), null, 2));
-    break;
-  case 'ack':
-    console.log(JSON.stringify(await ackInbox(config, parsed.args[0]), null, 2));
-    break;
-  case 'task':
-    console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
-    break;
-  case 'ask':
-    console.log(JSON.stringify(await runAskCommand(config, parsed.args), null, 2));
-    break;
-  case 'note':
-    console.log(JSON.stringify(await runNoteCommand(config, parsed.args), null, 2));
-    break;
-  case 'progress':
-    console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
-    break;
-  case 'send-task':
-    console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
-    break;
-  case 'send-progress':
-    console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
-    break;
-  case 'set-work-state':
-    console.log(JSON.stringify(await updateWorkState(config, {
-      status: parsed.args[0],
-      taskId: normalizeOptionalValue(parsed.args[1]),
-      threadId: normalizeOptionalValue(parsed.args[2]),
-      summary: parsed.args.slice(3).join(' ') || undefined
-    }), null, 2));
-    break;
-  default:
+async function main() {
+  const parsed = parseArgs();
+  if (!parsed.command) {
     usage();
     process.exit(1);
+  }
+
+  const config = deriveSessionBridgeConfig({ toolName: parsed.toolName });
+
+  switch (parsed.command) {
+    case 'register':
+      console.log(JSON.stringify(await registerParticipant(config), null, 2));
+      break;
+    case 'inbox':
+      await runInboxCommand(config, { toolName: parsed.toolName });
+      break;
+    case 'who':
+      await runWhoCommand(config, { listParticipants, listWorkStates });
+      break;
+    case 'reply':
+      await runReplyCommand(config, parsed.args, {
+        toolName: parsed.toolName,
+        resolveParticipantAliases,
+        sendProgress
+      });
+      break;
+    case 'poll':
+      console.log(JSON.stringify(await pollInbox(config, { after: parsed.args[0] || '0', limit: 50 }), null, 2));
+      break;
+    case 'ack':
+      console.log(JSON.stringify(await ackInbox(config, parsed.args[0]), null, 2));
+      break;
+    case 'task':
+      console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
+      break;
+    case 'ask':
+      console.log(JSON.stringify(await runAskCommand(config, parsed.args), null, 2));
+      break;
+    case 'note':
+      console.log(JSON.stringify(await runNoteCommand(config, parsed.args), null, 2));
+      break;
+    case 'progress':
+      console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
+      break;
+    case 'send-task':
+      console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
+      break;
+    case 'send-progress':
+      console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
+      break;
+    case 'set-work-state':
+      console.log(JSON.stringify(await updateWorkState(config, {
+        status: parsed.args[0],
+        taskId: normalizeOptionalValue(parsed.args[1]),
+        threadId: normalizeOptionalValue(parsed.args[2]),
+        summary: parsed.args.slice(3).join(' ') || undefined
+      }), null, 2));
+      break;
+    default:
+      usage();
+      process.exit(1);
+  }
 }
+
+await runCliMain(main);

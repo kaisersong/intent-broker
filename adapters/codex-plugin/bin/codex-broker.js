@@ -20,6 +20,7 @@ import {
   runWhoCommand
 } from '../../session-bridge/command-runner.js';
 import { buildCodexHookOutput } from '../../session-bridge/codex-hooks.js';
+import { runCliMain } from '../../session-bridge/cli-errors.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
@@ -259,71 +260,75 @@ async function realtimeBridge() {
   await runRealtimeBridgeProcess({ toolName: 'codex' });
 }
 
-const [, , command, ...args] = process.argv;
-if (!command) {
-  usage();
-  process.exit(1);
+async function main() {
+  const [, , command, ...args] = process.argv;
+  if (!command) {
+    usage();
+    process.exit(1);
+  }
+
+  switch (command) {
+    case 'install':
+      await install(args);
+      break;
+    case 'register':
+      await register();
+      break;
+    case 'inbox':
+      await inbox();
+      break;
+    case 'who':
+      await who();
+      break;
+    case 'reply':
+      await reply(args);
+      break;
+    case 'task':
+      await cliSendTask(args);
+      break;
+    case 'ask':
+      await cliAsk(args);
+      break;
+    case 'note':
+      await cliNote(args);
+      break;
+    case 'progress':
+      await cliSendProgress(args);
+      break;
+    case 'send-task':
+      await cliSendTask(args);
+      break;
+    case 'send-progress':
+      await cliSendProgress(args);
+      break;
+    case 'set-work-state':
+      await cliSetWorkState(args);
+      break;
+    case 'keepalive':
+      await keepalive();
+      break;
+    case 'realtime-bridge':
+      await realtimeBridge();
+      break;
+    case 'hook':
+      if (args[0] === 'session-start') {
+        await handleSessionStartHook();
+        break;
+      }
+      if (args[0] === 'user-prompt-submit') {
+        await handleUserPromptSubmitHook();
+        break;
+      }
+      if (args[0] === 'stop') {
+        await handleStopHook();
+        break;
+      }
+      usage();
+      process.exit(1);
+    default:
+      usage();
+      process.exit(1);
+  }
 }
 
-switch (command) {
-  case 'install':
-    await install(args);
-    break;
-  case 'register':
-    await register();
-    break;
-  case 'inbox':
-    await inbox();
-    break;
-  case 'who':
-    await who();
-    break;
-  case 'reply':
-    await reply(args);
-    break;
-  case 'task':
-    await cliSendTask(args);
-    break;
-  case 'ask':
-    await cliAsk(args);
-    break;
-  case 'note':
-    await cliNote(args);
-    break;
-  case 'progress':
-    await cliSendProgress(args);
-    break;
-  case 'send-task':
-    await cliSendTask(args);
-    break;
-  case 'send-progress':
-    await cliSendProgress(args);
-    break;
-  case 'set-work-state':
-    await cliSetWorkState(args);
-    break;
-  case 'keepalive':
-    await keepalive();
-    break;
-  case 'realtime-bridge':
-    await realtimeBridge();
-    break;
-  case 'hook':
-    if (args[0] === 'session-start') {
-      await handleSessionStartHook();
-      break;
-    }
-    if (args[0] === 'user-prompt-submit') {
-      await handleUserPromptSubmitHook();
-      break;
-    }
-    if (args[0] === 'stop') {
-      await handleStopHook();
-      break;
-    }
-    usage();
-    process.exit(1);
-  default:
-    usage();
-    process.exit(1);
-}
+await runCliMain(main);

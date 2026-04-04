@@ -2,6 +2,19 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
+const CONNECTIVITY_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ETIMEDOUT', 'EPERM']);
+const CURL_COULD_NOT_CONNECT_EXIT_CODE = 7;
+
+export class BrokerUnavailableError extends Error {
+  constructor(url, { cause } = {}) {
+    const brokerUrl = new URL(url).origin;
+    super(`intent_broker_unavailable:${brokerUrl}`, cause ? { cause } : undefined);
+    this.name = 'BrokerUnavailableError';
+    this.code = 'INTENT_BROKER_UNAVAILABLE';
+    this.brokerUrl = brokerUrl;
+  }
+}
 
 function jsonHeaders() {
   return { 'Content-Type': 'application/json' };
@@ -16,8 +29,37 @@ function normalizeDelivery(delivery, defaults) {
 
 function shouldFallbackToCurl(error, url) {
   const parsedUrl = new URL(url);
-  const isLoopback = parsedUrl.hostname === '127.0.0.1' || parsedUrl.hostname === 'localhost';
+  const isLoopback = LOOPBACK_HOSTNAMES.has(parsedUrl.hostname);
   return isLoopback && error?.cause?.code === 'EPERM';
+}
+
+function isLoopbackUrl(url) {
+  return LOOPBACK_HOSTNAMES.has(new URL(url).hostname);
+}
+
+function shouldWrapFetchConnectivityError(error, url) {
+  if (!isLoopbackUrl(url) || error?.message !== 'fetch failed') {
+    return false;
+  }
+
+  const causeCode = error?.cause?.code;
+  return !causeCode || CONNECTIVITY_ERROR_CODES.has(causeCode);
+}
+
+function shouldWrapCurlConnectivityError(error, url) {
+  return isLoopbackUrl(url) && error?.code === CURL_COULD_NOT_CONNECT_EXIT_CODE;
+}
+
+function asBrokerUnavailableError(url, cause) {
+  if (cause instanceof BrokerUnavailableError) {
+    return cause;
+  }
+
+  return new BrokerUnavailableError(url, { cause });
+}
+
+export function isBrokerUnavailableError(error) {
+  return error?.code === 'INTENT_BROKER_UNAVAILABLE';
 }
 
 async function curlJson(url, options = {}, execFileImpl = execFile) {
@@ -49,10 +91,22 @@ export async function requestJson(
     const response = await fetchImpl(url, options);
     return response.json();
   } catch (error) {
-    if (!shouldFallbackToCurl(error, url)) {
-      throw error;
+    if (shouldFallbackToCurl(error, url)) {
+      try {
+        return await curlJson(url, options, execFileImpl);
+      } catch (curlError) {
+        if (shouldWrapCurlConnectivityError(curlError, url)) {
+          throw asBrokerUnavailableError(url, curlError);
+        }
+        throw curlError;
+      }
     }
-    return curlJson(url, options, execFileImpl);
+
+    if (shouldWrapFetchConnectivityError(error, url)) {
+      throw asBrokerUnavailableError(url, error);
+    }
+
+    throw error;
   }
 }
 

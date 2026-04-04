@@ -39,7 +39,36 @@ test('requestJson rethrows non-EPERM fetch failures', async () => {
   };
 
   await assert.rejects(
-    requestJson('http://127.0.0.1:4318/health', {}, { fetchImpl }),
+    requestJson('https://example.com/health', {}, { fetchImpl }),
     /fetch failed/
+  );
+});
+
+test('requestJson wraps curl connection failures as broker unavailable', async () => {
+  const fetchImpl = async () => {
+    const error = new TypeError('fetch failed');
+    error.cause = {
+      code: 'EPERM',
+      address: '127.0.0.1',
+      port: 4318
+    };
+    throw error;
+  };
+
+  const execFileImpl = async () => {
+    const error = new Error('Command failed: curl -s http://127.0.0.1:4318/health');
+    error.code = 7;
+    error.cmd = 'curl -s http://127.0.0.1:4318/health';
+    throw error;
+  };
+
+  await assert.rejects(
+    requestJson('http://127.0.0.1:4318/health', {}, { fetchImpl, execFileImpl }),
+    (error) => {
+      assert.equal(error?.name, 'BrokerUnavailableError');
+      assert.equal(error?.code, 'INTENT_BROKER_UNAVAILABLE');
+      assert.equal(error?.brokerUrl, 'http://127.0.0.1:4318');
+      return true;
+    }
   );
 });
