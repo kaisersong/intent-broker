@@ -37,7 +37,7 @@ The current design follows four principles:
 - Recoverable-by-default: tasks, threads, approvals, and delivery state should survive broker restarts, idle sessions, and reconnects.
 - Non-invasive integration: Codex, Claude Code, and similar tools should keep their native UX. Broker support should arrive through hooks, skills, adapters, and local bridge processes rather than wrappers that take over the tool.
 
-In practice that means the broker owns shared collaboration state such as presence, work-state, routing, delivery, replay, and task/thread history. Each agent still keeps its own reasoning loop and tool execution.
+In practice that means the broker owns shared collaboration state such as presence, work-state, routing, delivery, replay, and task/thread history. Each agent still keeps its own reasoning loop and tool execution. The same recoverability bar also applies to broker operations themselves: a background restart should expose durable logs and runtime heartbeat state, and `ready` should mean the broker is actually healthy, not only that a port was bound for a moment.
 
 ## Use Cases
 
@@ -92,6 +92,8 @@ The current prototype supports:
 - automatic actionable-reply mirroring from real Codex / Claude Code transcript output back into broker, with explicit `intent-broker reply` fallback when transcript capture is unavailable
 - session-scoped realtime bridge queue with quiet reconnect after broker restart
 - Claude Code auto-dispatch recovery that resets stale runtime state and re-queues work when a non-interactive dispatch attempt fails
+- broker background control with durable stdout/stderr logs plus a heartbeat file for startup, crash, and shutdown diagnosis
+- `broker:restart` readiness gated by `/health` and broker heartbeat state instead of a transient listen socket alone
 
 ## Tech Stack
 
@@ -161,6 +163,28 @@ $env:PORT='4321'
 $env:INTENT_BROKER_DB='D:\projects\intent-broker\.tmp\intent-broker.db'
 npm start
 ```
+
+### 3. Restart and inspect broker runtime state
+
+For day-to-day local use, prefer the broker control scripts instead of manually hunting processes:
+
+```bash
+npm run broker:restart
+npm run broker:status
+```
+
+`npm run broker:restart` now reports `ready: true` only after both checks pass:
+
+- `GET /health` returns `{ "ok": true }`
+- the broker heartbeat file reports the new process as `running`
+
+Background broker runs also persist runtime artifacts under `.tmp/`:
+
+- `.tmp/broker.stdout.log`
+- `.tmp/broker.stderr.log`
+- `.tmp/broker.heartbeat.json`
+
+If a managed channel such as Yunzhijia stops answering `@broker list`, check `npm run broker:status` and these three files first. They tell you whether broker is running, whether startup failed after binding the port, and whether the last exit was a clean stop or a crash.
 
 ## Tests
 

@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
+import { closeSync, mkdirSync, openSync } from 'node:fs';
+import path from 'node:path';
+
+import {
+  loadBrokerHeartbeat,
+  resolveBrokerRuntimePaths
+} from '../src/runtime/broker-runtime-state.js';
 
 export function isBrokerCommand(command = '') {
   return String(command).includes('src/cli.js');
@@ -147,42 +154,91 @@ function defaultSpawnProcess(command, args, options) {
   return spawn(command, args, options);
 }
 
+async function defaultHealthCheck({ port }) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`);
+    if (!response.ok) {
+      return false;
+    }
+
+    const payload = await response.json();
+    return payload?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 export function startBroker({
   repoRoot = process.cwd(),
   nodePath = process.execPath,
+  env = process.env,
   spawnProcess = defaultSpawnProcess
 } = {}) {
-  const child = spawnProcess(
-    nodePath,
-    ['--experimental-sqlite', 'src/cli.js'],
-    {
-      cwd: repoRoot,
-      detached: true,
-      stdio: 'ignore',
-      env: process.env
-    }
-  );
-  child.unref?.();
+  const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
+  mkdirSync(path.dirname(runtimePaths.stdout), { recursive: true });
+  const stdoutFd = openSync(runtimePaths.stdout, 'a');
+  const stderrFd = openSync(runtimePaths.stderr, 'a');
+
+  let child;
+  try {
+    child = spawnProcess(
+      nodePath,
+      ['--experimental-sqlite', 'src/cli.js'],
+      {
+        cwd: repoRoot,
+        detached: true,
+        stdio: ['ignore', stdoutFd, stderrFd],
+        env: {
+          ...env,
+          INTENT_BROKER_HEARTBEAT_PATH: runtimePaths.heartbeat
+        }
+      }
+    );
+    child.unref?.();
+  } finally {
+    closeSync(stdoutFd);
+    closeSync(stderrFd);
+  }
 
   return {
     started: true,
-    pid: child.pid
+    pid: child.pid,
+    logPaths: {
+      stdout: runtimePaths.stdout,
+      stderr: runtimePaths.stderr
+    },
+    heartbeatPath: runtimePaths.heartbeat
   };
 }
 
 async function waitUntilBrokerReady({
   port,
   pid,
+  heartbeatPath,
   startWaitMs,
   intervalMs,
-  runCommand,
-  sleep
+  sleep,
+  isProcessAlive,
+  healthCheck,
+  loadHeartbeatState
 }) {
   const deadline = Date.now() + startWaitMs;
 
   while (Date.now() < deadline) {
-    const processes = findBrokerProcesses({ port, runCommand });
-    if (processes.some((processInfo) => processInfo.pid === pid)) {
+    if (!isProcessAlive(pid)) {
+      return false;
+    }
+
+    const [healthy, heartbeat] = await Promise.all([
+      healthCheck({ port, pid }),
+      Promise.resolve(loadHeartbeatState(heartbeatPath))
+    ]);
+
+    if (
+      healthy
+      && heartbeat?.pid === pid
+      && heartbeat?.status === 'running'
+    ) {
       return true;
     }
     await sleep(intervalMs);
@@ -197,10 +253,13 @@ export async function restartBroker(options = {}) {
   const ready = await waitUntilBrokerReady({
     port: options.port ?? 4318,
     pid: startResult.pid,
+    heartbeatPath: startResult.heartbeatPath,
     startWaitMs: options.startWaitMs ?? 3000,
     intervalMs: options.intervalMs ?? 100,
-    runCommand: options.runCommand ?? defaultRunCommand,
-    sleep: options.sleep ?? defaultSleep
+    sleep: options.sleep ?? defaultSleep,
+    isProcessAlive: options.isProcessAlive ?? defaultIsProcessAlive,
+    healthCheck: options.healthCheck ?? defaultHealthCheck,
+    loadHeartbeatState: options.loadHeartbeatState ?? loadBrokerHeartbeat
   });
 
   return {
@@ -211,14 +270,23 @@ export async function restartBroker(options = {}) {
 }
 
 export function statusBroker({
+  repoRoot = process.cwd(),
   port = 4318,
-  runCommand = defaultRunCommand
+  env = process.env,
+  runCommand = defaultRunCommand,
+  loadHeartbeatState = loadBrokerHeartbeat
 } = {}) {
   const processes = findBrokerProcesses({ port, runCommand });
+  const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
   return {
     running: processes.length > 0,
     port,
-    processes
+    processes,
+    heartbeat: loadHeartbeatState(runtimePaths.heartbeat),
+    logPaths: {
+      stdout: runtimePaths.stdout,
+      stderr: runtimePaths.stderr
+    }
   };
 }
 

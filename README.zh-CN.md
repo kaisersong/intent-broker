@@ -37,7 +37,7 @@
 - 默认可恢复：任务、线程、审批、投递状态都应该在 broker 重启、会话空闲或断线后恢复。
 - 非侵入接入：Codex、Claude Code 这类工具应保留原生体验，broker 通过 hooks、skills、adapters 和本地 bridge 接入，而不是强包一层壳把工具接管掉。
 
-落到实现上，broker 负责共享协作状态，例如 presence、work-state、routing、delivery、replay 和 task/thread 历史；而每个 agent 仍然保留自己的推理循环和工具执行能力。
+落到实现上，broker 负责共享协作状态，例如 presence、work-state、routing、delivery、replay 和 task/thread 历史；而每个 agent 仍然保留自己的推理循环和工具执行能力。同样的“可恢复”标准也适用于 broker 自己的运行态：后台重启时应该留下可追溯的日志和心跳状态，`ready` 也应该代表 broker 真的健康可用，而不是只说明端口曾短暂绑定成功。
 
 ## 应用场景
 
@@ -92,6 +92,8 @@
 - 来自真实 Codex / Claude Code transcript 的 `actionable` 自动回复镜像；拿不到 transcript 时自动降级回显式 `intent-broker reply`
 - 带静默重连能力的 session 级 realtime bridge 本地队列
 - Claude Code auto-dispatch 的自愈恢复：非交互派发失败时会重置卡住的 runtime，并把任务重新塞回本地队列
+- broker 后台控制脚本现在会持久化 stdout/stderr 日志和心跳文件，方便定位启动失败、崩溃和正常退出
+- `broker:restart` 现在必须同时通过 `/health` 和 broker 心跳状态校验，才会返回 `ready: true`
 
 ## 技术选型
 
@@ -161,6 +163,28 @@ $env:PORT='4321'
 $env:INTENT_BROKER_DB='D:\projects\intent-broker\.tmp\intent-broker.db'
 npm start
 ```
+
+### 3. 重启并检查 broker 运行态
+
+日常本地使用时，优先用 broker 控制脚本，不要手动到处找进程：
+
+```bash
+npm run broker:restart
+npm run broker:status
+```
+
+现在 `npm run broker:restart` 只有在下面两个条件都满足时才会返回 `ready: true`：
+
+- `GET /health` 返回 `{ "ok": true }`
+- broker 心跳文件确认新进程状态已经进入 `running`
+
+后台 broker 还会把运行时信息持续写到 `.tmp/`：
+
+- `.tmp/broker.stdout.log`
+- `.tmp/broker.stderr.log`
+- `.tmp/broker.heartbeat.json`
+
+如果托管通道里的云之家 `@broker list` 突然不回，先看 `npm run broker:status` 和这三个文件。它们能直接告诉你 broker 是否还活着、是不是在端口绑定后又启动失败，以及上一次退出是正常停止还是崩溃。
 
 ## 测试
 

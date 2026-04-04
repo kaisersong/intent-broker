@@ -60,6 +60,20 @@ YZJ_SEND_URL='https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzj
 
 **无需在云之家侧配置任何回调地址！** broker 托管的 Yunzhijia channel 会自动通过 WebSocket 连接到云之家接收消息。
 
+如果云之家里 `@broker list`、`@broker who` 之类的命令突然没有回应，先在仓库根目录检查：
+
+```bash
+npm run broker:status
+```
+
+然后看 broker 的运行时文件：
+
+- `.tmp/broker.stdout.log`
+- `.tmp/broker.stderr.log`
+- `.tmp/broker.heartbeat.json`
+
+`broker:restart` 现在只有在 `/health` 成功且心跳状态进入 `running` 后才会报告 ready，因此这三份文件基本就是托管模式下的第一排障入口。
+
 如果你需要单独调试，也可以继续直接运行：
 
 ```bash
