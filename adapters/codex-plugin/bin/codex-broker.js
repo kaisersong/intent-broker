@@ -82,7 +82,8 @@ async function handleSessionStartHook() {
   const context = result?.context ?? result;
   const alias = result?.registration?.alias;
 
-  appendAliasToTerminalTitle(alias, { cwd: input.cwd || process.cwd() });
+  // Use delayed version because Codex UI overwrites title after hook returns
+  scheduleAliasTitle(alias, { cwd: input.cwd || process.cwd() });
 
   if (!context) {
     return;
