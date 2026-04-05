@@ -104,10 +104,16 @@ function findTranscriptRoot(toolName, homeDir) {
   if (toolName === 'claude-code') {
     return path.join(homeDir, '.claude', 'projects');
   }
+  if (toolName === 'xiaok-code') {
+    return path.join(homeDir, '.xiaok', 'sessions');
+  }
   return null;
 }
 
 function matchesTranscriptFile(toolName, fileName, sessionId) {
+  if (toolName === 'xiaok-code') {
+    return fileName === `${sessionId}.json` || fileName === `${sessionId}.jsonl`;
+  }
   if (!fileName.endsWith('.jsonl')) {
     return false;
   }

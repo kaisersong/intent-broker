@@ -68,6 +68,16 @@ function extractSessionCwdFromEntries(toolName, sessionId, rawHead = '') {
       ) {
         return entry.cwd;
       }
+
+      // xiaok sessions are stored as JSON objects with a top-level cwd field
+      if (
+        toolName === 'xiaok-code'
+        && entry?.sessionId === sessionId
+        && typeof entry?.cwd === 'string'
+        && entry.cwd
+      ) {
+        return entry.cwd;
+      }
     } catch {
       continue;
     }
@@ -112,7 +122,7 @@ function deriveAlias({ toolName, env }) {
 }
 
 function deriveCapabilities({ toolName }) {
-  if (toolName === 'codex' || toolName === 'claude-code') {
+  if (toolName === 'codex' || toolName === 'claude-code' || toolName === 'xiaok-code') {
     return ['broker.auto_dispatch'];
   }
 
@@ -127,7 +137,7 @@ export function deriveSessionBridgeConfig({
 } = {}) {
   const brokerUrl = env.BROKER_URL || 'http://127.0.0.1:4318';
   const explicitParticipantId = env.PARTICIPANT_ID;
-  const threadId = env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || '';
+  const threadId = env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || env.XIAOK_CODE_SESSION_ID || '';
   const projectName = deriveProjectName({ env, cwd, sessionCwd });
   const inboxMode = env.INTENT_BROKER_INBOX_MODE || 'pull';
 
