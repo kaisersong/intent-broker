@@ -25,7 +25,7 @@ import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
 import { loadRuntimeState } from '../../session-bridge/runtime-state.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
-import { appendAliasToTerminalTitle } from '../../session-bridge/terminal-title.js';
+import { appendAliasToTerminalTitle, scheduleAliasTitle } from '../../session-bridge/terminal-title.js';
 import { resolveRuntimeStatePath } from '../../hook-installer-core/state-paths.js';
 import { buildClaudeCodeHookOutput } from '../format.js';
 import {
@@ -90,11 +90,11 @@ async function handleUserPromptSubmitHook() {
   const input = await readJsonStdin();
   const context = await runUserPromptSubmitHook(input);
 
-  // Read alias from runtime state and set terminal title
+  // Read alias from runtime state and schedule terminal title update
   const config = deriveSessionBridgeConfig({ toolName: 'claude-code' });
   const runtimeStatePath = resolveRuntimeStatePath('claude-code', config.participantId, { homeDir: os.homedir() });
   const runtimeState = loadRuntimeState(runtimeStatePath);
-  appendAliasToTerminalTitle(runtimeState.alias, { cwd: input.cwd || process.cwd() });
+  scheduleAliasTitle(runtimeState.alias, { cwd: input.cwd || process.cwd() });
 
   if (!context) {
     return;
