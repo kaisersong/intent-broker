@@ -42,6 +42,19 @@ function extractSessionCwdFromEntries(toolName, sessionId, rawHead = '') {
     return null;
   }
 
+  // xiaok sessions are JSON objects, not JSONL — parse the whole file at once
+  if (toolName === 'xiaok-code') {
+    try {
+      const doc = JSON.parse(rawHead);
+      if (doc?.sessionId === sessionId && typeof doc?.cwd === 'string' && doc.cwd) {
+        return doc.cwd;
+      }
+    } catch {
+      // fall through
+    }
+    return null;
+  }
+
   for (const line of rawHead.split('\n')) {
     if (!line) {
       continue;
@@ -62,16 +75,6 @@ function extractSessionCwdFromEntries(toolName, sessionId, rawHead = '') {
 
       if (
         toolName === 'claude-code'
-        && entry?.sessionId === sessionId
-        && typeof entry?.cwd === 'string'
-        && entry.cwd
-      ) {
-        return entry.cwd;
-      }
-
-      // xiaok sessions are stored as JSON objects with a top-level cwd field
-      if (
-        toolName === 'xiaok-code'
         && entry?.sessionId === sessionId
         && typeof entry?.cwd === 'string'
         && entry.cwd

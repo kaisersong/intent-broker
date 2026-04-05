@@ -182,6 +182,19 @@ function readJsonlEntries(transcriptPath) {
   }
 }
 
+function readXiaokSessionMessages(transcriptPath) {
+  if (!transcriptPath) {
+    return [];
+  }
+
+  try {
+    const doc = JSON.parse(readFileSync(transcriptPath, 'utf8'));
+    return Array.isArray(doc?.messages) ? doc.messages : [];
+  } catch {
+    return [];
+  }
+}
+
 function extractCodexOutputText(entry) {
   const content = entry?.payload?.content;
   if (!Array.isArray(content)) {
@@ -206,6 +219,27 @@ function extractClaudeOutputText(entry) {
     .map((item) => item.text.trim())
     .filter(Boolean)
     .join('\n\n');
+}
+
+export function extractXiaokReplySummary(messages) {
+  // messages is the raw messages[] array from ~/.xiaok/sessions/sess_xxx.json
+  const assistantMessages = [...messages]
+    .reverse()
+    .filter((msg) => msg?.role === 'assistant');
+
+  for (const msg of assistantMessages) {
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    const text = content
+      .filter((item) => item?.type === 'text' && typeof item.text === 'string')
+      .map((item) => item.text.trim())
+      .filter(Boolean)
+      .join('\n\n');
+    if (text) {
+      return text;
+    }
+  }
+
+  return '';
 }
 
 export function extractCodexReplySummary(entries, { sinceLine = 0, turnId = null } = {}) {
@@ -279,7 +313,10 @@ export function extractClaudeReplySummary(entries, { sinceLine = 0 } = {}) {
   return assistantMessage ? extractClaudeOutputText(assistantMessage.value) : '';
 }
 
-function countTranscriptLines(transcriptPath) {
+function countTranscriptLines(toolName, transcriptPath) {
+  if (toolName === 'xiaok-code') {
+    return 0; // xiaok uses JSON, not JSONL — line count is not meaningful
+  }
   return readJsonlEntries(transcriptPath).length;
 }
 
@@ -288,7 +325,7 @@ function buildPendingRecord(toolName, payload, { homeDir }) {
     || resolveTranscriptPath(toolName, payload.sessionId, { homeDir });
   const transcriptLineCount = Number.isInteger(payload.transcriptLineCount)
     ? payload.transcriptLineCount
-    : countTranscriptLines(transcriptPath);
+    : countTranscriptLines(toolName, transcriptPath);
   const recentContext = payload.recentContext || {};
 
   return normalizePending({
@@ -384,10 +421,17 @@ export async function maybeMirrorPendingReply(
 
   const transcriptPath = pending.transcriptPath
     || resolveTranscriptPath(toolName, pending.sessionId || sessionId, { homeDir });
-  const entries = readJsonlEntries(transcriptPath);
-  const summary = toolName === 'codex'
-    ? extractCodexReplySummary(entries, { sinceLine: pending.transcriptLineCount, turnId })
-    : extractClaudeReplySummary(entries, { sinceLine: pending.transcriptLineCount });
+
+  let summary = '';
+  if (toolName === 'xiaok-code') {
+    const messages = readXiaokSessionMessages(transcriptPath);
+    summary = extractXiaokReplySummary(messages);
+  } else {
+    const entries = readJsonlEntries(transcriptPath);
+    summary = toolName === 'codex'
+      ? extractCodexReplySummary(entries, { sinceLine: pending.transcriptLineCount, turnId })
+      : extractClaudeReplySummary(entries, { sinceLine: pending.transcriptLineCount });
+  }
 
   if (!summary) {
     saveReplyMirrorState(
