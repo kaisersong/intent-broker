@@ -17,6 +17,7 @@ export function createRuntimeState() {
     source: null,
     taskId: null,
     threadId: null,
+    alias: null,
     updatedAt: null
   };
 }
@@ -29,6 +30,7 @@ function normalizeRuntimeState(state) {
     source: normalizeOptionalString(state?.source),
     taskId: normalizeOptionalString(state?.taskId),
     threadId: normalizeOptionalString(state?.threadId),
+    alias: normalizeOptionalString(state?.alias),
     updatedAt: normalizeOptionalString(state?.updatedAt)
   };
 }

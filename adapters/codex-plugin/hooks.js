@@ -165,6 +165,7 @@ export async function runSessionStartHook(
       source: 'session-start',
       taskId: state.recentContext?.taskId || null,
       threadId: state.recentContext?.threadId || null,
+      alias: registration?.alias || null,
       updatedAt: new Date().toISOString()
     });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });

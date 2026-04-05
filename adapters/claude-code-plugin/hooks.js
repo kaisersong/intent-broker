@@ -25,6 +25,10 @@ import {
   saveCursorState as saveCursorStateDefault
 } from '../session-bridge/state.js';
 import {
+  loadRuntimeState as loadRuntimeStateDefault,
+  saveRuntimeState as saveRuntimeStateDefault
+} from '../session-bridge/runtime-state.js';
+import {
   drainRealtimeQueue,
   ensureRealtimeBridge as ensureRealtimeBridgeDefault,
   loadRealtimeQueueState as loadRealtimeQueueStateDefault,
@@ -36,7 +40,8 @@ import {
 } from '../session-bridge/session-keeper.js';
 import {
   resolveParticipantStatePath,
-  resolveRealtimeQueueStatePath
+  resolveRealtimeQueueStatePath,
+  resolveRuntimeStatePath
 } from '../hook-installer-core/state-paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -73,6 +78,10 @@ function queuePathForParticipant(participantId, homeDir) {
   return resolveRealtimeQueueStatePath('claude-code', participantId, { homeDir });
 }
 
+function runtimePathForParticipant(participantId, homeDir) {
+  return resolveRuntimeStatePath('claude-code', participantId, { homeDir });
+}
+
 async function safelyRunHook(work) {
   try {
     return await work();
@@ -105,6 +114,7 @@ export async function runSessionStartHook(
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
+    saveRuntimeState = saveRuntimeStateDefault,
     registerParticipant = registerParticipantDefault,
     updateWorkState = updateWorkStateDefault,
     pollInbox = pollInboxDefault
@@ -117,6 +127,7 @@ export async function runSessionStartHook(
   return safelyRunHook(async () => {
     const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
+    const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
 
     await ensureSessionKeeper({
@@ -141,6 +152,16 @@ export async function runSessionStartHook(
     }).catch(() => null);
     const registration = await registerParticipant(config);
     await updateWorkState(config, { status: 'idle', summary: null });
+    saveRuntimeState(runtimeStatePath, {
+      status: 'idle',
+      sessionId: input.session_id || null,
+      turnId: null,
+      source: 'session-start',
+      taskId: state.recentContext?.taskId || null,
+      threadId: state.recentContext?.threadId || null,
+      alias: registration?.alias || null,
+      updatedAt: new Date().toISOString()
+    });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
 
