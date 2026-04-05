@@ -70,12 +70,16 @@ async function readJsonStdin() {
 
 async function handleSessionStartHook() {
   const input = await readJsonStdin();
-  const context = await runSessionStartHook(input);
+  const result = await runSessionStartHook(input);
+  const context = result?.context ?? result;
+  const registration = result?.registration;
 
+  if (registration?.alias) {
+    process.stderr.write(`intent-broker: registered as @${registration.alias}\n`);
+  }
   if (!context) {
     return;
   }
-
   process.stdout.write(JSON.stringify(buildClaudeCodeHookOutput('SessionStart', context)));
 }
 

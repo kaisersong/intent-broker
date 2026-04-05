@@ -139,15 +139,18 @@ export async function runSessionStartHook(
       homeDir,
       parentPid: resolveObservedParentPid()
     }).catch(() => null);
-    await registerParticipant(config);
+    const registration = await registerParticipant(config);
     await updateWorkState(config, { status: 'idle', summary: null });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
 
-    return buildToolHookContext(items, {
-      participantId: config.participantId,
-      sessionLabel: 'Claude Code session'
-    });
+    return {
+      context: buildToolHookContext(items, {
+        participantId: config.participantId,
+        sessionLabel: 'Claude Code session'
+      }),
+      registration
+    };
   });
 }
 

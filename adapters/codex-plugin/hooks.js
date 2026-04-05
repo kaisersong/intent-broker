@@ -156,7 +156,7 @@ export async function runSessionStartHook(
       homeDir,
       parentPid: resolveObservedParentPid()
     }).catch(() => null);
-    await registerParticipant(config);
+    const registration = await registerParticipant(config);
     await updateWorkState(config, { status: 'idle', summary: null });
     saveRuntimeState(runtimeStatePath, {
       status: 'idle',
@@ -170,7 +170,10 @@ export async function runSessionStartHook(
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
 
-    return buildCodexHookContext(items, { participantId: config.participantId });
+    return {
+      context: buildCodexHookContext(items, { participantId: config.participantId }),
+      registration
+    };
   });
 }
 

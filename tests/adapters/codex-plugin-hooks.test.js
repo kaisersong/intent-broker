@@ -38,7 +38,8 @@ test('session start hook always registers and returns no output when inbox is em
     }
   );
 
-  assert.equal(result, null);
+  assert.equal(result.context, null);
+  assert.equal(result.registration.ok, true);
   assert.equal(calls[0].type, 'keeper');
   assert.equal(calls[0].input.config.participantId, 'codex-session-019d448e');
   assert.equal(calls[0].input.sessionId, '019d448e-1234-5678-9999-aaaaaaaaaaaa');
