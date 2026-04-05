@@ -55,6 +55,7 @@ export function createBrokerService({
   const wsNotifier = createWebSocketNotifier({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
   });
+  let awayMode = false;
 
   function resolveRecipients(fromParticipantId, to = { mode: 'broadcast' }) {
     if (to.mode === 'participant') {
@@ -555,6 +556,12 @@ export function createBrokerService({
     },
     getWebSocketNotifier() {
       return wsNotifier;
+    },
+    setAwayMode(value) {
+      awayMode = Boolean(value);
+    },
+    getAwayMode() {
+      return awayMode;
     },
     getProjectSnapshot(projectName, { recentLimit = 20 } = {}) {
       const projectParticipants = this.listParticipants({ projectName });

@@ -33,7 +33,9 @@ function usage() {
   intent-broker [--tool ...] progress <taskId> <threadId> <summary>
   intent-broker [--tool ...] send-task <toParticipantId> <taskId> <threadId> <summary>
   intent-broker [--tool ...] send-progress <taskId> <threadId> <summary>
-  intent-broker [--tool ...] set-work-state <status> [taskId] [threadId] [summary]`);
+  intent-broker [--tool ...] set-work-state <status> [taskId] [threadId] [summary]
+  intent-broker away
+  intent-broker back`);
 }
 
 function inferToolName(env = process.env) {
@@ -175,6 +177,18 @@ async function main() {
         summary: parsed.args.slice(3).join(' ') || undefined
       }), null, 2));
       break;
+    case 'away': {
+      const res = await fetch(`${config.brokerUrl}/away`, { method: 'POST' });
+      const json = await res.json();
+      console.log(json.away ? '离开模式已开启。所有需要回复的消息将转发到 channel。' : '操作失败');
+      break;
+    }
+    case 'back': {
+      const res = await fetch(`${config.brokerUrl}/away`, { method: 'DELETE' });
+      const json = await res.json();
+      console.log(!json.away ? '已恢复正常模式。' : '操作失败');
+      break;
+    }
     default:
       usage();
       process.exit(1);

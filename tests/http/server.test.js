@@ -412,3 +412,23 @@ test('participant alias endpoints assign unique aliases, rename them, and resolv
   );
   assert.deepEqual(resolveBody.missingAliases, ['missing']);
 });
+
+test('POST /away enables away mode, GET /away returns state, DELETE /away disables it', { concurrency: false }, async (t) => {
+  const { server, port } = await startServer();
+  t.after(async () => { await server.close(); });
+
+  const getOff = await fetch(`http://127.0.0.1:${port}/away`);
+  assert.equal(getOff.status, 200);
+  assert.equal((await getOff.json()).away, false);
+
+  const enable = await fetch(`http://127.0.0.1:${port}/away`, { method: 'POST' });
+  assert.equal(enable.status, 200);
+  assert.equal((await enable.json()).away, true);
+
+  const getOn = await fetch(`http://127.0.0.1:${port}/away`);
+  assert.equal((await getOn.json()).away, true);
+
+  const disable = await fetch(`http://127.0.0.1:${port}/away`, { method: 'DELETE' });
+  assert.equal(disable.status, 200);
+  assert.equal((await disable.json()).away, false);
+});

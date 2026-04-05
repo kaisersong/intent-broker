@@ -52,6 +52,7 @@ export class YunzhijiaAdapter {
     this.brokerReconnectTimer = null;
     this.yzjReconnectTimer = null;
     this.userReconnectTimers = new Map();
+    this.awayMode = false;
   }
 
   async start() {
@@ -60,6 +61,7 @@ export class YunzhijiaAdapter {
     this.stopped = false;
 
     await this.registerToBroker();
+    await this.syncAwayMode();
     await this.connectBrokerWebSocket();
     await this.connectYunzhijiaWebSocket();
 
@@ -79,6 +81,32 @@ export class YunzhijiaAdapter {
     });
     if (!res.ok) throw new Error('Failed to register to broker');
     console.log('✓ Registered to broker');
+  }
+
+  async syncAwayMode() {
+    try {
+      const res = await fetch(`${this.brokerUrl}/away`);
+      if (res.ok) {
+        const json = await res.json();
+        this.awayMode = Boolean(json.away);
+        console.log(`✓ Away mode: ${this.awayMode}`);
+      }
+    } catch {
+      // non-fatal, default stays false
+    }
+  }
+
+  async setAwayMode(value) {
+    const method = value ? 'POST' : 'DELETE';
+    try {
+      const res = await fetch(`${this.brokerUrl}/away`, { method });
+      if (res.ok) {
+        this.awayMode = value;
+      }
+    } catch (err) {
+      console.error('Failed to update away mode:', err);
+    }
+    return this.awayMode;
   }
 
   async connectBrokerWebSocket() {
@@ -309,15 +337,57 @@ export class YunzhijiaAdapter {
   }
 
   parseBrokerCommand(text) {
-    const match = String(text || '').trim().match(/^(?:@broker|\/broker)\s+list(?:\s+(.+))?$/i);
-    if (!match) {
-      return null;
+    const normalized = String(text || '').trim();
+    const listMatch = normalized.match(/^(?:@broker|\/broker)\s+list(?:\s+(.+))?$/i);
+    if (listMatch) {
+      return {
+        action: 'list',
+        projectName: listMatch[1]?.trim() || null
+      };
     }
 
-    return {
-      action: 'list',
-      projectName: match[1]?.trim() || null
-    };
+    const aliasMatch = normalized.match(/^(?:@broker|\/broker)\s+(?:alias|rename)\s+@?([^\s@]+)\s+([^\s@]+)$/i);
+    if (aliasMatch) {
+      return {
+        action: 'alias',
+        currentAlias: aliasMatch[1],
+        nextAlias: aliasMatch[2]
+      };
+    }
+
+    if (/^(?:@broker\s+)?\/away$/i.test(normalized) || /^\/away$/i.test(normalized)) {
+      return { action: 'away' };
+    }
+
+    if (/^(?:@broker\s+)?\/back$/i.test(normalized) || /^\/back$/i.test(normalized)) {
+      return { action: 'back' };
+    }
+
+    return null;
+  }
+
+  async renameParticipantAlias(currentAlias, nextAlias, { yzjUserId, msgId } = {}) {
+    const query = encodeURIComponent(currentAlias);
+    const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
+    const participant = resolved.participants?.[0];
+
+    if (!participant) {
+      await this.sendToYunzhijia(yzjUserId, `未找到别名: @${currentAlias}`, msgId);
+      return true;
+    }
+
+    const renamed = await fetch(`${this.brokerUrl}/participants/${participant.participantId}/alias`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alias: nextAlias })
+    }).then((res) => res.json());
+
+    await this.sendToYunzhijia(
+      yzjUserId,
+      `alias 已更新: @${currentAlias} -> @${renamed.participant.alias}`,
+      msgId
+    );
+    return true;
   }
 
   async handleCommand(text, { yzjUserId, msgId } = {}) {
@@ -328,32 +398,36 @@ export class YunzhijiaAdapter {
       return true;
     }
 
+    if (brokerCommand?.action === 'alias') {
+      return this.renameParticipantAlias(
+        brokerCommand.currentAlias,
+        brokerCommand.nextAlias,
+        { yzjUserId, msgId }
+      );
+    }
+
+    if (brokerCommand?.action === 'away') {
+      await this.setAwayMode(true);
+      await this.sendToChannel('已切换到离开模式。所有需要回复的消息将转发到此��道，发送 /back 返回正常模式。', msgId);
+      return true;
+    }
+
+    if (brokerCommand?.action === 'back') {
+      await this.setAwayMode(false);
+      await this.sendToChannel('已恢复正常模式。消息将直接发送给对应用户。', msgId);
+      return true;
+    }
+
     const aliasRename = this.parseAliasRenameCommand(text);
     if (!aliasRename) {
       return false;
     }
 
-    const query = encodeURIComponent(aliasRename.currentAlias);
-    const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
-    const participant = resolved.participants?.[0];
-
-    if (!participant) {
-      await this.sendToYunzhijia(yzjUserId, `未找到别名: @${aliasRename.currentAlias}`, msgId);
-      return true;
-    }
-
-    const renamed = await fetch(`${this.brokerUrl}/participants/${participant.participantId}/alias`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ alias: aliasRename.nextAlias })
-    }).then((res) => res.json());
-
-    await this.sendToYunzhijia(
-      yzjUserId,
-      `alias 已更新: @${aliasRename.currentAlias} -> @${renamed.participant.alias}`,
-      msgId
+    return this.renameParticipantAlias(
+      aliasRename.currentAlias,
+      aliasRename.nextAlias,
+      { yzjUserId, msgId }
     );
-    return true;
   }
 
   parseMentions(text) {
@@ -405,12 +479,14 @@ export class YunzhijiaAdapter {
     const query = encodeURIComponent(mentions.aliases.join(','));
     const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
 
-    if (resolved.missingAliases?.length) {
-      await this.sendToYunzhijia(
-        yzjUserId,
-        `未找到别名: ${resolved.missingAliases.map((alias) => `@${alias}`).join(', ')}`,
-        replyMsgId
-      );
+    if (!resolved.participants?.length) {
+      if (resolved.missingAliases?.length) {
+        await this.sendToYunzhijia(
+          yzjUserId,
+          `未找到别名: ${resolved.missingAliases.map((alias) => `@${alias}`).join(', ')}`,
+          replyMsgId
+        );
+      }
       return null;
     }
 
@@ -621,6 +697,22 @@ export class YunzhijiaAdapter {
     if (normalizedEvent.kind === 'participant_presence_updated') {
       return;
     }
+
+    if (this.awayMode) {
+      // away 模式：只转发 actionable 事件和最终结论到 channel
+      const actionableKinds = new Set(['ask_clarification', 'request_approval']);
+      const isFinalProgress = normalizedEvent.kind === 'report_progress' &&
+        normalizedEvent.payload?.stage === 'completed';
+      if (!actionableKinds.has(normalizedEvent.kind) && !isFinalProgress) {
+        return;
+      }
+      const recipientLabel = this.participantLabels.get(participantId) || participantId;
+      const message = await this.formatMessage(normalizedEvent);
+      const channelMessage = `[→ @${recipientLabel}] ${message}`;
+      await this.sendToChannel(channelMessage);
+      return;
+    }
+
     const yzjUserId = this.findYunzhijiaUser(participantId);
     if (!yzjUserId) return;
 

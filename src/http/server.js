@@ -181,6 +181,23 @@ export function createServer({ broker, healthProvider = null } = {}) {
         return;
       }
 
+      if (pathname === '/away') {
+        if (req.method === 'GET') {
+          writeJson(res, 200, { away: broker.getAwayMode() });
+          return;
+        }
+        if (req.method === 'POST') {
+          broker.setAwayMode(true);
+          writeJson(res, 200, { away: true });
+          return;
+        }
+        if (req.method === 'DELETE') {
+          broker.setAwayMode(false);
+          writeJson(res, 200, { away: false });
+          return;
+        }
+      }
+
       if (req.method === 'GET' && pathname.startsWith('/projects/') && pathname.endsWith('/snapshot')) {
         const projectName = decodeURIComponent(pathname.split('/')[2]);
         writeJson(res, 200, { snapshot: broker.getProjectSnapshot(projectName) });

@@ -652,3 +652,13 @@ test('broker.close terminates active websocket clients so shutdown can complete'
   await once(socket, 'close');
   await server.close();
 });
+
+test('away mode defaults to off and can be toggled on and off', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  assert.equal(broker.getAwayMode(), false);
+  broker.setAwayMode(true);
+  assert.equal(broker.getAwayMode(), true);
+  broker.setAwayMode(false);
+  assert.equal(broker.getAwayMode(), false);
+});
