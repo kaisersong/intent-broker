@@ -24,7 +24,7 @@ export function appendAliasToTerminalTitle(alias, { cwd = process.cwd() } = {}) 
  * Schedule title update after CC/Codex UI overwrites it.
  * Uses a detached child process to survive hook exit.
  */
-export function scheduleAliasTitle(alias, { cwd = process.cwd(), delayMs = 300 } = {}) {
+export function scheduleAliasTitle(alias, { cwd = process.cwd(), delayMs = 1000 } = {}) {
   if (!alias) {
     return;
   }
