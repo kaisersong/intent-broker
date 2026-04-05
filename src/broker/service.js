@@ -231,7 +231,7 @@ export function createBrokerService({
       const recipient = participants.get(recipientId);
       const notification = recipient?.kind === 'mobile'
         ? formatMobileNotification(event)
-        : { type: 'new_intent', event };
+        : { type: 'new_intent', event: enrichEvent(event) };
       const sent = wsNotifier.notify(recipientId, notification);
       if (sent > 0) {
         onlineRecipients.push(recipientId);
@@ -555,6 +555,52 @@ export function createBrokerService({
     },
     getWebSocketNotifier() {
       return wsNotifier;
+    },
+    getProjectSnapshot(projectName, { recentLimit = 20 } = {}) {
+      const projectParticipants = this.listParticipants({ projectName });
+      const presenceItems = new Map(presence.listPresence().map((item) => [item.participantId, item]));
+      const workStateItems = new Map(this.listWorkStates({ projectName }).map((item) => [item.participantId, item]));
+      const recentEvents = store.listEvents({ limit: recentLimit })
+        .filter((item) => {
+          const sender = participants.get(item.fromParticipantId);
+          return sender?.context?.projectName === projectName;
+        })
+        .map(enrichEvent);
+
+      const projectedParticipants = projectParticipants.map((participant) => ({
+        participantId: participant.participantId,
+        alias: participant.alias,
+        kind: participant.kind,
+        projectName,
+        presence: presenceItems.get(participant.participantId)?.status || 'offline',
+        workState: workStateItems.get(participant.participantId) || null
+      }));
+
+      return {
+        projectName,
+        counts: {
+          online: projectedParticipants.filter((item) => item.presence === 'online').length,
+          busy: projectedParticipants.filter((item) => item.workState?.status === 'implementing').length,
+          blocked: projectedParticipants.filter((item) => item.workState?.status === 'blocked').length,
+          pendingApproval: 0
+        },
+        participants: projectedParticipants,
+        recentEvents
+      };
+    },
+    listProjectApprovals(projectName, { status = null } = {}) {
+      const state = buildState();
+      const approvalEvents = new Map(
+        store.listEvents().filter((e) => e.kind === 'request_approval').map((e) => [e.payload.approvalId, e])
+      );
+      return Object.values(state.approvals).filter((approval) => {
+        const originEvent = approvalEvents.get(approval.approvalId);
+        const fromParticipantId = originEvent?.fromParticipantId;
+        const sender = fromParticipantId ? participants.get(fromParticipantId) : null;
+        const matchesProject = !projectName || sender?.context?.projectName === projectName;
+        const matchesStatus = !status || approval.status === status;
+        return matchesProject && matchesStatus;
+      });
     },
     close() {
       if (presenceSweepTimer) {

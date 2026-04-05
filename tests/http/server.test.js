@@ -295,6 +295,67 @@ test('work-state endpoints store and query current project work', { concurrency:
   assert.equal(listBody.items[0].taskId, 'task-5');
 });
 
+test('GET /projects/:projectName/snapshot returns aggregated project snapshot', { concurrency: false }, async (t) => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  t.after(async () => { await server.close(); });
+
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    context: { projectName: 'intent-broker' }
+  });
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/projects/intent-broker/snapshot`);
+  const json = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(json.snapshot.projectName, 'intent-broker');
+  assert.ok(Array.isArray(json.snapshot.participants));
+  assert.ok(typeof json.snapshot.counts === 'object');
+});
+
+test('GET /projects/:projectName/approvals returns pending approvals', { concurrency: false }, async (t) => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  t.after(async () => { await server.close(); });
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/projects/intent-broker/approvals?status=pending`);
+  const json = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(json.items));
+});
+
+test('GET /health includes degraded and managed channel state fields when healthProvider is set', { concurrency: false }, async (t) => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({
+    broker,
+    healthProvider: () => ({
+      ok: true,
+      status: 'degraded',
+      degraded: true,
+      reasons: ['yunzhijia:disconnected'],
+      channels: [{ name: 'yunzhijia', status: 'disconnected' }]
+    })
+  });
+  await server.listen(0, '127.0.0.1');
+  t.after(async () => { await server.close(); });
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/health`);
+  const json = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(json.ok, true);
+  assert.equal(json.degraded, true);
+  assert.equal(json.channels[0].status, 'disconnected');
+});
+
 test('participant alias endpoints assign unique aliases, rename them, and resolve mentions', { concurrency: false }, async (t) => {
   const { server, port } = await startServer();
   t.after(async () => {

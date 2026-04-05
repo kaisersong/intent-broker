@@ -29,14 +29,15 @@ function readJson(req) {
   });
 }
 
-export function createServer({ broker } = {}) {
+export function createServer({ broker, healthProvider = null } = {}) {
+  const getHealth = healthProvider || (() => ({ ok: true }));
   const raw = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url, 'http://127.0.0.1');
     const pathname = requestUrl.pathname;
 
     try {
       if (req.method === 'GET' && pathname === '/health') {
-        writeJson(res, 200, { ok: true });
+        writeJson(res, 200, getHealth());
         return;
       }
 
@@ -177,6 +178,19 @@ export function createServer({ broker } = {}) {
         const after = Number(requestUrl.searchParams.get('after') || '0');
         const limit = Number(requestUrl.searchParams.get('limit') || '50');
         writeJson(res, 200, broker.readMobileInbox(participantId, { after, limit }));
+        return;
+      }
+
+      if (req.method === 'GET' && pathname.startsWith('/projects/') && pathname.endsWith('/snapshot')) {
+        const projectName = decodeURIComponent(pathname.split('/')[2]);
+        writeJson(res, 200, { snapshot: broker.getProjectSnapshot(projectName) });
+        return;
+      }
+
+      if (req.method === 'GET' && pathname.startsWith('/projects/') && pathname.endsWith('/approvals')) {
+        const projectName = decodeURIComponent(pathname.split('/')[2]);
+        const status = requestUrl.searchParams.get('status');
+        writeJson(res, 200, { items: broker.listProjectApprovals(projectName, { status }) });
         return;
       }
 

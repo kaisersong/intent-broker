@@ -6,6 +6,7 @@ import { loadIntentBrokerConfig } from '../config/load-config.js';
 import { syncAgentBridges as syncAgentBridgesDefault } from './bridge-install-sync.js';
 import { createCodexResumeDiscoveryRuntime as createCodexResumeDiscoveryRuntimeDefault } from './codex-resume-discovery.js';
 import { createManagedChannelsRuntime } from './managed-channels.js';
+import { createChannelHealthRegistry } from './channel-health.js';
 
 export async function startBrokerApp({
   cwd = process.cwd(),
@@ -29,7 +30,21 @@ export async function startBrokerApp({
   });
 
   const broker = createBroker({ dbPath });
-  const server = createHttpServer({ broker });
+  const channelHealth = createChannelHealthRegistry();
+  const server = createHttpServer({
+    broker,
+    healthProvider: () => {
+      const summary = channelHealth.summarize();
+      return {
+        ok: true,
+        status: summary.degraded ? 'degraded' : 'healthy',
+        degraded: summary.degraded,
+        reasons: summary.reasons,
+        channels: summary.channels,
+        updatedAt: new Date().toISOString()
+      };
+    }
+  });
 
   await server.listen(config.server.port, config.server.host);
   broker.attachWebSocket(server.raw());

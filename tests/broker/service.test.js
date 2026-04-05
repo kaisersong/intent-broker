@@ -385,6 +385,60 @@ test('sendIntent reports which recipients are online over websocket', async (t) 
   assert.equal(result.deliveredCount, 1);
 });
 
+test('websocket new_intent notifications include enriched sender alias fields', async (t) => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  const server = createServer({ broker });
+  await server.listen(0, '127.0.0.1');
+  broker.attachWebSocket(server.raw());
+  const port = server.address().port;
+
+  broker.registerParticipant({
+    participantId: 'claude.session',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'claude2',
+    context: { projectName: 'intent-broker' }
+  });
+  broker.registerParticipant({
+    participantId: 'codex.session',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    context: { projectName: 'intent-broker' }
+  });
+
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?participantId=codex.session`);
+  await once(socket, 'open');
+  const received = [];
+  socket.on('message', (data) => {
+    received.push(JSON.parse(data.toString()));
+  });
+
+  t.after(async () => {
+    socket.close();
+    await server.close();
+  });
+
+  broker.sendIntent({
+    intentId: 'int-enriched-1',
+    kind: 'report_progress',
+    fromParticipantId: 'claude.session',
+    taskId: 'task-enriched-1',
+    threadId: 'thread-enriched-1',
+    to: { mode: 'participant', participants: ['codex.session'] },
+    payload: { body: { summary: 'V3可靠性实现完成。182 tests全部通过。' } }
+  });
+
+  await waitFor(() => received.some((message) => message.type === 'new_intent'));
+  const pushed = received.find((message) => message.type === 'new_intent');
+  assert.equal(pushed.type, 'new_intent');
+  assert.equal(pushed.event.fromParticipantId, 'claude.session');
+  assert.equal(pushed.event.fromAlias, 'claude2');
+  assert.equal(pushed.event.fromProjectName, 'intent-broker');
+});
+
 test('websocket lifecycle updates presence and broadcasts online and offline changes', async (t) => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
   const server = createServer({ broker });
@@ -529,6 +583,60 @@ test('presence sweep marks stale hook-only sessions offline and broadcasts the c
   const events = broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_presence_updated');
   assert.equal(events[0].payload.status, 'online');
   assert.equal(events[1].payload.status, 'offline');
+});
+
+test('getProjectSnapshot aggregates project roster, counts, and recent events', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.a',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    context: { projectName: 'intent-broker' }
+  });
+  broker.registerParticipant({
+    participantId: 'claude.b',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'claude',
+    context: { projectName: 'intent-broker' }
+  });
+  broker.updateWorkState('codex.a', { status: 'implementing', taskId: 'task-1', threadId: 'thread-1', summary: 'Building snapshot API' });
+  broker.updateWorkState('claude.b', { status: 'blocked', taskId: 'task-2', threadId: 'thread-2', summary: 'Waiting on approval' });
+
+  const snapshot = broker.getProjectSnapshot('intent-broker');
+
+  assert.equal(snapshot.projectName, 'intent-broker');
+  assert.equal(snapshot.counts.online, 2);
+  assert.equal(snapshot.counts.busy, 1);
+  assert.equal(snapshot.counts.blocked, 1);
+  assert.ok(snapshot.participants.some((item) => item.alias === 'codex'));
+  assert.ok(snapshot.participants.some((item) => item.alias === 'claude'));
+});
+
+test('listProjectApprovals returns pending approvals for one project', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [], context: { projectName: 'intent-broker' } });
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex', context: { projectName: 'intent-broker' } });
+
+  broker.sendIntent({
+    intentId: 'approval-1',
+    kind: 'request_approval',
+    fromParticipantId: 'codex.a',
+    taskId: 'task-1',
+    threadId: 'thread-1',
+    to: { mode: 'participant', participants: ['human.song'] },
+    payload: { approvalId: 'app-1', approvalScope: 'submit_result', body: { summary: 'Ship the result?' } }
+  });
+
+  const approvals = broker.listProjectApprovals('intent-broker', { status: 'pending' });
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].approvalId, 'app-1');
+  assert.equal(approvals[0].status, 'pending');
 });
 
 test('broker.close terminates active websocket clients so shutdown can complete', async () => {

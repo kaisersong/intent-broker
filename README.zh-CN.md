@@ -392,6 +392,95 @@ POST /approvals/:approvalId/respond
 }
 ```
 
+### 项目快照
+
+```http
+GET /projects/:projectName/snapshot
+```
+
+返回项目的聚合只读视图：包含 presence 和 work-state 的参与者列表、计数（在线、忙碌、阻塞、待审批）以及最近事件。适合桌面 companion 和仪表盘用单次请求渲染项目概览。
+
+响应示例：
+
+```json
+{
+  "snapshot": {
+    "projectName": "intent-broker",
+    "counts": { "online": 2, "busy": 1, "blocked": 0, "pendingApproval": 0 },
+    "participants": [
+      {
+        "participantId": "codex.a",
+        "alias": "codex",
+        "kind": "agent",
+        "projectName": "intent-broker",
+        "presence": "online",
+        "workState": { "status": "implementing", "summary": "正在构建快照 API" }
+      }
+    ],
+    "recentEvents": []
+  }
+}
+```
+
+### 项目审批查询
+
+```http
+GET /projects/:projectName/approvals?status=pending
+```
+
+返回指定项目范围内的审批列表。`status` 参数可选，不传则返回所有状态的审批。
+
+响应示例：
+
+```json
+{
+  "items": [
+    {
+      "approvalId": "app-1",
+      "taskId": "task-1",
+      "status": "pending",
+      "scope": "submit_result"
+    }
+  ]
+}
+```
+
+### 结构化健康状态
+
+```http
+GET /health
+```
+
+返回 broker 健康状态，包含附加的结构化字段。`ok: true` 字段始终存在，保持向后兼容。当 broker 降级或托管通道不健康时，会有额外字段描述具体状态。
+
+健康时的响应示例：
+
+```json
+{
+  "ok": true,
+  "status": "healthy",
+  "degraded": false,
+  "reasons": [],
+  "channels": [{ "name": "yunzhijia", "status": "healthy", "updatedAt": "..." }],
+  "updatedAt": "..."
+}
+```
+
+降级时的响应示例：
+
+```json
+{
+  "ok": true,
+  "status": "degraded",
+  "degraded": true,
+  "reasons": ["yunzhijia:disconnected"],
+  "channels": [{ "name": "yunzhijia", "status": "disconnected", "updatedAt": "..." }],
+  "updatedAt": "..."
+}
+```
+
+托管通道状态值：`healthy`、`reconnecting`、`degraded`、`disconnected`、`failed`。
+
 ## 给智能体
 
 如果你是 Claude Code、Codex、OpenCode、xiaok code 或其他代码智能体，`Intent Broker` 应该被当成协作协议层来使用，而不是聊天窗口。凡是涉及任务交接、进度同步、审批、人类插话、重启恢复，都应该优先通过 broker 来完成。

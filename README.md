@@ -392,6 +392,95 @@ Example:
 }
 ```
 
+### Project Snapshot
+
+```http
+GET /projects/:projectName/snapshot
+```
+
+Returns an aggregated read-only view of a project: participant roster with presence and work-state, counts (online, busy, blocked, pendingApproval), and recent events. Intended for desktop companions and dashboards that need a single call to render a project overview.
+
+Example response shape:
+
+```json
+{
+  "snapshot": {
+    "projectName": "intent-broker",
+    "counts": { "online": 2, "busy": 1, "blocked": 0, "pendingApproval": 0 },
+    "participants": [
+      {
+        "participantId": "codex.a",
+        "alias": "codex",
+        "kind": "agent",
+        "projectName": "intent-broker",
+        "presence": "online",
+        "workState": { "status": "implementing", "summary": "Building snapshot API" }
+      }
+    ],
+    "recentEvents": []
+  }
+}
+```
+
+### Project Approvals Query
+
+```http
+GET /projects/:projectName/approvals?status=pending
+```
+
+Returns approvals scoped to a project. The `status` query parameter is optional; omit it to return all approvals regardless of status.
+
+Example response shape:
+
+```json
+{
+  "items": [
+    {
+      "approvalId": "app-1",
+      "taskId": "task-1",
+      "status": "pending",
+      "scope": "submit_result"
+    }
+  ]
+}
+```
+
+### Structured Health
+
+```http
+GET /health
+```
+
+Returns broker health with additive structured fields. The `ok: true` field is always present for backward compatibility. When the broker is degraded or a managed channel is unhealthy, additional fields describe the state.
+
+Example response when healthy:
+
+```json
+{
+  "ok": true,
+  "status": "healthy",
+  "degraded": false,
+  "reasons": [],
+  "channels": [{ "name": "yunzhijia", "status": "healthy", "updatedAt": "..." }],
+  "updatedAt": "..."
+}
+```
+
+Example response when degraded:
+
+```json
+{
+  "ok": true,
+  "status": "degraded",
+  "degraded": true,
+  "reasons": ["yunzhijia:disconnected"],
+  "channels": [{ "name": "yunzhijia", "status": "disconnected", "updatedAt": "..." }],
+  "updatedAt": "..."
+}
+```
+
+Managed channel status values: `healthy`, `reconnecting`, `degraded`, `disconnected`, `failed`.
+
 ## To Agents
 
 If you are a coding agent such as Claude Code, Codex, OpenCode, xiaok code, or a similar worker, `Intent Broker` is the coordination layer you should talk to when you need durable task handoff, approvals, replay, or human-in-the-loop collaboration.
