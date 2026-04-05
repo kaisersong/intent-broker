@@ -171,7 +171,7 @@ export async function runSessionStartHook(
     const items = inbox.items || [];
 
     return {
-      context: buildCodexHookContext(items, { participantId: config.participantId }),
+      context: buildCodexHookContext(items, { participantId: config.participantId, alias: registration?.alias }),
       registration
     };
   });

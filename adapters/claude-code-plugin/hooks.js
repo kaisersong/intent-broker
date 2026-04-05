@@ -147,6 +147,7 @@ export async function runSessionStartHook(
     return {
       context: buildToolHookContext(items, {
         participantId: config.participantId,
+        alias: registration?.alias,
         sessionLabel: 'Claude Code session'
       }),
       registration

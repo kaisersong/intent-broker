@@ -95,19 +95,29 @@ export function buildToolHookContext(
   items = [],
   {
     participantId,
+    alias = null,
     sessionLabel = 'session',
     actionableReplyStyle = 'explicit'
   } = {}
 ) {
-  if (!items.length) {
+  if (!items.length && !alias) {
     return null;
   }
+
+  const lines = [];
+  if (alias) {
+    lines.push(`Intent Broker: this session is @${alias} (${participantId || sessionLabel})`);
+  }
+  if (!items.length) {
+    return lines.join('\n') || null;
+  }
+
+  lines.push(`Intent Broker update for ${participantId || `this ${sessionLabel}`}:`);
 
   const actionable = items.filter((item) => deliverySemanticForItem(item) === 'actionable');
   const informational = items.filter((item) => deliverySemanticForItem(item) !== 'actionable');
   const presenceUpdates = informational.filter(isPresenceUpdate);
   const otherInformational = informational.filter((item) => !isPresenceUpdate(item));
-  const lines = [`Intent Broker update for ${participantId || `this ${sessionLabel}`}:`];
 
   if (actionable.length) {
     lines.push('Actionable items:');
@@ -161,9 +171,10 @@ export function buildToolAutoContinuePrompt(
   ].join('\n');
 }
 
-export function buildCodexHookContext(items = [], { participantId } = {}) {
+export function buildCodexHookContext(items = [], { participantId, alias = null } = {}) {
   return buildToolHookContext(items, {
     participantId,
+    alias,
     sessionLabel: 'Codex session'
   });
 }
