@@ -24,6 +24,7 @@ import { runCliMain } from '../../session-bridge/cli-errors.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
+import { appendAliasToTerminalTitle } from '../../session-bridge/terminal-title.js';
 import {
   buildHookCommand,
   defaultInstallPaths,
@@ -76,6 +77,9 @@ async function handleSessionStartHook() {
   const input = await readJsonStdin();
   const result = await runSessionStartHook(input);
   const context = result?.context ?? result;
+  const alias = result?.registration?.alias;
+
+  appendAliasToTerminalTitle(alias, { cwd: input.cwd || process.cwd() });
 
   if (!context) {
     return;
