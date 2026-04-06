@@ -4,7 +4,7 @@
 
 Local-first collaboration broker for multi-agent workflows. It is not a chat server and not a workflow platform. It is a reliable protocol layer that persists events before delivery, so agents like Codex, Claude Code, and OpenCode can collaborate with human participants around the same task object.
 
-Current release version: `0.1.3`
+Current release version: `0.2.0`
 
 `Intent Broker` is a coordination layer for one human and multiple coding agents working on the same project.
 
@@ -94,6 +94,71 @@ The current prototype supports:
 - Claude Code auto-dispatch recovery that resets stale runtime state and re-queues work when a non-interactive dispatch attempt fails
 - broker background control with durable stdout/stderr logs plus a heartbeat file for startup, crash, and shutdown diagnosis
 - `broker:restart` readiness gated by `/health` and broker heartbeat state instead of a transient listen socket alone
+
+## Phase 1 + Phase 2 Features (v0.2.0)
+
+### Agent Group Collaboration
+- same-project agent auto-discovery by `projectName`
+- file change broadcast notifications to group members
+- conflict detection with file locking mechanism
+- concurrent modification detection with dual-party notification
+
+### Human-in-the-Loop Confirmations
+- `intent-broker confirm ask` for blocking user confirmation
+- yes/no, choice, and free-text input support
+- timeout with configurable fallback (`wait`, `cancel`, `auto-decide`)
+- terminal fallback when Yunzhijia channel unavailable
+- persistent pending confirmations with recovery after restart
+
+### Task Dispatch & Review
+- parent task creation with subtask decomposition
+- subtask assignment to specific agents
+- code review request workflow
+- reviewer comments with approve/reject decisions
+- task status tracking (`pending`, `in_progress`, `completed`, `blocked`)
+
+### Collaboration History
+- event recording for all collaboration activities
+- query by type, participant, project, and time range
+- statistical reports (7-day default window)
+- recent activity feed
+
+### Graceful Degradation
+- broker unavailable: local logging, non-blocking execution
+- Yunzhijia disconnected: terminal input/output fallback
+- WebSocket retry with exponential backoff (1s → 2s → 4s → 8s → 16s)
+- persistent state in `~/.intent-broker/` for crash recovery
+
+## CLI Commands (v0.2.0)
+
+```bash
+# Group management
+intent-broker group list [--project <name>]
+intent-broker group notify file-changed <file> --reason <text>
+
+# User confirmations
+intent-broker confirm ask "Execute?" --type yesno --timeout 60 --fallback cancel
+intent-broker confirm reply <requestId> Y
+intent-broker confirm status <requestId>
+intent-broker confirm list
+
+# Conflict detection
+intent-broker conflict check <file>
+intent-broker conflict list
+
+# Task management
+intent-broker task create "Implement login" --assign agent-2
+intent-broker task create "Write tests" --subtask <parent-id> --assign agent-3
+intent-broker task status <taskId>
+intent-broker task list --mine
+
+# Code review
+intent-broker review request src/login.js --reviewer @senior-dev
+intent-broker review list [--pending]
+
+# History & stats
+intent-broker history --days 7
+```
 
 ## Tech Stack
 

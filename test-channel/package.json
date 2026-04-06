@@ -1,0 +1,17 @@
+{
+  "name": "intent-broker-test-channel",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "test-channel.js",
+  "bin": {
+    "test-channel": "./test-channel.js"
+  },
+  "scripts": {
+    "test": "node test-channel.js --scenario",
+    "interactive": "node test-channel.js --interactive",
+    "send": "node test-channel.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.0"
+  }
+}

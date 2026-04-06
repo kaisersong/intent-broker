@@ -18,6 +18,9 @@ import {
   runWhoCommand
 } from '../adapters/session-bridge/command-runner.js';
 import { runCliMain } from '../adapters/session-bridge/cli-errors.js';
+import { runCommand as runGroupCommand } from '../adapters/group-manager/cli.js';
+import { runCommand as runConfirmCommand } from '../adapters/user-confirm/cli.js';
+import { runCommand as runPhase2Command } from '../adapters/phase2/cli.js';
 
 function usage() {
   console.log(`Usage:
@@ -27,13 +30,20 @@ function usage() {
   intent-broker [--tool ...] reply [@alias] <summary>
   intent-broker [--tool ...] poll [after]
   intent-broker [--tool ...] ack <eventId>
-  intent-broker [--tool ...] task <toParticipantId> <taskId> <threadId> <summary>
-  intent-broker [--tool ...] ask <toParticipantId> <taskId> <threadId> <summary>
-  intent-broker [--tool ...] note <toParticipantId> <taskId> <threadId> <summary>
-  intent-broker [--tool ...] progress <taskId> <threadId> <summary>
-  intent-broker [--tool ...] send-task <toParticipantId> <taskId> <threadId> <summary>
-  intent-broker [--tool ...] send-progress <taskId> <threadId> <summary>
-  intent-broker [--tool ...] set-work-state <status> [taskId] [threadId] [summary]
+  intent-broker group list [--project <name>]
+  intent-broker group notify <type> <target> [--reason <text>]
+  intent-broker confirm ask <question> [options]
+  intent-broker confirm reply <requestId> <response>
+  intent-broker confirm status <requestId>
+  intent-broker confirm list
+  intent-broker conflict check <file>
+  intent-broker conflict list
+  intent-broker task create <title> [--subtask <parentId>] [--assign <alias>]
+  intent-broker task status <taskId>
+  intent-broker task list [--mine]
+  intent-broker review request <file> --reviewer <alias>
+  intent-broker review list
+  intent-broker history [--days <n>]
   intent-broker away
   intent-broker back`);
 }
@@ -176,6 +186,18 @@ async function main() {
         threadId: normalizeOptionalValue(parsed.args[2]),
         summary: parsed.args.slice(3).join(' ') || undefined
       }), null, 2));
+      break;
+    case 'group':
+      await runGroupCommand(parsed.toolName, parsed.args);
+      break;
+    case 'confirm':
+      await runConfirmCommand(parsed.toolName, parsed.args);
+      break;
+    case 'conflict':
+    case 'task':
+    case 'review':
+    case 'history':
+      await runPhase2Command(parsed.toolName, [parsed.command, ...parsed.args]);
       break;
     case 'away': {
       const res = await fetch(`${config.brokerUrl}/away`, { method: 'POST' });

@@ -207,6 +207,26 @@ export function buildClaudeAutoContinuePrompt(items = [], { participantId } = {}
   ].join('\n');
 }
 
+export function buildXiaokAutoContinuePrompt(items = [], { participantId } = {}) {
+  const context = buildToolHookContext(items, {
+    participantId,
+    sessionLabel: 'xiaok session'
+  });
+
+  if (!context) {
+    return null;
+  }
+
+  return [
+    `Intent Broker auto-continue for ${participantId || 'this xiaok session'}.`,
+    'The previous turn has completed. Continue immediately with the actionable items below without waiting for new local user input.',
+    'Handle the work, then output only the reply summary that should be sent back through Intent Broker as plain text.',
+    'Do not wrap the final reply in markdown fences or add commentary outside the reply itself.',
+    'If no reply should be sent, output exactly NO_REPLY.',
+    context
+  ].join('\n');
+}
+
 export function buildCodexHookOutput(hookEventName, additionalContext) {
   return {
     hookSpecificOutput: {

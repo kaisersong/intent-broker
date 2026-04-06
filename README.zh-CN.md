@@ -4,7 +4,7 @@
 
 本地优先的多 Agent 协作 broker。它不是聊天服务器，也不是工作流平台，而是一层可靠的协作协议中间层：先持久化事件，再进行投递；让 Codex、Claude Code、OpenCode 这类 agent 与人类参与方围绕同一任务对象协作。
 
-当前发布版本：`0.1.3`
+当前发布版本：`0.2.0`
 
 `Intent Broker` 是一个服务于“一个人 + 多个开发智能体”的协作协调层。
 
@@ -94,6 +94,71 @@
 - Claude Code auto-dispatch 的自愈恢复：非交互派发失败时会重置卡住的 runtime，并把任务重新塞回本地队列
 - broker 后台控制脚本现在会持久化 stdout/stderr 日志和心跳文件，方便定位启动失败、崩溃和正常退出
 - `broker:restart` 现在必须同时通过 `/health` 和 broker 心跳状态校验，才会返回 `ready: true`
+
+## Phase 1 + Phase 2 功能 (v0.2.0)
+
+### Agent Group 协作
+- 同项目 agent 自动发现（按 `projectName`）
+- 文件变更广播通知给组成员
+- 冲突检测 + 文件锁机制
+- 并发修改检测并通知双方
+
+### 人机交互确认
+- `intent-broker confirm ask` 发起阻塞式用户确认
+- 支持 yes/no、多选、自由文本输入
+- 超时 fallback 策略（`wait`、`cancel`、`auto-decide`）
+- 云之家不可用时终端 fallback
+- 持久化 pending confirmations，重启后恢复
+
+### 任务分发与审查
+- 父任务创建 + 子任务分解
+- 子任务分配给指定 agent
+- 代码审查请求流程
+- 审查意见 approve/reject
+- 任务状态跟踪（`pending`、`in_progress`、`completed`、`blocked`）
+
+### 协作历史
+- 所有协作事件记录
+- 按类型、参与者、项目、时间范围查询
+- 统计报告（默认 7 天窗口）
+- 最近活动 feed
+
+### 降级容错
+- Broker 不可用：本地日志记录，不阻塞执行
+- 云之家断开：终端输入/输出 fallback
+- WebSocket 指数退避重连（1s → 2s → 4s → 8s → 16s）
+- `~/.intent-broker/` 持久化状态，支持崩溃恢复
+
+## CLI 命令 (v0.2.0)
+
+```bash
+# Group 管理
+intent-broker group list [--project <name>]
+intent-broker group notify file-changed <file> --reason <text>
+
+# 用户确认
+intent-broker confirm ask "执行？" --type yesno --timeout 60 --fallback cancel
+intent-broker confirm reply <requestId> Y
+intent-broker confirm status <requestId>
+intent-broker confirm list
+
+# 冲突检测
+intent-broker conflict check <file>
+intent-broker conflict list
+
+# 任务管理
+intent-broker task create "实现登录" --assign agent-2
+intent-broker task create "写测试" --subtask <parent-id> --assign agent-3
+intent-broker task status <taskId>
+intent-broker task list --mine
+
+# 代码审查
+intent-broker review request src/login.js --reviewer @senior-dev
+intent-broker review list [--pending]
+
+# 历史统计
+intent-broker history --days 7
+```
 
 ## 技术选型
 

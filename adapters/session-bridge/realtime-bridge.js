@@ -25,6 +25,7 @@ import { deriveSessionBridgeConfig } from './config.js';
 import {
   buildClaudeAutoContinuePrompt,
   buildCodexAutoContinuePrompt,
+  buildXiaokAutoContinuePrompt,
   highestEventId
 } from './codex-hooks.js';
 import { pickRecentContext } from './recent-context.js';
@@ -149,7 +150,9 @@ function restoreRealtimeQueue(state, items = []) {
 }
 
 function shouldRecoverStaleAutoDispatchRuntime(toolName, runtimeState, staleMs) {
-  if (toolName !== 'claude-code') {
+  // Only claude-code and xiaok-code use execFile pattern that may need recovery
+  // codex uses detached spawn and manages its own lifecycle
+  if (toolName !== 'claude-code' && toolName !== 'xiaok-code') {
     return false;
   }
   if (runtimeState?.status !== 'running' || runtimeState?.source !== 'auto-dispatch') {
@@ -171,6 +174,10 @@ function buildAutoDispatchPrompt(toolName, items, participantId) {
 
   if (toolName === 'claude-code') {
     return buildClaudeAutoContinuePrompt(items, { participantId });
+  }
+
+  if (toolName === 'xiaok-code') {
+    return buildXiaokAutoContinuePrompt(items, { participantId });
   }
 
   return null;
@@ -207,7 +214,7 @@ export async function maybeAutoDispatchRealtimeQueue({
   loadRuntimeState = loadRuntimeStateDefault,
   saveRuntimeState = saveRuntimeStateDefault
 } = {}) {
-  if (toolName !== 'codex' && toolName !== 'claude-code') {
+  if (toolName !== 'codex' && toolName !== 'claude-code' && toolName !== 'xiaok-code') {
     return { dispatched: false, reason: 'unsupported-tool' };
   }
   if (env.INTENT_BROKER_DISABLE_AUTO_DISPATCH === '1') {
@@ -310,9 +317,14 @@ export async function maybeAutoDispatchRealtimeQueue({
     };
   }
 
+  // xiaok-code and claude-code use similar execFile pattern
+  const command = toolName === 'xiaok-code'
+    ? (env.INTENT_BROKER_XIAOK_COMMAND || 'xiaok')
+    : (env.INTENT_BROKER_CLAUDE_COMMAND || 'claude');
+
   try {
     const { stdout } = await execFileImpl(
-      env.INTENT_BROKER_CLAUDE_COMMAND || 'claude',
+      command,
       ['--resume', sessionId, '--print', prompt],
       {
         cwd,

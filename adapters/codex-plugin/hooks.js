@@ -62,7 +62,8 @@ function configFromHookInput(
     resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault
   } = {}
 ) {
-  const sessionId = input.session_id || env.CODEX_THREAD_ID || '';
+  // Codex uses thread_id in hooks, but session_id is also accepted
+  const sessionId = input.session_id || input.thread_id || env.CODEX_THREAD_ID || '';
   const sessionCwd = resolveSessionCwdFromTranscript('codex', sessionId, { homeDir });
   return deriveSessionBridgeConfig({
     toolName: 'codex',
@@ -140,7 +141,7 @@ export async function runSessionStartHook(
       toolName: 'codex',
       cliPath,
       config,
-      sessionId: input.session_id,
+      sessionId: input.session_id || input.thread_id || null,
       cwd,
       env,
       homeDir,
@@ -150,7 +151,7 @@ export async function runSessionStartHook(
       toolName: 'codex',
       cliPath,
       config,
-      sessionId: input.session_id,
+      sessionId: input.session_id || input.thread_id || null,
       cwd,
       env,
       homeDir,
@@ -160,7 +161,7 @@ export async function runSessionStartHook(
     await updateWorkState(config, { status: 'idle', summary: null });
     saveRuntimeState(runtimeStatePath, {
       status: 'idle',
-      sessionId: input.session_id || null,
+      sessionId: input.session_id || input.thread_id || null,
       turnId: null,
       source: 'session-start',
       taskId: state.recentContext?.taskId || null,
@@ -218,7 +219,7 @@ export async function runUserPromptSubmitHook(
       toolName: 'codex',
       cliPath,
       config,
-      sessionId: input.session_id,
+      sessionId: input.session_id || input.thread_id || null,
       cwd,
       env,
       homeDir,
@@ -228,7 +229,7 @@ export async function runUserPromptSubmitHook(
       toolName: 'codex',
       cliPath,
       config,
-      sessionId: input.session_id,
+      sessionId: input.session_id || input.thread_id || null,
       cwd,
       env,
       homeDir,
@@ -256,7 +257,7 @@ export async function runUserPromptSubmitHook(
       saveRealtimeQueueState(queueStatePath, drainedQueue.state);
       saveRuntimeState(runtimeStatePath, {
         status: 'running',
-        sessionId: input.session_id || null,
+        sessionId: input.session_id || input.thread_id || null,
         turnId: input.turn_id || null,
         source: 'queued-context',
         taskId: activeContext?.taskId || null,
@@ -287,7 +288,7 @@ export async function runUserPromptSubmitHook(
     const activeContext = pickActiveWorkContext([], state.recentContext);
     saveRuntimeState(runtimeStatePath, {
       status: 'running',
-      sessionId: input.session_id || null,
+      sessionId: input.session_id || input.thread_id || null,
       turnId: input.turn_id || null,
       source: 'user-prompt-submit',
       taskId: activeContext?.taskId || null,
@@ -318,7 +319,7 @@ export async function runUserPromptSubmitHook(
         'codex',
         config.participantId,
         {
-          sessionId: input.session_id || null,
+          sessionId: input.session_id || input.thread_id || null,
           turnId: input.turn_id || null,
           recentContext: replyContext
         },
@@ -358,70 +359,74 @@ export async function runStopHook(
     const runtimeState = loadRuntimeState(runtimeStatePath);
     const queueState = loadRealtimeQueueState(queueStatePath);
 
+    // IMPORTANT: Check queue BEFORE mirroring to avoid sending reply to wrong task
+    // If there are new actionable messages, they take priority and we skip the current mirror
+    if (queueState.actionable.length) {
+      // New messages arrived while we were busy - process them instead of mirroring old task
+      const drainedQueue = drainRealtimeQueue(queueState);
+      const items = drainedQueue.items;
+      const recentContext = pickRecentContext(items) || cursorState.recentContext;
+      const activeContext = pickActiveWorkContext(items, recentContext);
+      const lastSeenEventId = highestEventId(items);
+
+      if (lastSeenEventId) {
+        await ackInbox(config, lastSeenEventId);
+      }
+      saveCursorState(statePath, {
+        lastSeenEventId: Math.max(cursorState.lastSeenEventId, lastSeenEventId),
+        recentContext
+      });
+      saveRealtimeQueueState(queueStatePath, drainedQueue.state);
+      saveRuntimeState(runtimeStatePath, {
+        status: 'running',
+        sessionId: input.session_id || input.thread_id || runtimeState.sessionId,
+        turnId: input.turn_id || null,
+        source: 'stop-hook',
+        taskId: activeContext?.taskId || null,
+        threadId: activeContext?.threadId || null,
+        updatedAt: new Date().toISOString()
+      });
+      await updateWorkState(
+        config,
+        buildAutomaticWorkState('implementing', activeContext)
+      ).catch(() => null);
+      const replyContext = pickActionableReplyContext(items);
+      if (replyContext) {
+        markPendingReplyMirror(
+          'codex',
+          config.participantId,
+          {
+            sessionId: input.session_id || input.thread_id || runtimeState.sessionId || null,
+            recentContext: replyContext
+          },
+          { homeDir }
+        );
+      }
+
+      return buildCodexAutoContinuePrompt(items, { participantId: config.participantId });
+    }
+
+    // No new messages - safe to mirror the current task's reply
     await maybeMirrorPendingReply(config, {
       toolName: 'codex',
-      sessionId: input.session_id || runtimeState.sessionId || null,
+      sessionId: input.session_id || input.thread_id || runtimeState.sessionId || null,
       turnId: input.turn_id || null,
       homeDir,
       sendProgress
     });
 
-    if (!queueState.actionable.length) {
-      saveRuntimeState(runtimeStatePath, {
-        ...runtimeState,
-        status: 'idle',
-        sessionId: input.session_id || runtimeState.sessionId,
-        turnId: input.turn_id || null,
-        source: 'stop-hook',
-        updatedAt: new Date().toISOString()
-      });
-      await updateWorkState(
-        config,
-        buildAutomaticWorkState('idle')
-      ).catch(() => null);
-      return null;
-    }
-
-    const drainedQueue = drainRealtimeQueue(queueState);
-    const items = drainedQueue.items;
-    const recentContext = pickRecentContext(items) || cursorState.recentContext;
-    const activeContext = pickActiveWorkContext(items, recentContext);
-    const lastSeenEventId = highestEventId(items);
-
-    if (lastSeenEventId) {
-      await ackInbox(config, lastSeenEventId);
-    }
-    saveCursorState(statePath, {
-      lastSeenEventId: Math.max(cursorState.lastSeenEventId, lastSeenEventId),
-      recentContext
-    });
-    saveRealtimeQueueState(queueStatePath, drainedQueue.state);
     saveRuntimeState(runtimeStatePath, {
-      status: 'running',
-      sessionId: input.session_id || runtimeState.sessionId,
+      ...runtimeState,
+      status: 'idle',
+      sessionId: input.session_id || input.thread_id || runtimeState.sessionId,
       turnId: input.turn_id || null,
       source: 'stop-hook',
-      taskId: activeContext?.taskId || null,
-      threadId: activeContext?.threadId || null,
       updatedAt: new Date().toISOString()
     });
     await updateWorkState(
       config,
-      buildAutomaticWorkState('implementing', activeContext)
+      buildAutomaticWorkState('idle')
     ).catch(() => null);
-    const replyContext = pickActionableReplyContext(items);
-    if (replyContext) {
-      markPendingReplyMirror(
-        'codex',
-        config.participantId,
-        {
-          sessionId: input.session_id || runtimeState.sessionId || null,
-          recentContext: replyContext
-        },
-        { homeDir }
-      );
-    }
-
-    return buildCodexAutoContinuePrompt(items, { participantId: config.participantId });
+    return null;
   });
 }
