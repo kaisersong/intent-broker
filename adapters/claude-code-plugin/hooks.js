@@ -13,6 +13,7 @@ import {
 } from '../session-bridge/codex-hooks.js';
 import {
   deriveSessionBridgeConfig,
+  enrichConfigWithFocusedTerminalLocator,
   resolveSessionCwdFromTranscript as resolveSessionCwdFromTranscriptDefault
 } from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
@@ -125,7 +126,9 @@ export async function runSessionStartHook(
   }
 
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+    const config = enrichConfigWithFocusedTerminalLocator(
+      configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript })
+    );
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
@@ -160,6 +163,11 @@ export async function runSessionStartHook(
       taskId: state.recentContext?.taskId || null,
       threadId: state.recentContext?.threadId || null,
       alias: registration?.alias || null,
+      terminalApp: config.metadata?.terminalApp || null,
+      projectPath: config.metadata?.projectPath || null,
+      sessionHint: config.metadata?.sessionHint || null,
+      terminalTTY: config.metadata?.terminalTTY || null,
+      terminalSessionID: config.metadata?.terminalSessionID || null,
       updatedAt: new Date().toISOString()
     });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
@@ -186,6 +194,7 @@ export async function runUserPromptSubmitHook(
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
+    saveRuntimeState = saveRuntimeStateDefault,
     loadRealtimeQueueState = loadRealtimeQueueStateDefault,
     markPendingReplyMirror = markPendingReplyMirrorDefault,
     saveRealtimeQueueState = saveRealtimeQueueStateDefault,
@@ -204,9 +213,12 @@ export async function runUserPromptSubmitHook(
   }
 
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+    const config = enrichConfigWithFocusedTerminalLocator(
+      configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript })
+    );
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
+    const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
 
     await ensureSessionKeeper({
@@ -234,6 +246,20 @@ export async function runUserPromptSubmitHook(
 
     if (drainedQueue.items.length) {
       await registerParticipant(config);
+      saveRuntimeState(runtimeStatePath, {
+        status: 'running',
+        sessionId: input.session_id || null,
+        turnId: null,
+        source: 'queued-context',
+        taskId: state.recentContext?.taskId || null,
+        threadId: state.recentContext?.threadId || null,
+        terminalApp: config.metadata?.terminalApp || null,
+        projectPath: config.metadata?.projectPath || null,
+        sessionHint: config.metadata?.sessionHint || null,
+        terminalTTY: config.metadata?.terminalTTY || null,
+        terminalSessionID: config.metadata?.terminalSessionID || null,
+        updatedAt: new Date().toISOString()
+      });
       const context = buildToolHookContext(drainedQueue.items, {
         participantId: config.participantId,
         sessionLabel: 'Claude Code session'
@@ -266,6 +292,20 @@ export async function runUserPromptSubmitHook(
     }
 
     await registerParticipant(config);
+    saveRuntimeState(runtimeStatePath, {
+      status: 'running',
+      sessionId: input.session_id || null,
+      turnId: null,
+      source: 'user-prompt-submit',
+      taskId: state.recentContext?.taskId || null,
+      threadId: state.recentContext?.threadId || null,
+      terminalApp: config.metadata?.terminalApp || null,
+      projectPath: config.metadata?.projectPath || null,
+      sessionHint: config.metadata?.sessionHint || null,
+      terminalTTY: config.metadata?.terminalTTY || null,
+      terminalSessionID: config.metadata?.terminalSessionID || null,
+      updatedAt: new Date().toISOString()
+    });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
 

@@ -7,6 +7,7 @@ import { syncAgentBridges as syncAgentBridgesDefault } from './bridge-install-sy
 import { createCodexResumeDiscoveryRuntime as createCodexResumeDiscoveryRuntimeDefault } from './codex-resume-discovery.js';
 import { createManagedChannelsRuntime } from './managed-channels.js';
 import { createChannelHealthRegistry } from './channel-health.js';
+import { refreshPersistedAgentSessions as refreshPersistedAgentSessionsDefault } from './persisted-agent-sessions.js';
 
 export async function startBrokerApp({
   cwd = process.cwd(),
@@ -17,7 +18,8 @@ export async function startBrokerApp({
   createHttpServer = createServer,
   createChannelsRuntime = createManagedChannelsRuntime,
   createCodexResumeDiscoveryRuntime = createCodexResumeDiscoveryRuntimeDefault,
-  syncAgentBridges = syncAgentBridgesDefault
+  syncAgentBridges = syncAgentBridgesDefault,
+  refreshPersistedAgentSessions = refreshPersistedAgentSessionsDefault
 } = {}) {
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
@@ -50,6 +52,12 @@ export async function startBrokerApp({
   broker.attachWebSocket(server.raw());
 
   const brokerUrl = `http://${config.server.host}:${server.address().port}`;
+  await refreshPersistedAgentSessions({
+    repoRoot: cwd,
+    brokerUrl,
+    env,
+    logger
+  });
   const channels = createChannelsRuntime({
     brokerUrl,
     channels: config.channels

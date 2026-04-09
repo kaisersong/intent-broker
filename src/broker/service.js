@@ -133,11 +133,133 @@ export function createBrokerService({
     return participantId.split(/[._-]/).find(Boolean) || 'participant';
   }
 
+  function hasNonEmptyMetadataValue(value) {
+    return !(value === null || value === undefined || (typeof value === 'string' && value.trim() === ''));
+  }
+
+  function normalizeParticipantMetadata(metadata, existingMetadata) {
+    const merged = metadata && typeof metadata === 'object'
+      ? { ...(existingMetadata || {}), ...metadata }
+      : { ...(existingMetadata || {}) };
+
+    for (const key of ['sessionHint', 'terminalTTY', 'terminalSessionID']) {
+      if (!hasNonEmptyMetadataValue(metadata?.[key]) && hasNonEmptyMetadataValue(existingMetadata?.[key])) {
+        merged[key] = existingMetadata[key];
+      }
+    }
+
+    return merged;
+  }
+
+  function normalizeComparableMetadataPath(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    return trimmed.length > 1 ? trimmed.replace(/\/+$/, '') : trimmed;
+  }
+
+  function sanitizeConflictingGhosttyLocator(participantId, metadata) {
+    if (metadata?.terminalApp !== 'Ghostty' || !hasNonEmptyMetadataValue(metadata?.terminalSessionID)) {
+      return metadata;
+    }
+
+    const incomingSessionId = String(metadata.terminalSessionID).trim();
+    const incomingTTY = hasNonEmptyMetadataValue(metadata.terminalTTY)
+      ? String(metadata.terminalTTY).trim()
+      : null;
+    const incomingProjectPath = normalizeComparableMetadataPath(metadata.projectPath);
+
+    for (const existing of participants.values()) {
+      if (existing.participantId === participantId) {
+        continue;
+      }
+
+      const existingMetadata = existing.metadata || {};
+      if (existingMetadata.terminalApp !== 'Ghostty') {
+        continue;
+      }
+
+      if (String(existingMetadata.terminalSessionID || '').trim() !== incomingSessionId) {
+        continue;
+      }
+
+      const existingTTY = hasNonEmptyMetadataValue(existingMetadata.terminalTTY)
+        ? String(existingMetadata.terminalTTY).trim()
+        : null;
+      const existingProjectPath = normalizeComparableMetadataPath(existingMetadata.projectPath);
+      const ttyConflict = incomingTTY && existingTTY && incomingTTY !== existingTTY;
+      const pathConflict = incomingProjectPath && existingProjectPath && incomingProjectPath !== existingProjectPath;
+
+      if (!ttyConflict && !pathConflict) {
+        continue;
+      }
+
+      const sanitized = {
+        ...metadata,
+        terminalSessionID: null
+      };
+
+      if (sanitized.sessionHint === incomingSessionId) {
+        sanitized.sessionHint = null;
+      }
+
+      return sanitized;
+    }
+
+    return metadata;
+  }
+
+  function alignGhosttySessionHint(metadata, alias) {
+    if (metadata?.terminalApp !== 'Ghostty') {
+      return metadata;
+    }
+
+    if (hasNonEmptyMetadataValue(metadata.terminalSessionID)) {
+      return metadata;
+    }
+
+    return {
+      ...metadata,
+      sessionHint: alias || null
+    };
+  }
+
   function releaseAlias(alias, participantId) {
     const key = aliasKey(alias);
     if (aliases.get(key) === participantId) {
       aliases.delete(key);
     }
+  }
+
+  function shouldPruneOfflineParticipant(participantId, metadata = {}) {
+    const participant = participants.get(participantId);
+    if (!participant || participant.kind !== 'agent') {
+      return false;
+    }
+
+    if (metadata?.transport === 'websocket') {
+      return false;
+    }
+
+    return metadata?.reason === 'timeout' || metadata?.reason === 'parent-exit';
+  }
+
+  function pruneParticipant(participantId) {
+    const participant = participants.get(participantId);
+    if (!participant) {
+      return false;
+    }
+
+    releaseAlias(participant.alias, participantId);
+    participants.delete(participantId);
+    workStates.delete(participantId);
+    return true;
   }
 
   function assignUniqueAlias(participantId, requestedAlias, currentAlias = null) {
@@ -288,6 +410,11 @@ export function createBrokerService({
     const previousStatus = status === 'offline' ? previousStoredStatus : previousEffectiveStatus;
     const next = presence.updatePresence(participantId, status, metadata);
     broadcastPresenceChange(participantId, next.status, previousStatus);
+
+    if (status === 'offline' && shouldPruneOfflineParticipant(participantId, metadata)) {
+      pruneParticipant(participantId);
+    }
+
     return next;
   }
 
@@ -353,21 +480,32 @@ export function createBrokerService({
     registerParticipant(participant) {
       const existing = participants.get(participant.participantId);
       const preferredAlias = existing?.alias || participant.alias;
+      const normalizedAlias = assignUniqueAlias(
+        participant.participantId,
+        deriveAliasBase({
+          ...participant,
+          alias: preferredAlias
+        }),
+        existing?.alias || null
+      );
       const normalized = {
         participantId: participant.participantId,
         kind: participant.kind,
         roles: participant.roles || [],
         capabilities: participant.capabilities || [],
-        alias: assignUniqueAlias(
-          participant.participantId,
-          deriveAliasBase({
-            ...participant,
-            alias: preferredAlias
-          }),
-          existing?.alias || null
-        ),
+        alias: normalizedAlias,
         inboxMode: participant.inboxMode ?? existing?.inboxMode ?? null,
-        context: participant.context || {}
+        context: participant.context || {},
+        metadata: alignGhosttySessionHint(
+          sanitizeConflictingGhosttyLocator(
+            participant.participantId,
+            normalizeParticipantMetadata(
+              participant.metadata,
+              existing?.metadata
+            )
+          ),
+          normalizedAlias
+        )
       };
       participants.set(normalized.participantId, normalized);
       setPresence(normalized.participantId, 'online', {
@@ -418,6 +556,7 @@ export function createBrokerService({
       const previousAlias = participant.alias;
       const nextAlias = assignUniqueAlias(participantId, requestedAlias, previousAlias);
       participant.alias = nextAlias;
+      participant.metadata = alignGhosttySessionHint(participant.metadata, nextAlias);
 
       if (previousAlias !== nextAlias) {
         sendIntentInternal({

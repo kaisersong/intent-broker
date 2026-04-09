@@ -21,7 +21,7 @@ import {
   buildAutomaticWorkState,
   pickActiveWorkContext
 } from './automatic-work-state.js';
-import { deriveSessionBridgeConfig } from './config.js';
+import { applyRuntimeMetadataToConfig, deriveSessionBridgeConfig } from './config.js';
 import {
   buildClaudeAutoContinuePrompt,
   buildCodexAutoContinuePrompt,
@@ -604,7 +604,11 @@ export async function runRealtimeBridgeProcess({
     throw new Error('toolName is required');
   }
 
-  const config = deriveSessionBridgeConfig({ toolName, env, cwd });
+  const baseConfig = deriveSessionBridgeConfig({ toolName, env, cwd });
+  const config = applyRuntimeMetadataToConfig(
+    baseConfig,
+    loadRuntimeStateDefault(resolveRuntimeStatePath(toolName, baseConfig.participantId, { homeDir: os.homedir() }))
+  );
   const resolvedQueueStatePath = queueStatePath
     || resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir: os.homedir() });
   const cursorStatePath = resolveParticipantStatePath(toolName, config.participantId, { homeDir: os.homedir() });

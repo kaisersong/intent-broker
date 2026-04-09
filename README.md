@@ -65,6 +65,15 @@ Tasks, threads, approvals, delivery state should all survive broker restarts, se
 
 Codex, Claude Code should keep native experience. Broker integrates via hooks, skills, adapters, and local bridges — not by wrapping the tool in a new shell.
 
+### Terminal Jump Contract
+
+The broker-side terminal locator contract lives in [TERMINAL_JUMP.md](TERMINAL_JUMP.md).
+
+- Ghostty exact jump metadata must come from `terminalSessionID`
+- Terminal.app exact jump metadata must come from `terminalTTY`
+- `sessionHint` is compatibility metadata, not the Ghostty primary key
+- If metadata conflicts across `projectPath` or `terminalTTY`, degrade instead of jumping to the wrong terminal
+
 ---
 
 ## Install

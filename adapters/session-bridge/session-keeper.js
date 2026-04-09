@@ -3,12 +3,13 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { resolveToolStateRoot } from '../hook-installer-core/state-paths.js';
+import { resolveRuntimeStatePath, resolveToolStateRoot } from '../hook-installer-core/state-paths.js';
 import {
   registerParticipant as registerParticipantDefault,
   updatePresence as updatePresenceDefault
 } from './api.js';
-import { deriveSessionBridgeConfig } from './config.js';
+import { applyRuntimeMetadataToConfig, deriveSessionBridgeConfig } from './config.js';
+import { loadRuntimeState } from './runtime-state.js';
 
 const DEFAULT_INTERVAL_MS = 30000;
 const SHELL_PROCESS_NAMES = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'ksh']);
@@ -236,7 +237,9 @@ export async function runSessionKeeperProcess({
     throw new Error('toolName is required');
   }
 
-  const config = deriveSessionBridgeConfig({ toolName, env, cwd });
+  const baseConfig = deriveSessionBridgeConfig({ toolName, env, cwd });
+  const runtimeStatePath = resolveRuntimeStatePath(toolName, baseConfig.participantId, { homeDir: os.homedir() });
+  const config = applyRuntimeMetadataToConfig(baseConfig, loadRuntimeState(runtimeStatePath));
   if (statePath) {
     mkdirSync(path.dirname(statePath), { recursive: true });
     const desiredInboxMode = config.inboxMode || 'pull';

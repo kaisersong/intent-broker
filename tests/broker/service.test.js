@@ -213,13 +213,29 @@ test('updateParticipantAlias reassigns alias and broadcasts a broker event to ot
   const broker = createBrokerService({ dbPath: createTempDbPath() });
 
   broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex' });
-  broker.registerParticipant({ participantId: 'claude.b', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'claude' });
+  broker.registerParticipant({
+    participantId: 'claude.b',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'claude',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: null,
+      projectPath: '/Users/song/projects/xiaok-cli'
+    }
+  });
 
   const updated = broker.updateParticipantAlias('claude.b', 'reviewer');
   const codexInbox = broker.readInbox('codex.a', { after: 0 });
   const aliasEvents = codexInbox.items.filter((item) => item.kind === 'participant_alias_updated');
 
   assert.equal(updated.alias, 'reviewer');
+  assert.deepEqual(updated.metadata, {
+    terminalApp: 'Ghostty',
+    sessionHint: 'reviewer',
+    projectPath: '/Users/song/projects/xiaok-cli'
+  });
   assert.equal(aliasEvents.length, 1);
   assert.equal(aliasEvents[0].payload.previousAlias, 'claude');
   assert.equal(aliasEvents[0].payload.alias, 'reviewer');
@@ -252,6 +268,149 @@ test('registerParticipant preserves a remotely updated alias across later re-reg
     broker.resolveParticipantsByAliases(['codex4']).participants.map((participant) => participant.participantId),
     ['codex.session-1']
   );
+});
+
+test('registerParticipant aligns Ghostty session hints to the final assigned alias', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  const participant = broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: null,
+      projectPath: '/Users/song/projects/hexdeck'
+    }
+  });
+
+  assert.deepEqual(participant.metadata, {
+    terminalApp: 'Ghostty',
+    sessionHint: 'codex',
+    projectPath: '/Users/song/projects/hexdeck'
+  });
+  assert.deepEqual(broker.listParticipants()[0].metadata, {
+    terminalApp: 'Ghostty',
+    sessionHint: 'codex',
+    projectPath: '/Users/song/projects/hexdeck'
+  });
+});
+
+test('registerParticipant rewrites Ghostty session hints after alias collisions', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: 'codex',
+      projectPath: '/Users/song/projects'
+    }
+  });
+
+  const second = broker.registerParticipant({
+    participantId: 'codex.session-2',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: 'codex',
+      projectPath: '/Users/song/projects/hexdeck'
+    }
+  });
+
+  assert.equal(second.alias, 'codex2');
+  assert.deepEqual(second.metadata, {
+    terminalApp: 'Ghostty',
+    sessionHint: 'codex2',
+    projectPath: '/Users/song/projects/hexdeck'
+  });
+});
+
+test('registerParticipant refreshes metadata on later re-registration', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: null,
+      projectPath: '/Users/song/projects/hexdeck'
+    }
+  });
+
+  const participant = broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    metadata: {
+      terminalApp: 'Terminal.app',
+      sessionHint: null,
+      projectPath: '/Users/song/projects/intent-broker'
+    }
+  });
+
+  assert.deepEqual(participant.metadata, {
+    terminalApp: 'Terminal.app',
+    sessionHint: null,
+    projectPath: '/Users/song/projects/intent-broker'
+  });
+});
+
+test('registerParticipant clears conflicting Ghostty session ids when tty and project disagree', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'claude.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'claude',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: 'ghostty-1',
+      terminalTTY: '/dev/ttys007',
+      terminalSessionID: 'ghostty-1',
+      projectPath: '/Users/song/projects/xiaok-cli'
+    }
+  });
+
+  const participant = broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: 'ghostty-1',
+      terminalTTY: '/dev/ttys003',
+      terminalSessionID: 'ghostty-1',
+      projectPath: '/Users/song/projects/hexdeck'
+    }
+  });
+
+  assert.deepEqual(participant.metadata, {
+    terminalApp: 'Ghostty',
+    sessionHint: 'codex',
+    terminalTTY: '/dev/ttys003',
+    terminalSessionID: null,
+    projectPath: '/Users/song/projects/hexdeck'
+  });
 });
 
 test('sendIntent annotates delivery semantics based on sender kind and intent kind', () => {
@@ -583,6 +742,41 @@ test('presence sweep marks stale hook-only sessions offline and broadcasts the c
   const events = broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_presence_updated');
   assert.equal(events[0].payload.status, 'online');
   assert.equal(events[1].payload.status, 'offline');
+  assert.equal(broker.listParticipants().some((item) => item.participantId === 'claude.session-1'), false);
+});
+
+test('parent-exit offline updates prune stale agent registrations from the roster', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath(), presenceSweepIntervalMs: 0 });
+
+  broker.registerParticipant({
+    participantId: 'codex.session-stale',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex'
+  });
+
+  broker.updatePresence('codex.session-stale', 'offline', { reason: 'parent-exit' });
+
+  assert.equal(broker.getPresence('codex.session-stale')?.status, 'offline');
+  assert.equal(broker.listParticipants().some((item) => item.participantId === 'codex.session-stale'), false);
+});
+
+test('manual offline updates keep the participant in the roster', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath(), presenceSweepIntervalMs: 0 });
+
+  broker.registerParticipant({
+    participantId: 'codex.session-manual',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex'
+  });
+
+  broker.updatePresence('codex.session-manual', 'offline', { reason: 'test' });
+
+  assert.equal(broker.getPresence('codex.session-manual')?.status, 'offline');
+  assert.equal(broker.listParticipants().some((item) => item.participantId === 'codex.session-manual'), true);
 });
 
 test('getProjectSnapshot aggregates project roster, counts, and recent events', () => {

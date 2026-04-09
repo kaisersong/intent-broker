@@ -38,7 +38,12 @@ test('registerParticipant posts participant metadata to broker', async () => {
       roles: ['coder'],
       capabilities: ['backend.node'],
       alias: 'codex',
-      context: { projectName: 'intent-broker' }
+      context: { projectName: 'intent-broker' },
+      metadata: {
+        terminalApp: 'Ghostty',
+        sessionHint: null,
+        projectPath: '/Users/song/projects/intent-broker'
+      }
     },
     fetchStub
   );
@@ -52,6 +57,11 @@ test('registerParticipant posts participant metadata to broker', async () => {
     capabilities: ['backend.node'],
     alias: 'codex',
     context: { projectName: 'intent-broker' },
+    metadata: {
+      terminalApp: 'Ghostty',
+      sessionHint: null,
+      projectPath: '/Users/song/projects/intent-broker'
+    },
     inboxMode: 'pull'
   });
 });

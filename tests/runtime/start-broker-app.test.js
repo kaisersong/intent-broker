@@ -65,16 +65,21 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     syncAgentBridges: async (options) => {
       order.push(`sync:${options.repoRoot}`);
       return [];
+    },
+    refreshPersistedAgentSessions: async (options) => {
+      order.push(`refresh:${options.repoRoot}`);
+      return [];
     }
   });
 
-  assert.deepEqual(order.slice(0, 4), [
+  assert.deepEqual(order.slice(0, 5), [
     'sync:/Users/song/projects/intent-broker',
     'listen',
     'attach-ws',
+    'refresh:/Users/song/projects/intent-broker',
     'channels-start'
   ]);
-  assert.equal(order[4], 'discovery-start');
+  assert.equal(order[5], 'discovery-start');
 
   await app.close();
 

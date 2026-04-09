@@ -65,6 +65,15 @@ Broker 负责：
 
 Codex、Claude Code 这类工具应保留原生体验。broker 通过 hooks、skills、adapters 和本地 bridge 接入，而不是强包一层壳。
 
+### 终端跳转契约
+
+broker 侧的终端定位契约记录在 [TERMINAL_JUMP.md](TERMINAL_JUMP.md)。
+
+- Ghostty 的精确跳转元数据必须来自 `terminalSessionID`
+- Terminal.app 的精确跳转元数据必须来自 `terminalTTY`
+- `sessionHint` 只是兼容字段，不能当 Ghostty 主键
+- 当 `projectPath` 或 `terminalTTY` 冲突时，应降级而不是跳错终端
+
 ---
 
 ## 安装

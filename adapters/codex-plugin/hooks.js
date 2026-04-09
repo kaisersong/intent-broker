@@ -19,6 +19,7 @@ import {
 } from '../session-bridge/codex-hooks.js';
 import {
   deriveSessionBridgeConfig,
+  enrichConfigWithFocusedTerminalLocator,
   resolveSessionCwdFromTranscript as resolveSessionCwdFromTranscriptDefault
 } from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
@@ -132,7 +133,9 @@ export async function runSessionStartHook(
   }
 
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+    const config = enrichConfigWithFocusedTerminalLocator(
+      configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript })
+    );
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
     const state = loadCursorState(statePath);
@@ -167,6 +170,11 @@ export async function runSessionStartHook(
       taskId: state.recentContext?.taskId || null,
       threadId: state.recentContext?.threadId || null,
       alias: registration?.alias || null,
+      terminalApp: config.metadata?.terminalApp || null,
+      projectPath: config.metadata?.projectPath || null,
+      sessionHint: config.metadata?.sessionHint || null,
+      terminalTTY: config.metadata?.terminalTTY || null,
+      terminalSessionID: config.metadata?.terminalSessionID || null,
       updatedAt: new Date().toISOString()
     });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
@@ -209,7 +217,9 @@ export async function runUserPromptSubmitHook(
   }
 
   return safelyRunHook(async () => {
-    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+    const config = enrichConfigWithFocusedTerminalLocator(
+      configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript })
+    );
     const statePath = cursorPathForParticipant(config.participantId, homeDir);
     const queueStatePath = queuePathForParticipant(config.participantId, homeDir);
     const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
@@ -262,6 +272,11 @@ export async function runUserPromptSubmitHook(
         source: 'queued-context',
         taskId: activeContext?.taskId || null,
         threadId: activeContext?.threadId || null,
+        terminalApp: config.metadata?.terminalApp || null,
+        projectPath: config.metadata?.projectPath || null,
+        sessionHint: config.metadata?.sessionHint || null,
+        terminalTTY: config.metadata?.terminalTTY || null,
+        terminalSessionID: config.metadata?.terminalSessionID || null,
         updatedAt: new Date().toISOString()
       });
       await updateWorkState(
@@ -293,6 +308,11 @@ export async function runUserPromptSubmitHook(
       source: 'user-prompt-submit',
       taskId: activeContext?.taskId || null,
       threadId: activeContext?.threadId || null,
+      terminalApp: config.metadata?.terminalApp || null,
+      projectPath: config.metadata?.projectPath || null,
+      sessionHint: config.metadata?.sessionHint || null,
+      terminalTTY: config.metadata?.terminalTTY || null,
+      terminalSessionID: config.metadata?.terminalSessionID || null,
       updatedAt: new Date().toISOString()
     });
     await updateWorkState(

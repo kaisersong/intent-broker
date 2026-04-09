@@ -18,6 +18,11 @@ export function createRuntimeState() {
     taskId: null,
     threadId: null,
     alias: null,
+    terminalApp: null,
+    projectPath: null,
+    sessionHint: null,
+    terminalTTY: null,
+    terminalSessionID: null,
     updatedAt: null
   };
 }
@@ -31,6 +36,11 @@ function normalizeRuntimeState(state) {
     taskId: normalizeOptionalString(state?.taskId),
     threadId: normalizeOptionalString(state?.threadId),
     alias: normalizeOptionalString(state?.alias),
+    terminalApp: normalizeOptionalString(state?.terminalApp),
+    projectPath: normalizeOptionalString(state?.projectPath),
+    sessionHint: normalizeOptionalString(state?.sessionHint),
+    terminalTTY: normalizeOptionalString(state?.terminalTTY),
+    terminalSessionID: normalizeOptionalString(state?.terminalSessionID),
     updatedAt: normalizeOptionalString(state?.updatedAt)
   };
 }
@@ -45,5 +55,8 @@ export function loadRuntimeState(statePath) {
 
 export function saveRuntimeState(statePath, state) {
   mkdirSync(path.dirname(statePath), { recursive: true });
-  writeFileSync(statePath, JSON.stringify(normalizeRuntimeState(state), null, 2));
+  writeFileSync(
+    statePath,
+    JSON.stringify(normalizeRuntimeState({ ...loadRuntimeState(statePath), ...state }), null, 2)
+  );
 }

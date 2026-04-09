@@ -121,6 +121,7 @@ export async function registerParticipant(config, fetchImpl = fetch) {
       capabilities: config.capabilities,
       alias: config.alias,
       context: config.context || {},
+      metadata: config.metadata || {},
       inboxMode: config.inboxMode ?? 'pull'
     })
   }, { fetchImpl });
