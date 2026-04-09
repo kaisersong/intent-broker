@@ -1,5 +1,5 @@
 import { execFileSync, spawn as spawnDefault } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -87,6 +87,56 @@ function removeKeeperState(statePath) {
   rmSync(statePath, { force: true });
 }
 
+function listSiblingKeeperStatePaths(toolName, currentStatePath, { homeDir = os.homedir() } = {}) {
+  const stateRoot = resolveToolStateRoot(toolName, { homeDir });
+
+  try {
+    return readdirSync(stateRoot)
+      .filter((name) => name.endsWith('.keeper.json'))
+      .map((name) => path.join(stateRoot, name))
+      .filter((candidatePath) => candidatePath !== currentStatePath);
+  } catch {
+    return [];
+  }
+}
+
+function pruneSiblingKeepersForParentPid({
+  toolName,
+  homeDir = os.homedir(),
+  statePath,
+  parentPid,
+  killImpl,
+  isProcessAlive: isProcessAliveImpl
+} = {}) {
+  const normalizedParentPid = normalizePid(parentPid);
+  if (!normalizedParentPid) {
+    return [];
+  }
+
+  const removed = [];
+
+  for (const siblingStatePath of listSiblingKeeperStatePaths(toolName, statePath, { homeDir })) {
+    const sibling = readKeeperState(siblingStatePath);
+    if (normalizePid(sibling?.parentPid) !== normalizedParentPid) {
+      continue;
+    }
+
+    const siblingPid = normalizePid(sibling?.pid);
+    if (siblingPid && isProcessAliveImpl(siblingPid)) {
+      try {
+        killImpl(siblingPid);
+      } catch {
+        // best effort only
+      }
+    }
+
+    removeKeeperState(siblingStatePath);
+    removed.push({ statePath: siblingStatePath, pid: siblingPid });
+  }
+
+  return removed;
+}
+
 export async function ensureSessionKeeper({
   toolName,
   cliPath,
@@ -148,6 +198,15 @@ export async function ensureSessionKeeper({
   if (existing?.pid && !isProcessAliveImpl(existing.pid)) {
     removeKeeperState(statePath);
   }
+
+  pruneSiblingKeepersForParentPid({
+    toolName,
+    homeDir,
+    statePath,
+    parentPid: normalizedParentPid,
+    killImpl,
+    isProcessAlive: isProcessAliveImpl
+  });
 
   const child = spawnImpl(nodePath, [cliPath, 'keepalive'], {
     cwd,

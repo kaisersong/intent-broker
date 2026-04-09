@@ -15,6 +15,7 @@ This document is the producer-side contract for terminal jump metadata emitted b
 - Ghostty may consult the focused-terminal locator only when the focused terminal still matches the session's `projectPath`.
 - If the focused Ghostty terminal belongs to another project, drop the exact `terminalSessionID` instead of binding the wrong one.
 - Runtime state should persist terminal metadata so keepalive and realtime bridges can re-register the same session after broker restart.
+- Session sidecars are keyed by the observed terminal parent process. For a given tool and `parentPid`, only one keepalive process and one realtime bridge should remain live; a new session on the same terminal must evict older sibling sidecars.
 
 ## Broker Rules
 

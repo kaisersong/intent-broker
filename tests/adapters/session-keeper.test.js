@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -221,6 +221,64 @@ test('ensureSessionKeeper replaces a live keeper when the same session resumes u
   assert.equal(replaced.started, true);
   assert.deepEqual(kills, [5151]);
   assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 6161);
+});
+
+test('ensureSessionKeeper removes sibling keepers that share the same observed parent pid', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-'));
+  const kills = [];
+
+  const previous = await ensureSessionKeeper({
+    toolName: 'claude-code',
+    cliPath: '/repo/adapters/claude-code-plugin/bin/claude-code-broker.js',
+    sessionId: '45ba7f3d-eae1-4e6d-af25-7113e006bd26',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 5206,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'claude-code-session-45ba7f3d',
+      alias: 'claude6',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'xiaok-cli' }
+    },
+    spawnImpl: () => ({
+      pid: 5151,
+      unref() {}
+    })
+  });
+
+  const replacement = await ensureSessionKeeper({
+    toolName: 'claude-code',
+    cliPath: '/repo/adapters/claude-code-plugin/bin/claude-code-broker.js',
+    sessionId: 'e0f24251-271d-4d49-9f0c-c7768c91a7dd',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 5206,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'claude-code-session-e0f24251',
+      alias: 'claude4',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'xiaok-cli' }
+    },
+    isProcessAlive: () => true,
+    killImpl: (pid) => {
+      kills.push(pid);
+    },
+    spawnImpl: () => ({
+      pid: 6161,
+      unref() {}
+    })
+  });
+
+  assert.equal(replacement.started, true);
+  assert.deepEqual(kills, [5151]);
+  assert.equal(existsSync(previous.statePath), false);
+  assert.equal(JSON.parse(readFileSync(replacement.statePath, 'utf8')).pid, 6161);
 });
 
 test('ensureSessionKeeper replaces a live keeper when persisted state predates brokerUrl tracking', async () => {

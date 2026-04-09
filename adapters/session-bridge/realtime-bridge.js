@@ -1,5 +1,5 @@
 import { execFile as execFileCallback, spawn as spawnDefault } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -7,6 +7,7 @@ import WebSocket from 'ws';
 
 import {
   resolveParticipantStatePath,
+  resolveToolStateRoot,
   resolveRealtimeBridgeStatePath,
   resolveRealtimeQueueStatePath,
   resolveRuntimeStatePath
@@ -64,6 +65,56 @@ function readProcessState(statePath) {
 
 function removeProcessState(statePath) {
   rmSync(statePath, { force: true });
+}
+
+function listSiblingBridgeStatePaths(toolName, currentStatePath, { homeDir = os.homedir() } = {}) {
+  const stateRoot = resolveToolStateRoot(toolName, { homeDir });
+
+  try {
+    return readdirSync(stateRoot)
+      .filter((name) => name.endsWith('.bridge.json'))
+      .map((name) => path.join(stateRoot, name))
+      .filter((candidatePath) => candidatePath !== currentStatePath);
+  } catch {
+    return [];
+  }
+}
+
+function pruneSiblingRealtimeBridgesForParentPid({
+  toolName,
+  homeDir = os.homedir(),
+  statePath,
+  parentPid,
+  killImpl,
+  isProcessAlive: isProcessAliveImpl
+} = {}) {
+  const normalizedParentPid = normalizePid(parentPid);
+  if (!normalizedParentPid) {
+    return [];
+  }
+
+  const removed = [];
+
+  for (const siblingStatePath of listSiblingBridgeStatePaths(toolName, statePath, { homeDir })) {
+    const sibling = readProcessState(siblingStatePath);
+    if (normalizePid(sibling?.parentPid) !== normalizedParentPid) {
+      continue;
+    }
+
+    const siblingPid = normalizePid(sibling?.pid);
+    if (siblingPid && isProcessAliveImpl(siblingPid)) {
+      try {
+        killImpl(siblingPid);
+      } catch {
+        // best effort only
+      }
+    }
+
+    removeProcessState(siblingStatePath);
+    removed.push({ statePath: siblingStatePath, pid: siblingPid });
+  }
+
+  return removed;
 }
 
 function normalizeQueueState(state) {
@@ -447,6 +498,15 @@ export async function ensureRealtimeBridge({
   if (existing?.pid && !isProcessAliveImpl(existing.pid)) {
     removeProcessState(statePath);
   }
+
+  pruneSiblingRealtimeBridgesForParentPid({
+    toolName,
+    homeDir,
+    statePath,
+    parentPid: normalizedParentPid,
+    killImpl,
+    isProcessAlive: isProcessAliveImpl
+  });
 
   const child = spawnImpl(nodePath, [cliPath, 'realtime-bridge'], {
     cwd,
