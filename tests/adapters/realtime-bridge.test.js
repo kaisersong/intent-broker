@@ -11,6 +11,7 @@ import {
   ensureRealtimeBridge,
   loadRealtimeQueueState,
   maybeAutoDispatchRealtimeQueue,
+  runRealtimeBridgeProcess,
   saveRealtimeQueueState
 } from '../../adapters/session-bridge/realtime-bridge.js';
 
@@ -777,4 +778,54 @@ test('ensureRealtimeBridge replaces a live bridge when persisted state predates 
     queueStatePath: JSON.parse(readFileSync(replaced.statePath, 'utf8')).queueStatePath,
     startedAt: JSON.parse(readFileSync(replaced.statePath, 'utf8')).startedAt
   });
+});
+
+test('runRealtimeBridgeProcess starts the Codex native approval watcher when transcript and terminal metadata are available', async () => {
+  const watcherCalls = [];
+  let stopped = false;
+
+  await runRealtimeBridgeProcess({
+    toolName: 'codex',
+    cwd: '/Users/song/projects/hexdeck',
+    env: {
+      PARTICIPANT_ID: 'codex-session-019d4489',
+      ALIAS: 'codex',
+      PROJECT_NAME: 'hexdeck',
+      BROKER_URL: 'http://127.0.0.1:4318',
+      INTENT_BROKER_REALTIME_SESSION_ID: '019d4489-1234-5678-9999-bbbbbbbbbbbb'
+    },
+    parentPid: 4242,
+    statePath: null,
+    queueStatePath: '/tmp/codex-native-approval-queue.json',
+    loadRuntimeState: () => ({
+      status: 'idle',
+      sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      terminalApp: 'Ghostty',
+      terminalSessionID: 'ghostty-terminal-1'
+    }),
+    loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+    saveRealtimeQueueState: () => {},
+    registerParticipant: async () => ({ ok: true }),
+    ackInbox: async () => ({ ok: true }),
+    spawnImpl: () => ({ pid: 5151, unref() {} }),
+    isProcessAlive: () => false,
+    resolveTranscriptPath: () => '/Users/song/.codex/sessions/run.jsonl',
+    startCodexNativeApprovalWatcher: (input) => {
+      watcherCalls.push(input);
+      return {
+        stop() {
+          stopped = true;
+        },
+        done: Promise.resolve()
+      };
+    },
+    sleepImpl: async () => {}
+  });
+
+  assert.equal(watcherCalls.length, 1);
+  assert.equal(watcherCalls[0].sessionId, '019d4489-1234-5678-9999-bbbbbbbbbbbb');
+  assert.equal(watcherCalls[0].transcriptPath, '/Users/song/.codex/sessions/run.jsonl');
+  assert.equal(watcherCalls[0].config.participantId, 'codex-session-019d4489');
+  assert.equal(watcherCalls[0].terminalMetadata.terminalSessionID, 'ghostty-terminal-1');
+  assert.equal(stopped, true);
 });

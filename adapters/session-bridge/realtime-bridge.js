@@ -24,13 +24,19 @@ import {
 } from './automatic-work-state.js';
 import { applyRuntimeMetadataToConfig, deriveSessionBridgeConfig } from './config.js';
 import {
+  startCodexNativeApprovalWatcher as startCodexNativeApprovalWatcherDefault
+} from './codex-native-approval.js';
+import {
   buildClaudeAutoContinuePrompt,
   buildCodexAutoContinuePrompt,
   buildXiaokAutoContinuePrompt,
   highestEventId
 } from './codex-hooks.js';
 import { pickRecentContext } from './recent-context.js';
-import { markPendingReplyMirror as markPendingReplyMirrorDefault } from './reply-mirror.js';
+import {
+  markPendingReplyMirror as markPendingReplyMirrorDefault,
+  resolveTranscriptPath as resolveTranscriptPathDefault
+} from './reply-mirror.js';
 import { isProcessAlive } from './session-keeper.js';
 import {
   loadCursorState as loadCursorStateDefault,
@@ -658,6 +664,8 @@ export async function runRealtimeBridgeProcess({
   saveCursorState = saveCursorStateDefault,
   loadRuntimeState = loadRuntimeStateDefault,
   saveRuntimeState = saveRuntimeStateDefault,
+  resolveTranscriptPath = resolveTranscriptPathDefault,
+  startCodexNativeApprovalWatcher = startCodexNativeApprovalWatcherDefault,
   sleepImpl = sleep
 } = {}) {
   if (!toolName) {
@@ -665,14 +673,33 @@ export async function runRealtimeBridgeProcess({
   }
 
   const baseConfig = deriveSessionBridgeConfig({ toolName, env, cwd });
+  const runtimeStateForConfig = loadRuntimeState(
+    resolveRuntimeStatePath(toolName, baseConfig.participantId, { homeDir: os.homedir() })
+  );
   const config = applyRuntimeMetadataToConfig(
     baseConfig,
-    loadRuntimeStateDefault(resolveRuntimeStatePath(toolName, baseConfig.participantId, { homeDir: os.homedir() }))
+    runtimeStateForConfig
   );
+  const sessionId = env.INTENT_BROKER_REALTIME_SESSION_ID || '';
   const resolvedQueueStatePath = queueStatePath
     || resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir: os.homedir() });
   const cursorStatePath = resolveParticipantStatePath(toolName, config.participantId, { homeDir: os.homedir() });
   const runtimeStatePath = resolveRuntimeStatePath(toolName, config.participantId, { homeDir: os.homedir() });
+  const codexNativeApprovalTranscriptPath = toolName === 'codex'
+    ? resolveTranscriptPath('codex', sessionId, { homeDir: os.homedir() })
+    : null;
+  const codexNativeApprovalWatcher = toolName === 'codex'
+    && env.INTENT_BROKER_DISABLE_CODEX_NATIVE_APPROVALS !== '1'
+    && codexNativeApprovalTranscriptPath
+    && config.metadata?.terminalSessionID
+    ? startCodexNativeApprovalWatcher({
+      config,
+      sessionId,
+      transcriptPath: codexNativeApprovalTranscriptPath,
+      cwd,
+      terminalMetadata: config.metadata
+    })
+    : null;
 
   saveRealtimeQueueState(resolvedQueueStatePath, loadRealtimeQueueState(resolvedQueueStatePath));
   await maybeAutoDispatchRealtimeQueue({
@@ -738,6 +765,7 @@ export async function runRealtimeBridgeProcess({
       await sleepImpl(retryMs);
     }
   } finally {
+    codexNativeApprovalWatcher?.stop();
     if (statePath) {
       const current = readProcessState(statePath);
       if (current?.pid === process.pid) {
