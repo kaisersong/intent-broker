@@ -126,8 +126,8 @@ function parseInstallOptions(args = []) {
 
 async function install(args = []) {
   const options = parseInstallOptions(args);
-  const result = ensureClaudeCodeInstall({ cwd: process.cwd(), verbose: options.verbose });
-  const paths = defaultInstallPaths({ cwd: process.cwd() });
+  const result = ensureClaudeCodeInstall({ cwd: process.cwd(), repoRoot, verbose: options.verbose });
+  const paths = defaultInstallPaths({ cwd: process.cwd(), repoRoot });
   ensureCommandShim(paths.commandShimPath, buildCommandShimContent({ cliPath: paths.unifiedCliPath }));
 
   console.log(

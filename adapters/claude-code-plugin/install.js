@@ -24,12 +24,12 @@ function buildManagedCommandMatcher(scriptName, hookMode) {
   return (command = '') => command.includes(scriptName) && command.includes(`hook ${hookMode}`);
 }
 
-export function defaultInstallPaths({ cwd = process.cwd(), homeDir = os.homedir() } = {}) {
+export function defaultInstallPaths({ cwd = process.cwd(), repoRoot = cwd, homeDir = os.homedir() } = {}) {
   return {
     settingsPath: path.join(cwd, '.claude', 'settings.json'),
     stateRoot: resolveToolStateRoot('claude-code', { homeDir }),
     commandShimPath: defaultCommandShimPath({ homeDir }),
-    unifiedCliPath: path.join(cwd, 'bin', 'intent-broker.js')
+    unifiedCliPath: path.join(repoRoot, 'bin', 'intent-broker.js')
   };
 }
 
@@ -92,9 +92,9 @@ function hasVisibleManagedHookEntries(config = {}) {
     .some((entry) => Object.values(managedHookStatusMessages).includes(entry?.statusMessage));
 }
 
-function buildClaudeCodeInstallArtifacts({ cwd = process.cwd(), homeDir = os.homedir(), verbose } = {}) {
-  const paths = defaultInstallPaths({ cwd, homeDir });
-  const cliPath = path.join(cwd, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js');
+function buildClaudeCodeInstallArtifacts({ cwd = process.cwd(), repoRoot = cwd, homeDir = os.homedir(), verbose } = {}) {
+  const paths = defaultInstallPaths({ cwd, repoRoot, homeDir });
+  const cliPath = path.join(repoRoot, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js');
   const existingSettings = readClaudeSettings(paths.settingsPath);
   const effectiveVerbose = verbose ?? hasVisibleManagedHookEntries(existingSettings);
   const desiredSettings = mergeIntentBrokerHooks(

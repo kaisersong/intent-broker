@@ -34,6 +34,20 @@ test('defaultInstallPaths targets project .claude settings and claude state root
   assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
+test('defaultInstallPaths can install project settings while pointing commands at packaged broker root', () => {
+  const paths = defaultInstallPaths({
+    cwd: '/Users/song/projects/app',
+    repoRoot: '/Users/song/Library/Application Support/com.hexdeck.app/kernel/intent-broker-0.2.2',
+    homeDir: '/Users/song'
+  });
+
+  assert.equal(paths.settingsPath, path.join('/Users/song/projects/app', '.claude', 'settings.json'));
+  assert.equal(
+    paths.unifiedCliPath,
+    path.join('/Users/song/Library/Application Support/com.hexdeck.app/kernel/intent-broker-0.2.2', 'bin', 'intent-broker.js')
+  );
+});
+
 test('mergeIntentBrokerHooks adds session start, user prompt submit, and stop hooks', () => {
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
@@ -179,23 +193,26 @@ test('readClaudeSettings and writeClaudeSettings round-trip JSON config', () => 
 });
 
 test('ensureClaudeCodeInstall writes missing managed files and becomes stable on rerun', () => {
-  const cwd = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-repo-'));
+  const cwd = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-project-'));
+  const repoRoot = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-repo-'));
   const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-claude-home-'));
 
   try {
-    const first = ensureClaudeCodeInstall({ cwd, homeDir });
+    const first = ensureClaudeCodeInstall({ cwd, repoRoot, homeDir });
     assert.equal(first.changed, true);
     assert.deepEqual(first.updated.sort(), ['command-shim', 'settings']);
 
-    const paths = defaultInstallPaths({ cwd, homeDir });
+    const paths = defaultInstallPaths({ cwd, repoRoot, homeDir });
     assert.match(readFileSync(paths.settingsPath, 'utf8'), /hook stop/);
+    assert.match(readFileSync(paths.settingsPath, 'utf8'), new RegExp(`${repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/adapters\\/claude-code-plugin\\/bin\\/claude-code-broker\\.js`));
     assert.match(readFileSync(paths.commandShimPath, 'utf8'), /bin\/intent-broker\.js/);
 
-    const second = ensureClaudeCodeInstall({ cwd, homeDir });
+    const second = ensureClaudeCodeInstall({ cwd, repoRoot, homeDir });
     assert.equal(second.changed, false);
     assert.deepEqual(second.updated, []);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(repoRoot, { recursive: true, force: true });
     rmSync(homeDir, { recursive: true, force: true });
   }
 });
