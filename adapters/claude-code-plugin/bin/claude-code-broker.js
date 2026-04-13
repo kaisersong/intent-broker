@@ -22,6 +22,7 @@ import {
 } from '../../session-bridge/command-runner.js';
 import { runCliMain } from '../../session-bridge/cli-errors.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
+import { buildClaudePermissionRequestOutput } from '../../session-bridge/hook-approval.js';
 import { loadRuntimeState } from '../../session-bridge/runtime-state.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
@@ -36,7 +37,7 @@ import {
   readClaudeSettings,
   writeClaudeSettings
 } from '../install.js';
-import { runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
+import { runPermissionRequestHook, runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -60,6 +61,7 @@ function usage() {
   node adapters/claude-code-plugin/bin/claude-code-broker.js realtime-bridge
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook session-start
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook user-prompt-submit
+  node adapters/claude-code-plugin/bin/claude-code-broker.js hook permission-request
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook stop`);
 }
 
@@ -102,6 +104,13 @@ async function handleUserPromptSubmitHook() {
   }
 
   process.stdout.write(JSON.stringify(buildClaudeCodeHookOutput('UserPromptSubmit', context)));
+}
+
+async function handlePermissionRequestHook() {
+  const input = await readJsonStdin();
+  const result = await runPermissionRequestHook(input);
+
+  process.stdout.write(JSON.stringify(buildClaudePermissionRequestOutput(result)));
 }
 
 async function handleStopHook() {
@@ -316,6 +325,10 @@ async function main() {
       }
       if (args[0] === 'user-prompt-submit') {
         await handleUserPromptSubmitHook();
+        break;
+      }
+      if (args[0] === 'permission-request') {
+        await handlePermissionRequestHook();
         break;
       }
       if (args[0] === 'stop') {

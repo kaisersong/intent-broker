@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { buildClaudeCodeHookOutput } from '../../adapters/claude-code-plugin/format.js';
 import {
+  runPermissionRequestHook,
   runStopHook,
   runSessionStartHook,
   runUserPromptSubmitHook
@@ -17,6 +18,39 @@ test('buildClaudeCodeHookOutput wraps additional context for SessionStart', () =
       additionalContext: 'broker context'
     }
   });
+});
+
+test('permission request hook mirrors a live Claude Code approval request through broker', async () => {
+  const calls = [];
+  const toolInput = { command: 'npm test' };
+  const result = await runPermissionRequestHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'Bash',
+      tool_input: toolInput,
+      tool_use_id: 'toolu-cc-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-cc-1' };
+      }
+    }
+  );
+
+  assert.equal(result.approved, true);
+  assert.deepEqual(result.updatedInput, toolInput);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].agentTool, 'claude-code');
+  assert.equal(calls[0].hookEventName, 'PermissionRequest');
+  assert.equal(calls[0].sessionId, '019d448e-1234-5678-9999-aaaaaaaaaaaa');
+  assert.equal(calls[0].toolName, 'Bash');
+  assert.deepEqual(calls[0].toolInput, toolInput);
+  assert.equal(calls[0].toolUseId, 'toolu-cc-1');
+  assert.equal(calls[0].config.participantId, 'claude-code-session-019d448e');
 });
 
 test('session start hook always registers and returns no output when inbox is empty', async () => {

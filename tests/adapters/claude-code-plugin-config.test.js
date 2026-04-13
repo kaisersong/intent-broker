@@ -38,6 +38,7 @@ test('mergeIntentBrokerHooks adds session start, user prompt submit, and stop ho
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
     userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+    permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
     stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
   });
 
@@ -64,6 +65,16 @@ test('mergeIntentBrokerHooks adds session start, user prompt submit, and stop ho
           ]
         }
       ],
+      PermissionRequest: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/claude-code-broker.js" hook permission-request'
+            }
+          ]
+        }
+      ],
       Stop: [
         {
           hooks: [
@@ -82,6 +93,7 @@ test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
     userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+    permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
     stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
   }, { verbose: true });
 
@@ -121,6 +133,7 @@ test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing int
     {
       sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
       userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+      permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
       stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
     }
   );
@@ -130,6 +143,7 @@ test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing int
   assert.equal(merged.hooks.SessionStart[1].hooks[0].command, 'node "/repo/claude-code-broker.js" hook session-start');
   assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook user-prompt-submit');
   assert.equal(merged.hooks.Stop[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook stop');
+  assert.equal(merged.hooks.PermissionRequest[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook permission-request');
 });
 
 test('readClaudeSettings and writeClaudeSettings round-trip JSON config', () => {

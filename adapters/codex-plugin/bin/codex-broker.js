@@ -23,6 +23,7 @@ import {
 import { buildCodexHookOutput } from '../../session-bridge/codex-hooks.js';
 import { runCliMain } from '../../session-bridge/cli-errors.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
+import { buildCodexPreToolUseOutput } from '../../session-bridge/hook-approval.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
 import { appendAliasToTerminalTitle, scheduleAliasTitle } from '../../session-bridge/terminal-title.js';
@@ -40,7 +41,7 @@ import {
   writeCodexConfig,
   writeHooksConfig
 } from '../install.js';
-import { runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
+import { runPreToolUseHook, runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -64,6 +65,7 @@ function usage() {
   node adapters/codex-plugin/bin/codex-broker.js realtime-bridge
   node adapters/codex-plugin/bin/codex-broker.js hook session-start
   node adapters/codex-plugin/bin/codex-broker.js hook user-prompt-submit
+  node adapters/codex-plugin/bin/codex-broker.js hook pre-tool-use
   node adapters/codex-plugin/bin/codex-broker.js hook stop`);
 }
 
@@ -105,6 +107,18 @@ async function handleUserPromptSubmitHook() {
     return;
   }
   process.stdout.write(JSON.stringify(buildCodexHookOutput('UserPromptSubmit', context)));
+}
+
+async function handlePreToolUseHook() {
+  const input = await readJsonStdin();
+  const result = await runPreToolUseHook(input);
+  const output = buildCodexPreToolUseOutput(result);
+
+  if (!output) {
+    return;
+  }
+
+  process.stdout.write(JSON.stringify(output));
 }
 
 async function handleStopHook() {
@@ -331,6 +345,10 @@ async function main() {
       }
       if (args[0] === 'user-prompt-submit') {
         await handleUserPromptSubmitHook();
+        break;
+      }
+      if (args[0] === 'pre-tool-use') {
+        await handlePreToolUseHook();
         break;
       }
       if (args[0] === 'stop') {

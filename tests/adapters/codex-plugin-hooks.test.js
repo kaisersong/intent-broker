@@ -2,10 +2,42 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  runPreToolUseHook,
   runStopHook,
   runSessionStartHook,
   runUserPromptSubmitHook
 } from '../../adapters/codex-plugin/hooks.js';
+
+test('pre tool use hook mirrors a live Codex approval request through broker', async () => {
+  const calls = [];
+  const result = await runPreToolUseHook(
+    {
+      thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'exec_command',
+      tool_input: { command: 'npm test' },
+      tool_use_id: 'toolu-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-1' };
+      }
+    }
+  );
+
+  assert.equal(result.approved, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].agentTool, 'codex');
+  assert.equal(calls[0].hookEventName, 'PreToolUse');
+  assert.equal(calls[0].sessionId, '019d448e-1234-5678-9999-aaaaaaaaaaaa');
+  assert.equal(calls[0].toolName, 'exec_command');
+  assert.deepEqual(calls[0].toolInput, { command: 'npm test' });
+  assert.equal(calls[0].toolUseId, 'toolu-1');
+  assert.equal(calls[0].config.participantId, 'codex-session-019d448e');
+});
 
 test('session start hook always registers and returns no output when inbox is empty', async () => {
   const calls = [];

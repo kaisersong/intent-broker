@@ -41,6 +41,11 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
     commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'user-prompt-submit')
   });
 
+  hooks.PreToolUse = mergeManagedHookGroups(hooks.PreToolUse || [], {
+    command: commands.preToolUseCommand,
+    commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'pre-tool-use')
+  });
+
   hooks.Stop = mergeManagedHookGroups(hooks.Stop || [], {
     command: commands.stopCommand,
     statusMessage: verbose ? managedHookStatusMessages.stop : undefined,
@@ -135,6 +140,7 @@ function buildCodexInstallArtifacts({ repoRoot, homeDir = os.homedir(), verbose 
     {
       sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
       userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
+      preToolUseCommand: buildHookCommand(cliPath, 'pre-tool-use'),
       stopCommand: buildHookCommand(cliPath, 'stop')
     },
     { verbose: effectiveVerbose }

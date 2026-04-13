@@ -41,6 +41,7 @@ import {
   loadRealtimeQueueState as loadRealtimeQueueStateDefault,
   saveRealtimeQueueState as saveRealtimeQueueStateDefault
 } from '../session-bridge/realtime-bridge.js';
+import { requestHookApprovalFailOpen as requestHookApprovalFailOpenDefault } from '../session-bridge/hook-approval.js';
 import {
   ensureSessionKeeper as ensureSessionKeeperDefault,
   resolveObservedParentPid
@@ -110,6 +111,48 @@ function isActionableItem(item = {}) {
 
 function pickActionableReplyContext(items = []) {
   return pickRecentContext(items.filter(isActionableItem));
+}
+
+function pickToolName(input = {}) {
+  return input.tool_name || input.toolName || input.name || input.tool || 'tool';
+}
+
+function pickToolInput(input = {}) {
+  return input.tool_input || input.toolInput || input.arguments || input.input || {};
+}
+
+function pickToolUseId(input = {}) {
+  return input.tool_use_id || input.toolUseId || input.tool_call_id || input.toolCallId || input.call_id || input.callId || input.id || null;
+}
+
+export async function runPreToolUseHook(
+  input,
+  {
+    env = process.env,
+    cwd = process.cwd(),
+    homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
+    requestHookApproval = requestHookApprovalFailOpenDefault
+  } = {}
+) {
+  if (env.INTENT_BROKER_SKIP_APPROVAL_SYNC === '1') {
+    return { approved: true, skipped: true };
+  }
+
+  const sessionId = input.session_id || input.thread_id || env.CODEX_THREAD_ID || '';
+  const toolName = pickToolName(input);
+  const toolInput = pickToolInput(input);
+
+  return requestHookApproval({
+    config: configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript }),
+    agentTool: 'codex',
+    hookEventName: 'PreToolUse',
+    sessionId,
+    cwd: input.cwd || cwd,
+    toolName,
+    toolInput,
+    toolUseId: pickToolUseId(input) || `${sessionId || 'codex'}-${toolName}`
+  });
 }
 
 export async function runSessionStartHook(

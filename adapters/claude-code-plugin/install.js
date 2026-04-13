@@ -63,6 +63,11 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
     commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'user-prompt-submit')
   });
 
+  hooks.PermissionRequest = mergeManagedHookGroups(hooks.PermissionRequest || [], {
+    command: commands.permissionRequestCommand,
+    commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'permission-request')
+  });
+
   hooks.Stop = mergeManagedHookGroups(hooks.Stop || [], {
     command: commands.stopCommand,
     statusMessage: verbose ? managedHookStatusMessages.stop : undefined,
@@ -97,6 +102,7 @@ function buildClaudeCodeInstallArtifacts({ cwd = process.cwd(), homeDir = os.hom
     {
       sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
       userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
+      permissionRequestCommand: buildHookCommand(cliPath, 'permission-request'),
       stopCommand: buildHookCommand(cliPath, 'stop')
     },
     { verbose: effectiveVerbose }

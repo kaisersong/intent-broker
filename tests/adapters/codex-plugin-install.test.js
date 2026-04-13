@@ -44,6 +44,7 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
     {
       sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
       userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+      preToolUseCommand: 'node "/repo/codex-broker.js" hook pre-tool-use',
       stopCommand: 'node "/repo/codex-broker.js" hook stop'
     }
   );
@@ -71,6 +72,16 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
           ]
         }
       ],
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/codex-broker.js" hook pre-tool-use'
+            }
+          ]
+        }
+      ],
       Stop: [
         {
           hooks: [
@@ -91,6 +102,7 @@ test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
     {
       sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
       userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+      preToolUseCommand: 'node "/repo/codex-broker.js" hook pre-tool-use',
       stopCommand: 'node "/repo/codex-broker.js" hook stop'
     },
     { verbose: true }
@@ -154,6 +166,7 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
     {
       sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
       userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+      preToolUseCommand: 'node "/repo/codex-broker.js" hook pre-tool-use',
       stopCommand: 'node "/repo/codex-broker.js" hook stop'
     }
   );
@@ -171,6 +184,10 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
   assert.equal(
     merged.hooks.Stop[0].hooks[0].command,
     'node "/repo/codex-broker.js" hook stop'
+  );
+  assert.equal(
+    merged.hooks.PreToolUse[0].hooks[0].command,
+    'node "/repo/codex-broker.js" hook pre-tool-use'
   );
 });
 

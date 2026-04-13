@@ -18,13 +18,20 @@ import {
 import { buildCodexHookOutput } from '../../session-bridge/codex-hooks.js';
 import { runCliMain } from '../../session-bridge/cli-errors.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
+import { buildXiaokPermissionHookOutput } from '../../session-bridge/hook-approval.js';
 import { loadRuntimeState } from '../../session-bridge/runtime-state.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
 import { appendAliasToTerminalTitle, scheduleAliasTitle } from '../../session-bridge/terminal-title.js';
 import { resolveRuntimeStatePath } from '../../hook-installer-core/state-paths.js';
 import { ensureXiaokInstall, defaultInstallPaths } from '../install.js';
-import { runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
+import {
+  runPermissionRequestHook,
+  runPreToolUseHook,
+  runSessionStartHook,
+  runStopHook,
+  runUserPromptSubmitHook
+} from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -42,6 +49,8 @@ function usage() {
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js realtime-bridge
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js hook session-start
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js hook user-prompt-submit
+  node adapters/xiaok-code-plugin/bin/xiaok-broker.js hook pre-tool-use
+  node adapters/xiaok-code-plugin/bin/xiaok-broker.js hook permission-request
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js hook stop`);
 }
 
@@ -79,6 +88,25 @@ async function handleUserPromptSubmitHook() {
 
   if (!context) return;
   process.stdout.write(JSON.stringify(buildCodexHookOutput('UserPromptSubmit', context)));
+}
+
+async function writeXiaokApprovalHookResult(result) {
+  const output = buildXiaokPermissionHookOutput(result);
+  if (!output) return;
+
+  process.stdout.write(JSON.stringify(output));
+  process.stderr.write(`${output.message}\n`);
+  process.exitCode = 2;
+}
+
+async function handlePreToolUseHook() {
+  const input = await readJsonStdin();
+  await writeXiaokApprovalHookResult(await runPreToolUseHook(input));
+}
+
+async function handlePermissionRequestHook() {
+  const input = await readJsonStdin();
+  await writeXiaokApprovalHookResult(await runPermissionRequestHook(input));
 }
 
 async function handleStopHook() {
@@ -161,6 +189,8 @@ async function main() {
     case 'hook':
       if (args[0] === 'session-start') { await handleSessionStartHook(); break; }
       if (args[0] === 'user-prompt-submit') { await handleUserPromptSubmitHook(); break; }
+      if (args[0] === 'pre-tool-use') { await handlePreToolUseHook(); break; }
+      if (args[0] === 'permission-request') { await handlePermissionRequestHook(); break; }
       if (args[0] === 'stop') { await handleStopHook(); break; }
       usage(); process.exit(1);
     default:
