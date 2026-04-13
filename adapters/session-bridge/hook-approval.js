@@ -1,7 +1,8 @@
 import { requestJson as requestJsonDefault } from './api.js';
 
 const DEFAULT_POLL_MS = 250;
-const DEFAULT_RESPONSE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_HUMAN_PARTICIPANT_ID = 'human.local';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -13,6 +14,16 @@ function normalizeOptionalString(value) {
 
 function safeIdentifier(value) {
   return String(value || Date.now()).replace(/[^A-Za-z0-9_-]/g, '-');
+}
+
+function resolveResponseTimeoutMs(env = process.env) {
+  const rawValue = env.INTENT_BROKER_HOOK_APPROVAL_TIMEOUT_MS;
+  if (!rawValue) {
+    return DEFAULT_RESPONSE_TIMEOUT_MS;
+  }
+
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RESPONSE_TIMEOUT_MS;
 }
 
 function titleForAgentTool(agentTool) {
@@ -101,7 +112,7 @@ function buildApprovalRequest({
       fromParticipantId: config.participantId,
       taskId,
       threadId,
-      to: { mode: 'participant', participants: ['human.local'] },
+      to: { mode: 'participant', participants: [DEFAULT_HUMAN_PARTICIPANT_ID] },
       payload: {
         participantId: config.participantId,
         approvalId,
@@ -139,7 +150,7 @@ async function waitForApprovalResponse({
   afterEventId,
   requestJson = requestJsonDefault,
   sleep: sleepImpl = sleep,
-  timeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS,
+  timeoutMs = resolveResponseTimeoutMs(),
   pollMs = DEFAULT_POLL_MS
 }) {
   let after = Math.max(0, Number(afterEventId || 0) - 1);
@@ -162,6 +173,24 @@ async function waitForApprovalResponse({
   throw new Error(`timeout waiting for ${approvalId}`);
 }
 
+async function respondApprovalFailOpen({
+  config,
+  approvalId,
+  taskId,
+  requestJson = requestJsonDefault
+}) {
+  await requestJson(`${config.brokerUrl}/approvals/${encodeURIComponent(approvalId)}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      taskId,
+      fromParticipantId: DEFAULT_HUMAN_PARTICIPANT_ID,
+      decision: 'approved',
+      completesTask: false
+    })
+  });
+}
+
 export async function requestHookApproval({
   config,
   agentTool,
@@ -172,7 +201,9 @@ export async function requestHookApproval({
   toolInput,
   toolUseId,
   requestJson = requestJsonDefault,
-  sleep: sleepImpl = sleep
+  sleep: sleepImpl = sleep,
+  timeoutMs = resolveResponseTimeoutMs(),
+  onRequestSent = null
 }) {
   const approval = buildApprovalRequest({
     config,
@@ -190,12 +221,18 @@ export async function requestHookApproval({
     body: JSON.stringify(approval.body)
   });
   const eventId = sent.event?.eventId ?? sent.eventId ?? 0;
+  onRequestSent?.({
+    approvalId: approval.approvalId,
+    taskId: approval.taskId,
+    requestEventId: eventId
+  });
   const response = await waitForApprovalResponse({
     config,
     approvalId: approval.approvalId,
     afterEventId: eventId,
     requestJson,
-    sleep: sleepImpl
+    sleep: sleepImpl,
+    timeoutMs
   });
 
   return {
@@ -207,9 +244,29 @@ export async function requestHookApproval({
 }
 
 export async function requestHookApprovalFailOpen(input) {
+  let pendingApproval = null;
   try {
-    return await requestHookApproval(input);
+    return await requestHookApproval({
+      ...input,
+      onRequestSent: (approval) => {
+        pendingApproval = approval;
+        input.onRequestSent?.(approval);
+      }
+    });
   } catch (error) {
+    if (pendingApproval) {
+      try {
+        await respondApprovalFailOpen({
+          config: input.config,
+          approvalId: pendingApproval.approvalId,
+          taskId: pendingApproval.taskId,
+          requestJson: input.requestJson
+        });
+      } catch {
+        // The hook is already failing open; cleanup is best-effort only.
+      }
+    }
+
     return {
       approved: true,
       skipped: true,

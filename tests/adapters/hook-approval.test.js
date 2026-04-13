@@ -5,7 +5,8 @@ import {
   buildClaudePermissionRequestOutput,
   buildCodexPreToolUseOutput,
   buildXiaokPermissionHookOutput,
-  requestHookApproval
+  requestHookApproval,
+  requestHookApprovalFailOpen
 } from '../../adapters/session-bridge/hook-approval.js';
 
 test('requestHookApproval mirrors a Codex PreToolUse approval through broker', async () => {
@@ -106,6 +107,53 @@ test('requestHookApproval returns denied when broker response denies the approva
 
   assert.equal(result.approved, false);
   assert.equal(result.approvalId, 'claude-code-hook-PermissionRequest-toolu-claude-1');
+});
+
+test('requestHookApprovalFailOpen resolves the broker approval after timeout', async () => {
+  const requests = [];
+
+  const result = await requestHookApprovalFailOpen({
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d4489'
+    },
+    agentTool: 'codex',
+    hookEventName: 'PreToolUse',
+    sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+    cwd: '/Users/song/projects/hexdeck',
+    toolName: 'Bash',
+    toolInput: { command: 'printf ok' },
+    toolUseId: 'toolu-codex-timeout',
+    timeoutMs: 0,
+    requestJson: async (url, options = {}) => {
+      requests.push({ url, options });
+      if (url.endsWith('/intents')) {
+        return { event: { eventId: 400 } };
+      }
+      if (url.endsWith('/respond')) {
+        return { approval: { approvalId: 'codex-hook-PreToolUse-toolu-codex-timeout', status: 'approved' } };
+      }
+      return { items: [] };
+    },
+    sleep: async () => {}
+  });
+
+  assert.equal(result.approved, true);
+  assert.equal(result.skipped, true);
+  assert.match(result.error, /timeout waiting for codex-hook-PreToolUse-toolu-codex-timeout/);
+
+  const responseRequest = requests.find((request) => request.url.endsWith('/respond'));
+  assert.ok(responseRequest);
+  assert.equal(
+    responseRequest.url,
+    'http://127.0.0.1:4318/approvals/codex-hook-PreToolUse-toolu-codex-timeout/respond'
+  );
+  assert.deepEqual(JSON.parse(responseRequest.options.body), {
+    taskId: 'codex-hook-approval-toolu-codex-timeout',
+    fromParticipantId: 'human.local',
+    decision: 'approved',
+    completesTask: false
+  });
 });
 
 test('hook output helpers encode Codex, Claude Code, and xiaok decisions', () => {
