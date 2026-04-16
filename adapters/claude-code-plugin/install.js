@@ -20,16 +20,34 @@ function clone(value) {
 
 export { buildHookCommand };
 
+const CLAUDE_PERMISSION_TIMEOUT_SECONDS = 86_400;
+
 function buildManagedCommandMatcher(scriptName, hookMode) {
   return (command = '') => command.includes(scriptName) && command.includes(`hook ${hookMode}`);
 }
 
-export function defaultInstallPaths({ cwd = process.cwd(), homeDir = os.homedir() } = {}) {
+function promoteManagedHookGroup(groups = [], commandMatcher) {
+  const managed = [];
+  const other = [];
+
+  for (const group of groups) {
+    const hooks = Array.isArray(group?.hooks) ? group.hooks : [];
+    if (hooks.some((entry) => commandMatcher(entry?.command || ''))) {
+      managed.push(group);
+    } else {
+      other.push(group);
+    }
+  }
+
+  return [...managed, ...other];
+}
+
+export function defaultInstallPaths({ cwd = process.cwd(), repoRoot = cwd, homeDir = os.homedir() } = {}) {
   return {
     settingsPath: path.join(cwd, '.claude', 'settings.json'),
     stateRoot: resolveToolStateRoot('claude-code', { homeDir }),
     commandShimPath: defaultCommandShimPath({ homeDir }),
-    unifiedCliPath: path.join(cwd, 'bin', 'intent-broker.js')
+    unifiedCliPath: path.join(repoRoot, 'bin', 'intent-broker.js')
   };
 }
 
@@ -63,11 +81,36 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
     commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'user-prompt-submit')
   });
 
+  hooks.PreToolUse = mergeManagedHookGroups(hooks.PreToolUse || [], {
+    matcher: '*',
+    command: commands.preToolUseCommand,
+    commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'pre-tool-use')
+  });
+  hooks.PreToolUse = promoteManagedHookGroup(
+    hooks.PreToolUse,
+    buildManagedCommandMatcher('claude-code-broker.js', 'pre-tool-use')
+  );
+
+  hooks.PermissionRequest = mergeManagedHookGroups(hooks.PermissionRequest || [], {
+    matcher: '*',
+    command: commands.permissionRequestCommand,
+    timeout: CLAUDE_PERMISSION_TIMEOUT_SECONDS,
+    commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'permission-request')
+  });
+  hooks.PermissionRequest = promoteManagedHookGroup(
+    hooks.PermissionRequest,
+    buildManagedCommandMatcher('claude-code-broker.js', 'permission-request')
+  );
+
   hooks.Stop = mergeManagedHookGroups(hooks.Stop || [], {
     command: commands.stopCommand,
     statusMessage: verbose ? managedHookStatusMessages.stop : undefined,
     commandMatcher: buildManagedCommandMatcher('claude-code-broker.js', 'stop')
   });
+  hooks.Stop = promoteManagedHookGroup(
+    hooks.Stop,
+    buildManagedCommandMatcher('claude-code-broker.js', 'stop')
+  );
 
   merged.hooks = hooks;
   return merged;
@@ -87,9 +130,9 @@ function hasVisibleManagedHookEntries(config = {}) {
     .some((entry) => Object.values(managedHookStatusMessages).includes(entry?.statusMessage));
 }
 
-function buildClaudeCodeInstallArtifacts({ cwd = process.cwd(), homeDir = os.homedir(), verbose } = {}) {
-  const paths = defaultInstallPaths({ cwd, homeDir });
-  const cliPath = path.join(cwd, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js');
+function buildClaudeCodeInstallArtifacts({ cwd = process.cwd(), repoRoot = cwd, homeDir = os.homedir(), verbose } = {}) {
+  const paths = defaultInstallPaths({ cwd, repoRoot, homeDir });
+  const cliPath = path.join(repoRoot, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js');
   const existingSettings = readClaudeSettings(paths.settingsPath);
   const effectiveVerbose = verbose ?? hasVisibleManagedHookEntries(existingSettings);
   const desiredSettings = mergeIntentBrokerHooks(
@@ -97,6 +140,8 @@ function buildClaudeCodeInstallArtifacts({ cwd = process.cwd(), homeDir = os.hom
     {
       sessionStartCommand: buildHookCommand(cliPath, 'session-start'),
       userPromptSubmitCommand: buildHookCommand(cliPath, 'user-prompt-submit'),
+      preToolUseCommand: buildHookCommand(cliPath, 'pre-tool-use'),
+      permissionRequestCommand: buildHookCommand(cliPath, 'permission-request'),
       stopCommand: buildHookCommand(cliPath, 'stop')
     },
     { verbose: effectiveVerbose }

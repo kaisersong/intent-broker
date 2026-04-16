@@ -31,7 +31,7 @@ export function pruneManagedHookGroups(groups = [], options = {}) {
     .filter((group) => group.hooks.length > 0);
 }
 
-export function mergeManagedHookGroups(groups = [], { matcher, command, statusMessage, commandMatcher } = {}) {
+export function mergeManagedHookGroups(groups = [], { matcher, command, statusMessage, commandMatcher, timeout } = {}) {
   const merged = pruneManagedHookGroups(groups, { statusMessage, commandMatcher });
   const hookEntry = {
     type: 'command',
@@ -40,6 +40,10 @@ export function mergeManagedHookGroups(groups = [], { matcher, command, statusMe
 
   if (statusMessage) {
     hookEntry.statusMessage = statusMessage;
+  }
+
+  if (typeof timeout === 'number') {
+    hookEntry.timeout = timeout;
   }
 
   merged.push({

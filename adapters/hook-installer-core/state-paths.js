@@ -20,3 +20,7 @@ export function resolveRealtimeBridgeStatePath(toolName, participantId, { homeDi
 export function resolveRuntimeStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
   return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.runtime.json`);
 }
+
+export function resolvePendingToolUseStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
+  return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.tool-use.json`);
+}
