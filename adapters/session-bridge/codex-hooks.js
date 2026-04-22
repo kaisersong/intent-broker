@@ -63,29 +63,45 @@ function summarizePresenceItems(items = [], { limit = 8 } = {}) {
   return lines.join('\n');
 }
 
-export function summarizeInboxItems(items = []) {
+function truncateSummary(text = '', maxLen = 80) {
+  if (!text || text.length <= maxLen) {
+    return text;
+  }
+  return text.slice(0, maxLen).trimEnd() + '...';
+}
+
+export function summarizeInboxItems(items = [], { maxItems = Infinity, maxSummaryLength = Infinity, compact = false } = {}) {
   if (!items.length) {
     return '0 new broker events.';
   }
 
   const lines = [`${items.length} new broker event${items.length === 1 ? '' : 's'}:`];
-  for (const item of items) {
-    const summary = summarizePayload(item.payload);
+  const visible = maxItems < Infinity ? items.slice(0, maxItems) : items;
+  const hidden = items.length - visible.length;
+
+  for (const item of visible) {
+    const summary = truncateSummary(summarizePayload(item.payload), maxSummaryLength);
     const sender = item.fromAlias || item.fromParticipantId || 'unknown';
     const parts = [`- ${item.kind} from ${sender}`];
     if (item.fromProjectName) {
       parts.push(`[project=${item.fromProjectName}]`);
     }
-    if (item.taskId) {
-      parts.push(`task=${item.taskId}`);
-    }
-    if (item.threadId) {
-      parts.push(`thread=${item.threadId}`);
+    if (!compact) {
+      if (item.taskId) {
+        parts.push(`task=${item.taskId}`);
+      }
+      if (item.threadId) {
+        parts.push(`thread=${item.threadId}`);
+      }
     }
     if (summary) {
-      parts.push(`- ${summary}`);
+      parts.push(compact ? `— ${summary}` : `- ${summary}`);
     }
     lines.push(parts.join(' '));
+  }
+
+  if (hidden > 0) {
+    lines.push(`- ... and ${hidden} more`);
   }
 
   return lines.join('\n');
@@ -141,7 +157,7 @@ export function buildToolHookContext(
   if (otherInformational.length || presenceUpdates.length) {
     lines.push('Informational items:');
     if (otherInformational.length) {
-      lines.push(summarizeInboxItems(otherInformational));
+      lines.push(summarizeInboxItems(otherInformational, { maxItems: 3, maxSummaryLength: 80, compact: true }));
     }
     if (presenceUpdates.length) {
       lines.push(summarizePresenceItems(presenceUpdates));
