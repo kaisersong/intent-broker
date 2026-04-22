@@ -44,23 +44,12 @@ function summarizePresenceItems(items = [], { limit = 8 } = {}) {
     .sort((left, right) => Number(left?.eventId || 0) - Number(right?.eventId || 0));
   const visibleItems = latestItems.slice(-limit);
   const hiddenCount = latestItems.length - visibleItems.length;
-  const lines = [
-    `${items.length} broker presence update${items.length === 1 ? '' : 's'} collapsed into ${latestItems.length} latest collaborator state${latestItems.length === 1 ? '' : 's'}:`
-  ];
 
-  for (const item of visibleItems) {
-    const summary = summarizePayload(item.payload);
-    if (summary) {
-      lines.push(`- ${summary}`);
-    }
-  }
-
+  const tags = visibleItems.map((item) => summarizePayload(item.payload)).filter(Boolean);
   if (hiddenCount > 0) {
-    lines.push(`- ... and ${hiddenCount} more collaborator state update${hiddenCount === 1 ? '' : 's'}`);
+    tags.push(`+${hiddenCount} more`);
   }
-  lines.push('Use `intent-broker who` if you need the full live roster.');
-
-  return lines.join('\n');
+  return tags.join(', ');
 }
 
 function stripMarkdown(text = '') {
@@ -170,14 +159,30 @@ export function buildToolHookContext(
   }
 
   if (otherInformational.length || presenceUpdates.length) {
-    lines.push('Informational items:');
+    const parts = [];
     if (otherInformational.length) {
-      lines.push(summarizeInboxItems(otherInformational, { maxItems: 3, maxSummaryLength: 60, compact: true }));
+      parts.push(`${otherInformational.length} info event${otherInformational.length === 1 ? '' : 's'}`);
     }
+    if (presenceUpdates.length) {
+      parts.push(`${presenceUpdates.length} presence update${presenceUpdates.length === 1 ? '' : 's'}`);
+    }
+    lines.push(parts.join(', '));
+
+    if (otherInformational.length) {
+      const visibleInfo = otherInformational.slice(0, 2);
+      const infoLine = visibleInfo.map((item) => {
+        const sender = item.fromAlias || item.fromParticipantId || '?';
+        const summary = truncateSummary(stripMarkdown(summarizePayload(item.payload)), 50);
+        return `${sender}: ${summary}`;
+      }).join(' | ');
+      const hidden = otherInformational.length - visibleInfo.length;
+      const suffix = hidden > 0 ? ` | +${hidden} more` : '';
+      lines.push(infoLine + suffix);
+    }
+
     if (presenceUpdates.length) {
       lines.push(summarizePresenceItems(presenceUpdates));
     }
-    lines.push('Informational items are context updates by default. Acknowledge or use them only when relevant.');
   }
 
   return lines.join('\n');

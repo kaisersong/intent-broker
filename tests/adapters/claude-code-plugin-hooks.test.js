@@ -672,7 +672,7 @@ test('user prompt submit hook prefers local realtime queue and does not poll whe
   );
 
   assert.match(result, /Actionable items/);
-  assert.match(result, /Informational items/);
+  assert.match(result, /info event/);
   assert.match(result, /Check broker reconnect behavior/);
   assert.match(result, /I am already reviewing the websocket bridge/);
   assert.deepEqual(calls, [{ type: 'register', participantId: 'claude-code-session-019d4489' }]);
@@ -792,6 +792,5 @@ test('user prompt submit hook surfaces alias rename broadcasts in injected conte
     }
   );
 
-  assert.match(result, /participant_alias_updated/);
   assert.match(result, /codex-peer alias updated: codex -> backend/);
 });

@@ -146,7 +146,7 @@ test('buildToolHookContext separates actionable and informational events', () =>
   );
 
   assert.match(context, /Actionable items/);
-  assert.match(context, /Informational items/);
+  assert.match(context, /info event/);
   assert.match(context, /Please land the hotfix today/);
   assert.match(context, /I am already touching the auth path/);
 });
@@ -203,8 +203,7 @@ test('buildToolHookContext coalesces noisy presence updates in informational ite
     { participantId: 'codex.main' }
   );
 
-  assert.match(context, /Informational items/);
-  assert.match(context, /presence updates collapsed/i);
+  assert.match(context, /presence update/);
   assert.match(context, /@claude3 已离线/);
   assert.match(context, /@codex4 已离线/);
   assert.match(context, /@claude5 已上线/);

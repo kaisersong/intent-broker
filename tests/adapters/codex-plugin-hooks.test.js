@@ -458,7 +458,7 @@ test('user prompt submit hook prefers local realtime queue and does not poll whe
   );
 
   assert.match(result, /Actionable items/);
-  assert.match(result, /Informational items/);
+  assert.match(result, /info event/);
   assert.match(result, /修复 broker 在线状态显示/);
   assert.match(result, /我正在看 alias rename 广播/);
   assert.deepEqual(calls, [{ type: 'register', participantId: 'codex-session-019d4489' }]);
@@ -1005,7 +1005,6 @@ test('user prompt submit hook surfaces alias rename broadcasts in injected conte
     }
   );
 
-  assert.match(result, /participant_alias_updated/);
   assert.match(result, /claude-peer alias updated: claude -> reviewer/);
 });
 
