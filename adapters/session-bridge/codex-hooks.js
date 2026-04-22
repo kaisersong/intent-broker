@@ -63,7 +63,20 @@ function summarizePresenceItems(items = [], { limit = 8 } = {}) {
   return lines.join('\n');
 }
 
-function truncateSummary(text = '', maxLen = 80) {
+function stripMarkdown(text = '') {
+  return text
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/---+/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/`{1,3}/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/[-_]{3,}/g, '')
+    .replace(/\n+/g, ' ')
+    .trim();
+}
+
+function truncateSummary(text = '', maxLen = 60) {
   if (!text || text.length <= maxLen) {
     return text;
   }
@@ -80,7 +93,9 @@ export function summarizeInboxItems(items = [], { maxItems = Infinity, maxSummar
   const hidden = items.length - visible.length;
 
   for (const item of visible) {
-    const summary = truncateSummary(summarizePayload(item.payload), maxSummaryLength);
+    const summary = truncateSummary(maxSummaryLength < Infinity
+      ? stripMarkdown(summarizePayload(item.payload))
+      : summarizePayload(item.payload), maxSummaryLength);
     const sender = item.fromAlias || item.fromParticipantId || 'unknown';
     const parts = [`- ${item.kind} from ${sender}`];
     if (item.fromProjectName) {
@@ -157,7 +172,7 @@ export function buildToolHookContext(
   if (otherInformational.length || presenceUpdates.length) {
     lines.push('Informational items:');
     if (otherInformational.length) {
-      lines.push(summarizeInboxItems(otherInformational, { maxItems: 3, maxSummaryLength: 80, compact: true }));
+      lines.push(summarizeInboxItems(otherInformational, { maxItems: 3, maxSummaryLength: 60, compact: true }));
     }
     if (presenceUpdates.length) {
       lines.push(summarizePresenceItems(presenceUpdates));
