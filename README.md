@@ -431,6 +431,8 @@ See:
 
 ## Version History
 
+**v0.3.1** — Condensed informational broker events: markdown stripped, 50-char summary truncation, max 3 lines total for the informational section.
+
 **v0.3.0** — PreToolUse hooks across all 3 adapters; AskUserQuestion mirroring (Claude Code + xiaok); Codex native escalation + destructive command detection; xiaok human approval/clarification roundtrips; pending tool-use context correlation; hook approval timeout resolution; condensed informational broker events with truncation; 175 tests.
 
 **v0.2.3** — Graceful shutdown, kill previous processes on start, session-keeper auto-recovery, realtime bridge queue improvements.
