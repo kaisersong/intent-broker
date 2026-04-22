@@ -30,6 +30,29 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook permission-request",
+            "timeout": 86400
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook pre-tool-use"
+          }
+        ]
+      }
     ]
   }
 }

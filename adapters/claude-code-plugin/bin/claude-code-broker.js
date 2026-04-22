@@ -28,7 +28,7 @@ import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.j
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
 import { appendAliasToTerminalTitle, scheduleAliasTitle } from '../../session-bridge/terminal-title.js';
 import { resolveRuntimeStatePath } from '../../hook-installer-core/state-paths.js';
-import { buildClaudeCodeHookOutput } from '../format.js';
+import { buildClaudeCodeHookOutput, buildClaudeCodePreToolUseOutput } from '../format.js';
 import {
   buildHookCommand,
   defaultInstallPaths,
@@ -37,7 +37,7 @@ import {
   readClaudeSettings,
   writeClaudeSettings
 } from '../install.js';
-import { runPermissionRequestHook, runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
+import { runPermissionRequestHook, runPreToolUseHook, runSessionStartHook, runStopHook, runUserPromptSubmitHook } from '../hooks.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..', '..');
@@ -61,6 +61,7 @@ function usage() {
   node adapters/claude-code-plugin/bin/claude-code-broker.js realtime-bridge
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook session-start
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook user-prompt-submit
+  node adapters/claude-code-plugin/bin/claude-code-broker.js hook pre-tool-use
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook permission-request
   node adapters/claude-code-plugin/bin/claude-code-broker.js hook stop`);
 }
@@ -111,6 +112,15 @@ async function handlePermissionRequestHook() {
   const result = await runPermissionRequestHook(input);
 
   process.stdout.write(JSON.stringify(buildClaudePermissionRequestOutput(result)));
+}
+
+async function handlePreToolUseHook() {
+  const input = await readJsonStdin();
+  const result = await runPreToolUseHook(input);
+  const output = buildClaudeCodePreToolUseOutput(result);
+  if (output) {
+    process.stdout.write(JSON.stringify(output));
+  }
 }
 
 async function handleStopHook() {
@@ -325,6 +335,10 @@ async function main() {
       }
       if (args[0] === 'user-prompt-submit') {
         await handleUserPromptSubmitHook();
+        break;
+      }
+      if (args[0] === 'pre-tool-use') {
+        await handlePreToolUseHook();
         break;
       }
       if (args[0] === 'permission-request') {

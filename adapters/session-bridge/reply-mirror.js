@@ -457,6 +457,7 @@ export async function maybeMirrorPendingReply(
     taskId: pending.taskId,
     threadId: pending.threadId,
     toParticipantId: pending.fromParticipantId,
+    stage: 'completed',
     summary,
     metadata: pending.metadata || undefined,
     delivery: {

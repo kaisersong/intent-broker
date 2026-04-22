@@ -118,6 +118,7 @@ test('maybeMirrorPendingReply mirrors Codex final answer back through broker', a
     assert.equal(sent[0].toParticipantId, 'human.yzj');
     assert.equal(sent[0].taskId, 'task-1');
     assert.equal(sent[0].threadId, 'thread-1');
+    assert.equal(sent[0].stage, 'completed');
     assert.equal(sent[0].summary, '我已经定位到问题，正在提交修复。');
     assert.deepEqual(sent[0].metadata, {
       msgId: 'msg-101',
@@ -227,6 +228,9 @@ test('maybeMirrorPendingReply mirrors Claude final answer text and ignores tool_
     assert.equal(result.mirrored, true);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].toParticipantId, 'codex-peer');
+    assert.equal(sent[0].taskId, 'task-2');
+    assert.equal(sent[0].threadId, 'thread-2');
+    assert.equal(sent[0].stage, 'completed');
     assert.equal(sent[0].summary, '我在修 intent-broker 的自动回复链路。');
     assert.deepEqual(sent[0].metadata, {
       msgId: 'msg-202',

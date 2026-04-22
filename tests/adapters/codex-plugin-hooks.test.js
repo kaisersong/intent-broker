@@ -15,7 +15,7 @@ test('pre tool use hook mirrors a live Codex approval request through broker', a
       thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
       cwd: '/Users/song/projects/intent-broker',
       tool_name: 'exec_command',
-      tool_input: { command: 'npm test' },
+      tool_input: { command: 'rm /tmp/example.txt' },
       tool_use_id: 'toolu-1'
     },
     {
@@ -34,9 +34,142 @@ test('pre tool use hook mirrors a live Codex approval request through broker', a
   assert.equal(calls[0].hookEventName, 'PreToolUse');
   assert.equal(calls[0].sessionId, '019d448e-1234-5678-9999-aaaaaaaaaaaa');
   assert.equal(calls[0].toolName, 'exec_command');
-  assert.deepEqual(calls[0].toolInput, { command: 'npm test' });
+  assert.deepEqual(calls[0].toolInput, { command: 'rm /tmp/example.txt' });
   assert.equal(calls[0].toolUseId, 'toolu-1');
   assert.equal(calls[0].config.participantId, 'codex-session-019d448e');
+});
+
+test('pre tool use hook skips approval mirroring for read-only exec commands', async () => {
+  const calls = [];
+  const result = await runPreToolUseHook(
+    {
+      thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'exec_command',
+      tool_input: { cmd: 'rg "approval" src tests' },
+      tool_use_id: 'toolu-read-only'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-read-only' };
+      }
+    }
+  );
+
+  assert.deepEqual(result, { approved: true, skipped: true });
+  assert.equal(calls.length, 0);
+});
+
+test('pre tool use hook skips approval mirroring for routine test commands', async () => {
+  const calls = [];
+  const result = await runPreToolUseHook(
+    {
+      thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'exec_command',
+      tool_input: { command: 'npm test -- tests/adapters/codex-plugin-hooks.test.js' },
+      tool_use_id: 'toolu-test-run'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-test-run' };
+      }
+    }
+  );
+
+  assert.deepEqual(result, { approved: true, skipped: true });
+  assert.equal(calls.length, 0);
+});
+
+test('pre tool use hook still mirrors approval for destructive exec commands', async () => {
+  const calls = [];
+  const result = await runPreToolUseHook(
+    {
+      thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'exec_command',
+      tool_input: { cmd: 'rm /tmp/example.txt' },
+      tool_use_id: 'toolu-destructive'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-destructive' };
+      }
+    }
+  );
+
+  assert.equal(result.approved, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].toolUseId, 'toolu-destructive');
+  assert.deepEqual(calls[0].toolInput, { cmd: 'rm /tmp/example.txt' });
+});
+
+test('pre tool use hook skips approval mirroring for routine Bash commands', async () => {
+  const calls = [];
+  const result = await runPreToolUseHook(
+    {
+      thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'Bash',
+      tool_input: { command: 'sed -n \'1,40p\' README.md' },
+      tool_use_id: 'toolu-bash-read-only'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-bash-read-only' };
+      }
+    }
+  );
+
+  assert.deepEqual(result, { approved: true, skipped: true });
+  assert.equal(calls.length, 0);
+});
+
+test('pre tool use hook mirrors approval for Bash commands that explicitly require approval', async () => {
+  const calls = [];
+  const result = await runPreToolUseHook(
+    {
+      thread_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'Bash',
+      tool_input: {
+        command: 'python3 scripts/export.py',
+        sandbox_permissions: 'require_escalated',
+        justification: 'Export needs access outside the sandbox'
+      },
+      tool_use_id: 'toolu-bash-escalated'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-bash-escalated' };
+      }
+    }
+  );
+
+  assert.equal(result.approved, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].toolName, 'Bash');
+  assert.equal(calls[0].toolUseId, 'toolu-bash-escalated');
+  assert.deepEqual(calls[0].toolInput, {
+    command: 'python3 scripts/export.py',
+    sandbox_permissions: 'require_escalated',
+    justification: 'Export needs access outside the sandbox'
+  });
 });
 
 test('session start hook always registers and returns no output when inbox is empty', async () => {
@@ -49,6 +182,7 @@ test('session start hook always registers and returns no output when inbox is em
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      saveRuntimeState: () => {},
       ensureSessionKeeper: async (input) => {
         calls.push({ type: 'keeper', input });
       },
@@ -204,7 +338,9 @@ test('user prompt submit hook injects context, saves cursor, and acks inbox with
       loadCursorState: () => ({ lastSeenEventId: 0 }),
       loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
       saveRealtimeQueueState: () => {},
+      saveRuntimeState: () => {},
       saveCursorState: (statePath, state) => saved.push({ statePath, state }),
+      markPendingReplyMirror: () => {},
       ensureSessionKeeper: async (input) => {
         calls.push({ type: 'keeper', participantId: input.config.participantId, inboxMode: input.config.inboxMode });
       },
@@ -478,6 +614,7 @@ test('stop hook drains actionable queue into an auto-continue prompt and keeps r
       saveCursorState: (statePath, state) => savedCursor.push({ statePath, state }),
       saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state }),
       saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      markPendingReplyMirror: () => {},
       updateWorkState: async (config, state) => {
         workStates.push({ participantId: config.participantId, state });
         return { ok: true };
@@ -506,6 +643,179 @@ test('stop hook drains actionable queue into an auto-continue prompt and keeps r
         summary: '修复 broker 在线状态显示',
         taskId: 'task-queue-1',
         threadId: 'thread-queue-1'
+      }
+    }
+  ]);
+});
+
+test('stop hook mirrors the current completion before draining a new actionable queue', async () => {
+  const sent = [];
+  const savedCursor = [];
+  const savedQueue = [];
+  const savedRuntime = [];
+  const acked = [];
+  const workStates = [];
+
+  const result = await runStopHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-current'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+      loadRuntimeState: () => ({
+        status: 'running',
+        sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+        taskId: 'task-current',
+        threadId: 'thread-current'
+      }),
+      loadRealtimeQueueState: () => ({
+        actionable: [
+          {
+            eventId: 77,
+            kind: 'request_approval',
+            fromParticipantId: 'claude-peer',
+            fromAlias: 'claude',
+            taskId: 'task-next',
+            threadId: 'thread-next',
+            payload: {
+              delivery: { semantic: 'actionable', source: 'default' },
+              approvalId: 'approval-next',
+              body: { summary: 'Need approval for the next task' }
+            }
+          }
+        ],
+        informational: [],
+        lastEventId: 77
+      }),
+      maybeMirrorPendingReply: async (_config, options) => {
+        sent.push({
+          kind: 'mirrored',
+          toolName: options.toolName,
+          sessionId: options.sessionId,
+          turnId: options.turnId
+        });
+        return { mirrored: true };
+      },
+      saveCursorState: (statePath, state) => savedCursor.push({ statePath, state }),
+      saveRealtimeQueueState: (statePath, state) => savedQueue.push({ statePath, state }),
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      markPendingReplyMirror: () => {},
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId })
+    }
+  );
+
+  assert.match(result, /Intent Broker auto-continue for codex-session-019d4489/);
+  assert.deepEqual(sent, [
+    {
+      kind: 'mirrored',
+      toolName: 'codex',
+      sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turnId: 'turn-current'
+    }
+  ]);
+  assert.deepEqual(acked, [{ participantId: 'codex-session-019d4489', eventId: 77 }]);
+  assert.equal(savedCursor[0].state.lastSeenEventId, 77);
+  assert.deepEqual(savedQueue[0].state, {
+    actionable: [],
+    informational: [],
+    lastEventId: 77
+  });
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'implementing',
+        summary: 'Need approval for the next task',
+        taskId: 'task-next',
+        threadId: 'thread-next'
+      }
+    }
+  ]);
+});
+
+test('stop hook sends fallback completion before draining a new actionable queue when mirror is missing', async () => {
+  const sent = [];
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await runStopHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-fallback'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+      loadRuntimeState: () => ({
+        status: 'running',
+        sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+        taskId: 'task-current',
+        threadId: 'thread-current'
+      }),
+      loadRealtimeQueueState: () => ({
+        actionable: [
+          {
+            eventId: 88,
+            kind: 'request_task',
+            fromParticipantId: 'human.song',
+            fromAlias: 'song',
+            taskId: 'task-next',
+            threadId: 'thread-next',
+            payload: {
+              delivery: { semantic: 'actionable', source: 'default' },
+              body: { summary: 'Handle the next task' }
+            }
+          }
+        ],
+        informational: [],
+        lastEventId: 88
+      }),
+      maybeMirrorPendingReply: async () => ({ mirrored: false, reason: 'no-pending' }),
+      resolveCompletedTurnSummary: async () => ({ summary: 'Codex finished the current task', transcriptPath: '/tmp/codex.jsonl' }),
+      sendProgress: async (_config, payload) => {
+        sent.push(payload);
+        return { eventId: 902 };
+      },
+      saveCursorState: () => {},
+      saveRealtimeQueueState: () => {},
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      markPendingReplyMirror: () => {},
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      ackInbox: async () => {}
+    }
+  );
+
+  assert.match(result, /Intent Broker auto-continue for codex-session-019d4489/);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    intentId: sent[0].intentId,
+    taskId: 'task-current',
+    threadId: 'thread-current',
+    stage: 'completed',
+    summary: 'Codex finished the current task',
+    delivery: { semantic: 'informational', source: 'stop-fallback' }
+  });
+  assert.equal(savedRuntime[0].state.status, 'running');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: {
+        status: 'implementing',
+        summary: 'Handle the next task',
+        taskId: 'task-next',
+        threadId: 'thread-next'
       }
     }
   ]);
@@ -557,6 +867,60 @@ test('stop hook marks runtime idle when there is no actionable queue', async () 
   ]);
 });
 
+test('stop hook falls back to a completed progress event when no pending reply mirror exists', async () => {
+  const sent = [];
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await runStopHook(
+    {
+      session_id: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+      turn_id: 'turn-9'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+      loadRuntimeState: () => ({
+        status: 'running',
+        sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+        taskId: 'task-complete-1',
+        threadId: 'thread-complete-1'
+      }),
+      loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+      maybeMirrorPendingReply: async () => ({ mirrored: false, reason: 'no-pending' }),
+      resolveCompletedTurnSummary: async () => ({ summary: 'Codex completed the task', transcriptPath: '/tmp/codex.jsonl' }),
+      sendProgress: async (_config, payload) => {
+        sent.push(payload);
+        return { eventId: 901 };
+      },
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    intentId: sent[0].intentId,
+    taskId: 'task-complete-1',
+    threadId: 'thread-complete-1',
+    stage: 'completed',
+    summary: 'Codex completed the task',
+    delivery: { semantic: 'informational', source: 'stop-fallback' }
+  });
+  assert.equal(savedRuntime[0].state.status, 'idle');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'codex-session-019d4489',
+      state: { status: 'idle', summary: null, taskId: null, threadId: null }
+    }
+  ]);
+});
+
 test('user prompt submit hook can poll inbox without prior register call in the same hook', async () => {
   const calls = [];
 
@@ -571,7 +935,9 @@ test('user prompt submit hook can poll inbox without prior register call in the 
       loadCursorState: () => ({ lastSeenEventId: 0 }),
       loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
       saveRealtimeQueueState: () => {},
+      saveRuntimeState: () => {},
       saveCursorState: () => {},
+      markPendingReplyMirror: () => {},
       registerParticipant: async (config) => {
         calls.push({ type: 'register', participantId: config.participantId });
       },
@@ -614,6 +980,7 @@ test('user prompt submit hook surfaces alias rename broadcasts in injected conte
       loadCursorState: () => ({ lastSeenEventId: 0 }),
       loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
       saveRealtimeQueueState: () => {},
+      saveRuntimeState: () => {},
       saveCursorState: () => {},
       registerParticipant: async () => ({ ok: true }),
       updateWorkState: async () => ({ ok: true }),

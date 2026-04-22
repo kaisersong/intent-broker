@@ -127,6 +127,11 @@ export function buildToolHookContext(
       lines.push('If an actionable item expects a response, write that response as your final response in this turn.');
       lines.push('The stop hook will auto-mirror your final response back through Intent Broker from the transcript.');
       lines.push('Do not send a manual broker CLI reply or progress update from inside this auto-continue turn unless the task explicitly requires an out-of-band status update.');
+    } else if (actionableReplyStyle === 'xiaok-cli') {
+      lines.push('If you need the user to choose or approve something, use the xiaok broker shell helpers instead of claiming that broker tools are unavailable.');
+      lines.push('Use `xiaok-broker ask-and-wait <taskId> <threadId> "<summary>" ["<prompt>"]` for a real single-select clarification card.');
+      lines.push('Use `xiaok-broker approval-and-wait <taskId> <threadId> "<summary>" ["<detailText>"]` for a real approval card.');
+      lines.push('For plain replies that do not need a decision, keep using your final plain-text reply so the stop hook can mirror completion.');
     } else {
       lines.push('If an actionable item expects a response, send that response back through the broker in this turn instead of only answering locally.');
       lines.push('Use `intent-broker reply "<summary>"` for the remembered task/thread, or `intent-broker progress <taskId> <threadId> "<summary>"` when you need to publish an intermediate status update.');
@@ -179,6 +184,15 @@ export function buildCodexHookContext(items = [], { participantId, alias = null 
   });
 }
 
+export function buildXiaokHookContext(items = [], { participantId, alias = null } = {}) {
+  return buildToolHookContext(items, {
+    participantId,
+    alias,
+    sessionLabel: 'xiaok session',
+    actionableReplyStyle: 'xiaok-cli'
+  });
+}
+
 export function buildCodexAutoContinuePrompt(items = [], { participantId } = {}) {
   return buildToolAutoContinuePrompt(items, {
     participantId,
@@ -208,9 +222,8 @@ export function buildClaudeAutoContinuePrompt(items = [], { participantId } = {}
 }
 
 export function buildXiaokAutoContinuePrompt(items = [], { participantId } = {}) {
-  const context = buildToolHookContext(items, {
-    participantId,
-    sessionLabel: 'xiaok session'
+  const context = buildXiaokHookContext(items, {
+    participantId
   });
 
   if (!context) {
@@ -220,7 +233,9 @@ export function buildXiaokAutoContinuePrompt(items = [], { participantId } = {})
   return [
     `Intent Broker auto-continue for ${participantId || 'this xiaok session'}.`,
     'The previous turn has completed. Continue immediately with the actionable items below without waiting for new local user input.',
+    'If you need a real user decision during this turn, run `xiaok-broker ask-and-wait ...` or `xiaok-broker approval-and-wait ...` from the shell.',
     'Handle the work, then output only the reply summary that should be sent back through Intent Broker as plain text.',
+    'The stop hook will auto-mirror your final plain-text reply back through Intent Broker as completion progress.',
     'Do not wrap the final reply in markdown fences or add commentary outside the reply itself.',
     'If no reply should be sent, output exactly NO_REPLY.',
     context

@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildClaudeCodeHookOutput } from '../../adapters/claude-code-plugin/format.js';
 import {
+  buildClaudeCodeHookOutput,
+  buildClaudeCodePreToolUseOutput
+} from '../../adapters/claude-code-plugin/format.js';
+import {
+  runPreToolUseHook,
   runPermissionRequestHook,
   runStopHook,
   runSessionStartHook,
@@ -16,6 +20,25 @@ test('buildClaudeCodeHookOutput wraps additional context for SessionStart', () =
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
       additionalContext: 'broker context'
+    }
+  });
+});
+
+test('buildClaudeCodePreToolUseOutput wraps a deny directive for AskUserQuestion suppression', () => {
+  const output = buildClaudeCodePreToolUseOutput({
+    permissionDecision: 'deny',
+    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
+    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+  });
+
+  assert.deepEqual(output, {
+    continue: true,
+    suppressOutput: true,
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
+      additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
     }
   });
 });
@@ -53,6 +76,213 @@ test('permission request hook mirrors a live Claude Code approval request throug
   assert.equal(calls[0].config.participantId, 'claude-code-session-019d448e');
 });
 
+test('pre-tool-use hook mirrors AskUserQuestion as a structured clarification request', async () => {
+  const saved = [];
+  const asks = [];
+
+  const result = await runPreToolUseHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects',
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        header: '删除文件',
+        question: '是否确认永久删除此文件？',
+        options: [
+          { value: 'yes', label: '确认删除', description: '执行 rm /tmp/example.txt' },
+          { value: 'no', label: '取消', description: '保留文件，不执行任何操作' }
+        ]
+      },
+      tool_use_id: 'toolu-cc-ask-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects',
+      savePendingToolUseContext: (toolName, participantId, value) => {
+        saved.push({ toolName, participantId, value });
+      },
+      sendAsk: async (config, request) => {
+        asks.push({ config, request });
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    permissionDecision: 'deny',
+    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
+    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+  });
+  assert.equal(saved.length, 1);
+  assert.equal(asks.length, 1);
+  assert.equal(asks[0].config.participantId, 'claude-code-session-019d448e');
+  assert.deepEqual(asks[0].request, {
+    intentId: 'claude-code-session-019d448e-ask-toolu-cc-ask-1',
+    toParticipantId: 'human.local',
+    taskId: 'claude-code-session-019d448e-ask-toolu-cc-ask-1',
+    threadId: 'claude-code-session-019d448e-ask-toolu-cc-ask-1',
+    participantId: 'claude-code-session-019d448e',
+    summary: '删除文件',
+    prompt: '是否确认永久删除此文件？',
+    detailText: undefined,
+    selectionMode: 'single-select',
+    options: [
+      { value: 'yes', label: '确认删除', description: '执行 rm /tmp/example.txt' },
+      { value: 'no', label: '取消', description: '保留文件，不执行任何操作' }
+    ],
+    metadata: {
+      agentTool: 'claude-code',
+      hookEventName: 'PreToolUse',
+      toolName: 'AskUserQuestion'
+    },
+    delivery: {
+      semantic: 'actionable',
+      source: 'claude-ask-user-question'
+    }
+  });
+});
+
+test('pre-tool-use hook mirrors the first supported AskUserQuestion entry from questions[] and suppresses the native tool', async () => {
+  const asks = [];
+
+  const result = await runPreToolUseHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/kai-export-ppt-lite',
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          {
+            question: '选择前端框架？',
+            header: '框架',
+            options: [
+              { label: 'React', description: '组件化，生态丰富' },
+              { label: 'Vue 3', description: '渐进式，中文社区好' },
+            ],
+            multiSelect: false
+          },
+          {
+            question: '需要哪些附加功能？',
+            header: '附加功能',
+            options: [
+              { label: '用户认证', description: '登录 / 注册 / JWT' },
+              { label: '暗色模式', description: 'Dark mode 切换' },
+            ],
+            multiSelect: true
+          }
+        ]
+      },
+      tool_use_id: 'toolu-cc-ask-batch-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/kai-export-ppt-lite',
+      sendAsk: async (config, request) => {
+        asks.push({ config, request });
+      }
+    }
+  );
+
+  assert.deepEqual(result, {
+    permissionDecision: 'deny',
+    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
+    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+  });
+  assert.equal(asks.length, 1);
+  assert.equal(asks[0].config.participantId, 'claude-code-session-019d448e');
+  assert.deepEqual(asks[0].request, {
+    intentId: 'claude-code-session-019d448e-ask-toolu-cc-ask-batch-1',
+    toParticipantId: 'human.local',
+    taskId: 'claude-code-session-019d448e-ask-toolu-cc-ask-batch-1',
+    threadId: 'claude-code-session-019d448e-ask-toolu-cc-ask-batch-1',
+    participantId: 'claude-code-session-019d448e',
+    summary: '框架',
+    prompt: '选择前端框架？',
+    detailText: undefined,
+    selectionMode: 'single-select',
+    options: [
+      { value: 'React', label: 'React', description: '组件化，生态丰富' },
+      { value: 'Vue 3', label: 'Vue 3', description: '渐进式，中文社区好' }
+    ],
+    metadata: {
+      agentTool: 'claude-code',
+      hookEventName: 'PreToolUse',
+      toolName: 'AskUserQuestion'
+    },
+    delivery: {
+      semantic: 'actionable',
+      source: 'claude-ask-user-question'
+    }
+  });
+});
+
+test('pre-tool-use hook persists tool context for a later permission request', async () => {
+  const saved = [];
+  const toolInput = { command: 'rm /tmp/example.txt' };
+
+  const result = await runPreToolUseHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker',
+      tool_name: 'Bash',
+      tool_input: toolInput,
+      tool_use_id: 'toolu-cc-pret-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      savePendingToolUseContext: (toolName, participantId, value) => {
+        saved.push({ toolName, participantId, value });
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.deepEqual(saved, [
+    {
+      toolName: 'claude-code',
+      participantId: 'claude-code-session-019d448e',
+      value: {
+        sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+        toolName: 'Bash',
+        toolInput,
+        toolUseId: 'toolu-cc-pret-1'
+      }
+    }
+  ]);
+});
+
+test('permission request hook falls back to the correlated pre-tool-use context when the native payload is sparse', async () => {
+  const calls = [];
+  const correlatedInput = { command: 'rm /tmp/example.txt' };
+  const result = await runPermissionRequestHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects/intent-broker'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadPendingToolUseContext: () => ({
+        sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+        toolName: 'Bash',
+        toolInput: correlatedInput,
+        toolUseId: 'toolu-cc-pret-2'
+      }),
+      requestHookApproval: async (input) => {
+        calls.push(input);
+        return { approved: true, approvalId: 'approval-cc-correlation' };
+      }
+    }
+  );
+
+  assert.equal(result.approved, true);
+  assert.deepEqual(result.updatedInput, correlatedInput);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].toolName, 'Bash');
+  assert.deepEqual(calls[0].toolInput, correlatedInput);
+  assert.equal(calls[0].toolUseId, 'toolu-cc-pret-2');
+});
+
 test('session start hook always registers and returns no output when inbox is empty', async () => {
   const calls = [];
 
@@ -64,6 +294,7 @@ test('session start hook always registers and returns no output when inbox is em
       env: {},
       cwd: '/Users/song/projects/intent-broker',
       loadCursorState: () => ({ lastSeenEventId: 0 }),
+      saveRuntimeState: () => {},
       ensureSessionKeeper: async (input) => {
         calls.push({ type: 'keeper', input });
       },
@@ -258,6 +489,58 @@ test('stop hook mirrors pending broker reply through transcript reader', async (
   ]);
 });
 
+test('stop hook falls back to a completed progress event when no pending reply mirror exists', async () => {
+  const sent = [];
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await runStopHook(
+    {
+      session_id: 'claude-session-1'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadRuntimeState: () => ({
+        status: 'running',
+        sessionId: 'claude-session-1',
+        taskId: 'task-claude-complete-1',
+        threadId: 'thread-claude-complete-1'
+      }),
+      maybeMirrorPendingReply: async () => ({ mirrored: false, reason: 'no-pending' }),
+      resolveCompletedTurnSummary: async () => ({ summary: 'Claude completed the task', transcriptPath: '/tmp/claude.jsonl' }),
+      sendProgress: async (_config, payload) => {
+        sent.push(payload);
+        return { eventId: 902 };
+      },
+      saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+      updateWorkState: async (config, state) => {
+        workStates.push({ participantId: config.participantId, state });
+        return { ok: true };
+      },
+      clearPendingToolUseContext: () => {}
+    }
+  );
+
+  assert.equal(result, null);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0], {
+    intentId: sent[0].intentId,
+    taskId: 'task-claude-complete-1',
+    threadId: 'thread-claude-complete-1',
+    stage: 'completed',
+    summary: 'Claude completed the task',
+    delivery: { semantic: 'informational', source: 'stop-fallback' }
+  });
+  assert.equal(savedRuntime[0].state.status, 'idle');
+  assert.deepEqual(workStates, [
+    {
+      participantId: 'claude-code-session-claude-s',
+      state: { status: 'idle', summary: null, taskId: null, threadId: null }
+    }
+  ]);
+});
+
 test('user prompt submit hook injects context, saves cursor, and acks inbox', async () => {
   const saved = [];
   const acked = [];
@@ -274,7 +557,9 @@ test('user prompt submit hook injects context, saves cursor, and acks inbox', as
       loadCursorState: () => ({ lastSeenEventId: 0 }),
       loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
       saveRealtimeQueueState: () => {},
+      saveRuntimeState: () => {},
       saveCursorState: (statePath, state) => saved.push({ statePath, state }),
+      markPendingReplyMirror: () => {},
       ensureSessionKeeper: async (input) => {
         calls.push({ type: 'keeper', participantId: input.config.participantId, inboxMode: input.config.inboxMode });
       },
@@ -482,6 +767,7 @@ test('user prompt submit hook surfaces alias rename broadcasts in injected conte
       loadCursorState: () => ({ lastSeenEventId: 0 }),
       loadRealtimeQueueState: () => ({ actionable: [], informational: [], lastEventId: 0 }),
       saveRealtimeQueueState: () => {},
+      saveRuntimeState: () => {},
       saveCursorState: () => {},
       registerParticipant: async () => ({ ok: true }),
       updateWorkState: async () => ({ ok: true }),

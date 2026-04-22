@@ -5,6 +5,8 @@ import {
   ackInbox as ackInboxDefault,
   pollInbox as pollInboxDefault,
   registerParticipant as registerParticipantDefault,
+  sendProgress as sendProgressDefault,
+  sendAsk as sendAskDefault,
   updateWorkState as updateWorkStateDefault
 } from '../session-bridge/api.js';
 import {
@@ -30,6 +32,11 @@ import {
   saveRuntimeState as saveRuntimeStateDefault
 } from '../session-bridge/runtime-state.js';
 import {
+  clearPendingToolUseContext as clearPendingToolUseContextDefault,
+  loadPendingToolUseContext as loadPendingToolUseContextDefault,
+  savePendingToolUseContext as savePendingToolUseContextDefault
+} from '../session-bridge/pending-tool-use.js';
+import {
   drainRealtimeQueue,
   ensureRealtimeBridge as ensureRealtimeBridgeDefault,
   loadRealtimeQueueState as loadRealtimeQueueStateDefault,
@@ -48,6 +55,8 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const cliPath = path.resolve(path.dirname(__filename), 'bin', 'claude-code-broker.js');
+const MIRRORED_ASK_USER_QUESTION_CONTEXT =
+  'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.';
 
 function configFromHookInput(
   input,
@@ -114,8 +123,220 @@ function pickToolInput(input = {}) {
   return input.tool_input || input.toolInput || input.arguments || input.input || {};
 }
 
+async function resolveCompletedTurnSummaryFromHookInput(input) {
+  const summary = [
+    input.last_assistant_message,
+    input.lastAssistantMessage,
+    input.assistant_message_preview,
+    input.assistantMessagePreview
+  ].find((value) => typeof value === 'string' && value.trim());
+
+  return {
+    summary: summary || '',
+    transcriptPath: (typeof input.transcript_path === 'string' && input.transcript_path)
+      || (typeof input.transcriptPath === 'string' && input.transcriptPath)
+      || null
+  };
+}
+
 function pickToolUseId(input = {}) {
   return input.tool_use_id || input.toolUseId || input.tool_call_id || input.toolCallId || input.call_id || input.callId || input.id || null;
+}
+
+function readStringValue(source, keys = []) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function readBooleanValue(source, keys = []) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeAskUserQuestionOption(option, index) {
+  if (typeof option === 'string' && option.trim()) {
+    return {
+      value: option.trim(),
+      label: option.trim()
+    };
+  }
+
+  if (!option || typeof option !== 'object' || Array.isArray(option)) {
+    return null;
+  }
+
+  const value = readStringValue(option, ['value', 'id', 'key', 'name'])
+    ?? readStringValue(option, ['label', 'title', 'text'])
+    ?? String(index);
+  const label = readStringValue(option, ['label', 'title', 'text', 'name']) ?? value;
+  const description = readStringValue(option, ['description', 'detail', 'subtitle', 'helpText']);
+
+  return {
+    value,
+    label,
+    description
+  };
+}
+
+function pickAskUserQuestionSource(toolInput = {}) {
+  if (!Array.isArray(toolInput.questions) || toolInput.questions.length === 0) {
+    return toolInput;
+  }
+
+  const singleSelectQuestion = toolInput.questions.find((question) => (
+    question
+    && typeof question === 'object'
+    && !Array.isArray(question)
+    && readBooleanValue(question, ['multiSelect', 'multiple']) !== true
+  ));
+
+  if (singleSelectQuestion && typeof singleSelectQuestion === 'object' && !Array.isArray(singleSelectQuestion)) {
+    return singleSelectQuestion;
+  }
+
+  const firstQuestion = toolInput.questions[0];
+  if (firstQuestion && typeof firstQuestion === 'object' && !Array.isArray(firstQuestion)) {
+    return firstQuestion;
+  }
+
+  return toolInput;
+}
+
+function buildAskUserQuestionRequest(config, input = {}) {
+  const toolName = pickToolName(input);
+  if (toolName !== 'AskUserQuestion') {
+    return null;
+  }
+
+  const toolInput = pickToolInput(input);
+  const source = pickAskUserQuestionSource(toolInput);
+  const optionSource = Array.isArray(source.options)
+    ? source.options
+    : Array.isArray(source.choices)
+      ? source.choices
+      : Array.isArray(source.answers)
+        ? source.answers
+        : [];
+  const options = optionSource
+    .map((option, index) => normalizeAskUserQuestionOption(option, index))
+    .filter((option) => option !== null);
+
+  if (options.length === 0) {
+    return null;
+  }
+
+  const prompt = readStringValue(source, ['question', 'prompt', 'message', 'text'])
+    ?? readStringValue(source, ['header', 'title', 'summary'])
+    ?? 'Clarification requested';
+  const summary = readStringValue(source, ['header', 'title', 'summary']) ?? prompt;
+  const detailText = readStringValue(source, ['detailText', 'detail', 'description', 'context', 'warning']);
+  const isMultiSelect = readBooleanValue(source, ['multiSelect', 'multiple']) === true;
+  const selectionMode = isMultiSelect ? 'multi-select' : 'single-select';
+  const toolUseId = pickToolUseId(input) ?? 'ask-user-question';
+  const taskId = input.task_id || input.taskId || `${config.participantId}-ask-${toolUseId}`;
+  const threadId = input.thread_id || input.threadId || taskId;
+
+  return {
+    intentId: `${config.participantId}-ask-${toolUseId}`,
+    toParticipantId: 'human.local',
+    taskId,
+    threadId,
+    participantId: config.participantId,
+    summary,
+    prompt,
+    detailText,
+    selectionMode,
+    options,
+    metadata: {
+      agentTool: 'claude-code',
+      hookEventName: 'PreToolUse',
+      toolName
+    },
+    delivery: {
+      semantic: 'actionable',
+      source: 'claude-ask-user-question'
+    }
+  };
+}
+
+function mergeCorrelatedToolContext(input = {}, correlated = null) {
+  if (!correlated || typeof correlated !== 'object') {
+    return {
+      toolName: pickToolName(input),
+      toolInput: pickToolInput(input),
+      toolUseId: pickToolUseId(input)
+    };
+  }
+
+  const directToolName = pickToolName(input);
+  const directToolInput = pickToolInput(input);
+  const directToolUseId = pickToolUseId(input);
+
+  return {
+    toolName: directToolName === 'tool' && correlated.toolName ? correlated.toolName : directToolName,
+    toolInput:
+      (directToolInput && Object.keys(directToolInput).length > 0)
+        ? directToolInput
+        : (correlated.toolInput ?? directToolInput),
+    toolUseId: directToolUseId || correlated.toolUseId || null
+  };
+}
+
+export async function runPreToolUseHook(
+  input,
+  {
+    env = process.env,
+    cwd = process.cwd(),
+    homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
+    savePendingToolUseContext = savePendingToolUseContextDefault,
+    sendAsk = sendAskDefault
+  } = {}
+) {
+  if (env.INTENT_BROKER_SKIP_APPROVAL_SYNC === '1') {
+    return null;
+  }
+
+  return safelyRunHook(async () => {
+    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+    const sessionId = input.session_id || env.CLAUDE_CODE_SESSION_ID || '';
+    const askUserQuestionRequest = buildAskUserQuestionRequest(config, input);
+    savePendingToolUseContext('claude-code', config.participantId, {
+      sessionId,
+      toolName: pickToolName(input),
+      toolInput: pickToolInput(input),
+      toolUseId: pickToolUseId(input)
+    }, { homeDir });
+    if (askUserQuestionRequest) {
+      await sendAsk(config, askUserQuestionRequest);
+      return {
+        permissionDecision: 'deny',
+        permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
+        additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT
+      };
+    }
+    return null;
+  });
 }
 
 export async function runPermissionRequestHook(
@@ -125,6 +346,7 @@ export async function runPermissionRequestHook(
     cwd = process.cwd(),
     homeDir,
     resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
+    loadPendingToolUseContext = loadPendingToolUseContextDefault,
     requestHookApproval = requestHookApprovalFailOpenDefault
   } = {}
 ) {
@@ -133,17 +355,21 @@ export async function runPermissionRequestHook(
   }
 
   const sessionId = input.session_id || env.CLAUDE_CODE_SESSION_ID || '';
-  const toolName = pickToolName(input);
-  const toolInput = pickToolInput(input);
+  const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+  const correlated = loadPendingToolUseContext('claude-code', config.participantId, { homeDir });
+  const effectiveTool = mergeCorrelatedToolContext(
+    input,
+    !correlated?.sessionId || !sessionId || correlated.sessionId === sessionId ? correlated : null
+  );
   const result = await requestHookApproval({
-    config: configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript }),
+    config,
     agentTool: 'claude-code',
     hookEventName: 'PermissionRequest',
     sessionId,
     cwd: input.cwd || cwd,
-    toolName,
-    toolInput,
-    toolUseId: pickToolUseId(input) || `${sessionId || 'claude-code'}-${toolName}`
+    toolName: effectiveTool.toolName,
+    toolInput: effectiveTool.toolInput,
+    toolUseId: effectiveTool.toolUseId || `${sessionId || 'claude-code'}-${effectiveTool.toolName}`
   });
 
   if (result?.approved === false) {
@@ -152,7 +378,7 @@ export async function runPermissionRequestHook(
 
   return {
     ...result,
-    updatedInput: toolInput
+    updatedInput: effectiveTool.toolInput
   };
 }
 
@@ -398,16 +624,73 @@ export async function runStopHook(
     cwd = process.cwd(),
     homeDir,
     resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
-    maybeMirrorPendingReply = maybeMirrorPendingReplyDefault
+    clearPendingToolUseContext = clearPendingToolUseContextDefault,
+    maybeMirrorPendingReply = maybeMirrorPendingReplyDefault,
+    loadRuntimeState = loadRuntimeStateDefault,
+    saveRuntimeState = saveRuntimeStateDefault,
+    resolveCompletedTurnSummary = resolveCompletedTurnSummaryFromHookInput,
+    sendProgress = sendProgressDefault,
+    updateWorkState = updateWorkStateDefault
   } = {}
 ) {
   return safelyRunHook(async () => {
     const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
-    await maybeMirrorPendingReply(config, {
+    const runtimeStatePath = runtimePathForParticipant(config.participantId, homeDir);
+    const runtimeState = loadRuntimeState(runtimeStatePath);
+    const currentSessionId = input.session_id || runtimeState.sessionId || null;
+
+    try {
+      clearPendingToolUseContext('claude-code', config.participantId, { homeDir });
+    } catch {
+      // Completion mirroring is more important than clearing cached pre-tool context.
+    }
+
+    const mirroredReply = await maybeMirrorPendingReply(config, {
       toolName: 'claude-code',
-      sessionId: input.session_id || null,
+      sessionId: currentSessionId,
       homeDir
     });
+
+    if (
+      mirroredReply?.mirrored !== true
+      && runtimeState.status === 'running'
+      && runtimeState.taskId
+      && runtimeState.threadId
+    ) {
+      const completedTurn = await resolveCompletedTurnSummary(input, {
+        toolName: 'claude-code',
+        sessionId: currentSessionId,
+        homeDir
+      });
+
+      if (completedTurn?.summary) {
+        await sendProgress(config, {
+          intentId: `${config.participantId}-stop-complete-${Date.now()}`,
+          taskId: runtimeState.taskId,
+          threadId: runtimeState.threadId,
+          stage: 'completed',
+          summary: completedTurn.summary,
+          delivery: {
+            semantic: 'informational',
+            source: 'stop-fallback'
+          }
+        }).catch(() => null);
+      }
+    }
+
+    saveRuntimeState(runtimeStatePath, {
+      ...runtimeState,
+      status: 'idle',
+      sessionId: currentSessionId,
+      turnId: null,
+      source: 'stop-hook',
+      updatedAt: new Date().toISOString()
+    });
+    await updateWorkState(
+      config,
+      { status: 'idle', summary: null, taskId: null, threadId: null }
+    ).catch(() => null);
+
     return null;
   });
 }

@@ -20,6 +20,8 @@ function clone(value) {
 
 export { buildHookCommand };
 
+const CODEX_PRE_TOOL_USE_MATCHER = 'Bash|exec_command';
+
 function buildManagedCommandMatcher(scriptName, hookMode) {
   return (command = '') => command.includes(scriptName) && command.includes(`hook ${hookMode}`);
 }
@@ -42,6 +44,7 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
   });
 
   hooks.PreToolUse = mergeManagedHookGroups(hooks.PreToolUse || [], {
+    matcher: CODEX_PRE_TOOL_USE_MATCHER,
     command: commands.preToolUseCommand,
     commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'pre-tool-use')
   });

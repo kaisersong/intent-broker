@@ -1,4 +1,4 @@
-import { requestJson as requestJsonDefault } from './api.js';
+import { requestJson as requestJsonDefault, sendApproval as sendApprovalDefault, sendAsk as sendAskDefault } from './api.js';
 
 const DEFAULT_POLL_MS = 250;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 30 * 1000;
@@ -173,6 +173,45 @@ async function waitForApprovalResponse({
   throw new Error(`timeout waiting for ${approvalId}`);
 }
 
+
+function extractClarificationSummary(event = {}) {
+  return event.payload?.body?.summary || event.payload?.summary || '';
+}
+
+async function waitForClarificationAnswer({
+  config,
+  taskId,
+  threadId,
+  afterEventId,
+  requestJson = requestJsonDefault,
+  sleep: sleepImpl = sleep,
+  timeoutMs = resolveResponseTimeoutMs(),
+  pollMs = DEFAULT_POLL_MS
+}) {
+  let after = Math.max(0, Number(afterEventId || 0) - 1);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const replay = await requestJson(`${config.brokerUrl}/events/replay?after=${after}&limit=100`);
+    for (const event of replay.items || []) {
+      after = Math.max(after, Number(event.eventId || event.id || 0));
+      if ((event.kind || event.type) !== 'answer_clarification') {
+        continue;
+      }
+      if ((taskId ?? null) !== (event.taskId ?? null)) {
+        continue;
+      }
+      if ((threadId ?? null) !== (event.threadId ?? null)) {
+        continue;
+      }
+      return event;
+    }
+    await sleepImpl(pollMs);
+  }
+
+  throw new Error(`timeout waiting for clarification ${taskId || 'no-task'} ${threadId || 'no-thread'}`);
+}
+
 async function respondApprovalFailOpen({
   config,
   approvalId,
@@ -273,6 +312,63 @@ export async function requestHookApprovalFailOpen(input) {
       error: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+
+export async function requestHumanClarification({
+  config,
+  request,
+  sendAsk = sendAskDefault,
+  requestJson = requestJsonDefault,
+  sleep: sleepImpl = sleep,
+  timeoutMs = resolveResponseTimeoutMs()
+}) {
+  const sent = await sendAsk(config, request);
+  const eventId = sent.event?.eventId ?? sent.eventId ?? 0;
+  const response = await waitForClarificationAnswer({
+    config,
+    taskId: request.taskId,
+    threadId: request.threadId,
+    afterEventId: eventId,
+    requestJson,
+    sleep: sleepImpl,
+    timeoutMs
+  });
+
+  return {
+    summary: extractClarificationSummary(response),
+    requestEventId: eventId,
+    responseEventId: response.eventId,
+    taskId: request.taskId ?? null,
+    threadId: request.threadId ?? null
+  };
+}
+
+export async function requestHumanApproval({
+  config,
+  request,
+  sendApproval = sendApprovalDefault,
+  requestJson = requestJsonDefault,
+  sleep: sleepImpl = sleep,
+  timeoutMs = resolveResponseTimeoutMs()
+}) {
+  const sent = await sendApproval(config, request);
+  const eventId = sent.event?.eventId ?? sent.eventId ?? 0;
+  const response = await waitForApprovalResponse({
+    config,
+    approvalId: request.approvalId,
+    afterEventId: eventId,
+    requestJson,
+    sleep: sleepImpl,
+    timeoutMs
+  });
+
+  return {
+    approved: response.payload?.decision !== 'denied',
+    approvalId: request.approvalId,
+    requestEventId: eventId,
+    responseEventId: response.eventId
+  };
 }
 
 export function buildCodexPreToolUseOutput(result) {

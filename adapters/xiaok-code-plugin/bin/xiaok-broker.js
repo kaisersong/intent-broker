@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   registerParticipant,
+  sendApproval,
   sendAsk,
   sendProgress,
   sendTask,
@@ -18,7 +19,7 @@ import {
 import { buildCodexHookOutput } from '../../session-bridge/codex-hooks.js';
 import { runCliMain } from '../../session-bridge/cli-errors.js';
 import { deriveSessionBridgeConfig } from '../../session-bridge/config.js';
-import { buildXiaokPermissionHookOutput } from '../../session-bridge/hook-approval.js';
+import { buildXiaokPermissionHookOutput, requestHumanApproval, requestHumanClarification } from '../../session-bridge/hook-approval.js';
 import { loadRuntimeState } from '../../session-bridge/runtime-state.js';
 import { runRealtimeBridgeProcess } from '../../session-bridge/realtime-bridge.js';
 import { runSessionKeeperProcess } from '../../session-bridge/session-keeper.js';
@@ -44,7 +45,11 @@ function usage() {
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js inbox
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js who
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js reply [@alias] <summary>
+  node adapters/xiaok-code-plugin/bin/xiaok-broker.js approval <taskId> <threadId> <summary> [detailText]
+  node adapters/xiaok-code-plugin/bin/xiaok-broker.js ask-and-wait <taskId> <threadId> <summary> [prompt]
+  node adapters/xiaok-code-plugin/bin/xiaok-broker.js approval-and-wait <taskId> <threadId> <summary> [detailText]
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js progress <taskId> <threadId> <summary>
+  node adapters/xiaok-code-plugin/bin/xiaok-broker.js complete <taskId> <threadId> <summary>
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js keepalive
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js realtime-bridge
   node adapters/xiaok-code-plugin/bin/xiaok-broker.js hook session-start
@@ -101,7 +106,11 @@ async function writeXiaokApprovalHookResult(result) {
 
 async function handlePreToolUseHook() {
   const input = await readJsonStdin();
-  await writeXiaokApprovalHookResult(await runPreToolUseHook(input));
+  const result = await runPreToolUseHook(input);
+  if (!result) {
+    return;
+  }
+  process.stdout.write(JSON.stringify(result));
 }
 
 async function handlePermissionRequestHook() {
@@ -129,6 +138,20 @@ function config() {
 function normalizeOptionalValue(value) {
   if (!value || value === '-') return undefined;
   return value;
+}
+
+function defaultApprovalActions() {
+  return [
+    { label: '允许一次', decisionMode: 'yes' },
+    { label: '拒绝', decisionMode: 'no' }
+  ];
+}
+
+function defaultQuestionOptions() {
+  return [
+    { value: 'continue', label: '继续', description: '继续执行当前计划' },
+    { value: 'pause', label: '先停一下', description: '先不要继续执行' }
+  ];
 }
 
 async function main() {
@@ -165,11 +188,68 @@ async function main() {
         delivery: { semantic: 'actionable', source: 'explicit' }
       }), null, 2));
       break;
+    case 'approval':
+      console.log(JSON.stringify(await sendApproval(config(), {
+        intentId: `${config().participantId}-approval-${Date.now()}`,
+        taskId: args[0],
+        threadId: args[1],
+        approvalId: `${config().participantId}-approval-${Date.now()}`,
+        summary: args[2],
+        detailText: args.slice(3).join(' ') || undefined,
+        actions: defaultApprovalActions(),
+        delivery: { semantic: 'actionable', source: 'explicit' }
+      }), null, 2));
+      break;
+    case 'ask-and-wait':
+      console.log(JSON.stringify(await requestHumanClarification({
+        config: config(),
+        request: {
+          intentId: `${config().participantId}-ask-${Date.now()}`,
+          toParticipantId: 'human.local',
+          taskId: args[0],
+          threadId: args[1],
+          summary: args[2],
+          prompt: args.slice(3).join(' ') || args[2],
+          selectionMode: 'single-select',
+          options: defaultQuestionOptions(),
+          delivery: { semantic: 'actionable', source: 'xiaok-broker-cli' }
+        }
+      }), null, 2));
+      break;
+    case 'approval-and-wait': {
+      const result = await requestHumanApproval({
+        config: config(),
+        request: {
+          intentId: `${config().participantId}-approval-${Date.now()}`,
+          taskId: args[0],
+          threadId: args[1],
+          approvalId: `${config().participantId}-approval-${Date.now()}`,
+          summary: args[2],
+          detailText: args.slice(3).join(' ') || undefined,
+          actions: defaultApprovalActions(),
+          delivery: { semantic: 'actionable', source: 'xiaok-broker-cli' }
+        }
+      });
+      console.log(JSON.stringify(result, null, 2));
+      if (!result.approved) {
+        process.exitCode = 2;
+      }
+      break;
+    }
     case 'progress':
     case 'send-progress':
       console.log(JSON.stringify(await sendProgress(config(), {
         intentId: `${config().participantId}-progress-${Date.now()}`,
         taskId: args[0], threadId: args[1], summary: args.slice(2).join(' ')
+      }), null, 2));
+      break;
+    case 'complete':
+      console.log(JSON.stringify(await sendProgress(config(), {
+        intentId: `${config().participantId}-complete-${Date.now()}`,
+        taskId: args[0],
+        threadId: args[1],
+        stage: 'completed',
+        summary: args.slice(2).join(' ')
       }), null, 2));
       break;
     case 'set-work-state':

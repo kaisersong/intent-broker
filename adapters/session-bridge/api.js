@@ -227,6 +227,14 @@ export async function sendTask(config, request, fetchImpl = fetch) {
 }
 
 export async function sendAsk(config, request, fetchImpl = fetch) {
+  const body = {
+    summary: request.summary,
+    prompt: request.prompt ?? request.summary,
+    detailText: request.detailText,
+    selectionMode: request.selectionMode,
+    options: request.options
+  };
+
   return requestJson(`${config.brokerUrl}/intents`, {
     method: 'POST',
     headers: jsonHeaders(),
@@ -238,7 +246,47 @@ export async function sendAsk(config, request, fetchImpl = fetch) {
       threadId: request.threadId,
       to: { mode: 'participant', participants: [request.toParticipantId] },
       payload: {
-        body: { summary: request.summary },
+        participantId: request.participantId ?? config.participantId,
+        body,
+        metadata: request.metadata,
+        delivery: normalizeDelivery(request.delivery, {
+          semantic: 'actionable',
+          source: 'default'
+        })
+      }
+    })
+  }, { fetchImpl });
+}
+
+export async function sendApproval(config, request, fetchImpl = fetch) {
+  const toParticipants = request.toParticipantIds?.length
+    ? request.toParticipantIds
+    : [request.toParticipantId || 'human.local'];
+  const body = {
+    summary: request.summary,
+    detailText: request.detailText,
+    commandTitle: request.commandTitle,
+    commandLine: request.commandLine,
+    commandPreview: request.commandPreview
+  };
+
+  return requestJson(`${config.brokerUrl}/intents`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      intentId: request.intentId,
+      kind: 'request_approval',
+      fromParticipantId: config.participantId,
+      taskId: request.taskId,
+      threadId: request.threadId,
+      to: { mode: 'participant', participants: toParticipants },
+      payload: {
+        participantId: request.participantId ?? config.participantId,
+        approvalId: request.approvalId,
+        approvalScope: request.approvalScope ?? 'run_command',
+        body,
+        actions: request.actions,
+        ...(request.metadata ? { metadata: request.metadata } : {}),
         delivery: normalizeDelivery(request.delivery, {
           semantic: 'actionable',
           source: 'default'
@@ -266,7 +314,7 @@ export async function sendProgress(config, request, fetchImpl = fetch) {
       threadId: request.threadId,
       to,
       payload: {
-        stage: 'in_progress',
+        stage: request.stage || 'in_progress',
         body: { summary: request.summary },
         ...(request.metadata ? { metadata: request.metadata } : {}),
         delivery: normalizeDelivery(request.delivery, {

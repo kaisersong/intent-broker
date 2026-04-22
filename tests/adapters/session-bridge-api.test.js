@@ -8,6 +8,7 @@ import {
   pollInbox,
   registerParticipant,
   resolveParticipantAliases,
+  sendApproval,
   sendAsk,
   updateWorkState,
   sendProgress,
@@ -268,6 +269,13 @@ test('sendAsk posts ask_clarification intent with explicit actionable delivery',
       taskId: 'task-ask',
       threadId: 'thread-ask',
       summary: 'Need a decision',
+      prompt: 'Choose whether to delete the file',
+      detailText: 'This action cannot be undone.',
+      selectionMode: 'single-select',
+      options: [
+        { value: 'yes', label: 'Confirm delete', description: 'Delete the selected file permanently' },
+        { value: 'no', label: 'Cancel', description: 'Keep the file' }
+      ],
       delivery: { semantic: 'actionable', source: 'explicit' }
     },
     fetchStub
@@ -281,7 +289,17 @@ test('sendAsk posts ask_clarification intent with explicit actionable delivery',
     threadId: 'thread-ask',
     to: { mode: 'participant', participants: ['claude.main'] },
     payload: {
-      body: { summary: 'Need a decision' },
+      participantId: 'codex.main',
+      body: {
+        summary: 'Need a decision',
+        prompt: 'Choose whether to delete the file',
+        detailText: 'This action cannot be undone.',
+        selectionMode: 'single-select',
+        options: [
+          { value: 'yes', label: 'Confirm delete', description: 'Delete the selected file permanently' },
+          { value: 'no', label: 'Cancel', description: 'Keep the file' }
+        ]
+      },
       delivery: { semantic: 'actionable', source: 'explicit' }
     }
   });
@@ -318,6 +336,27 @@ test('sendProgress forwards explicit delivery overrides', async () => {
       delivery: { semantic: 'actionable', source: 'explicit' }
     }
   });
+});
+
+test('sendProgress forwards explicit stage overrides', async () => {
+  const { calls, fetchStub } = createFetchStub();
+
+  await sendProgress(
+    {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex.main'
+    },
+    {
+      intentId: 'intent-complete',
+      taskId: 'task-1',
+      threadId: 'thread-1',
+      stage: 'completed',
+      summary: 'Done'
+    },
+    fetchStub
+  );
+
+  assert.equal(JSON.parse(calls[0].options.body).payload.stage, 'completed');
 });
 
 test('updateWorkState posts current work summary for the participant', async () => {
@@ -390,4 +429,53 @@ test('resolveParticipantAliases queries broker alias resolution endpoint', async
   );
 
   assert.equal(calls[0].url, 'http://127.0.0.1:4318/participants/resolve?aliases=codex%2Cclaude2');
+});
+
+test('sendApproval posts request_approval intent with actionable delivery', async () => {
+  const { calls, fetchStub } = createFetchStub();
+
+  await sendApproval(
+    {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'xiaok.main'
+    },
+    {
+      intentId: 'intent-approval',
+      taskId: 'task-approval',
+      threadId: 'thread-approval',
+      approvalId: 'approval-1',
+      approvalScope: 'run_command',
+      summary: 'Need approval to continue',
+      detailText: 'This step will modify the broker bridge.',
+      actions: [
+        { label: '允许一次', decisionMode: 'yes' },
+        { label: '拒绝', decisionMode: 'no' }
+      ],
+      delivery: { semantic: 'actionable', source: 'explicit' }
+    },
+    fetchStub
+  );
+
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    intentId: 'intent-approval',
+    kind: 'request_approval',
+    fromParticipantId: 'xiaok.main',
+    taskId: 'task-approval',
+    threadId: 'thread-approval',
+    to: { mode: 'participant', participants: ['human.local'] },
+    payload: {
+      participantId: 'xiaok.main',
+      approvalId: 'approval-1',
+      approvalScope: 'run_command',
+      body: {
+        summary: 'Need approval to continue',
+        detailText: 'This step will modify the broker bridge.'
+      },
+      actions: [
+        { label: '允许一次', decisionMode: 'yes' },
+        { label: '拒绝', decisionMode: 'no' }
+      ],
+      delivery: { semantic: 'actionable', source: 'explicit' }
+    }
+  });
 });

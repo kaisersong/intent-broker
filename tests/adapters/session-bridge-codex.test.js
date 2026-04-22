@@ -7,6 +7,8 @@ import path from 'node:path';
 import {
   buildCodexAutoContinuePrompt,
   buildCodexHookContext,
+  buildXiaokAutoContinuePrompt,
+  buildXiaokHookContext,
   buildCodexHookOutput,
   buildToolAutoContinuePrompt,
   buildToolHookContext,
@@ -326,4 +328,51 @@ test('cursor state can be saved and reloaded', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('buildXiaokHookContext teaches xiaok to use broker CLI roundtrips for real asks and approvals', () => {
+  const context = buildXiaokHookContext(
+    [
+      {
+        eventId: 91,
+        kind: 'request_task',
+        fromParticipantId: 'human.song',
+        taskId: 'task-rt',
+        threadId: 'thread-rt',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: 'Need a real user decision before continuing' }
+        }
+      }
+    ],
+    { participantId: 'xiaok.main', alias: 'xiaok' }
+  );
+
+  assert.match(context, /xiaok-broker ask-and-wait/);
+  assert.match(context, /xiaok-broker approval-and-wait/);
+  assert.match(context, /instead of claiming that broker tools are unavailable/i);
+});
+
+test('buildXiaokAutoContinuePrompt keeps completion mirroring while routing decisions through xiaok-broker commands', () => {
+  const prompt = buildXiaokAutoContinuePrompt(
+    [
+      {
+        eventId: 92,
+        kind: 'ask_clarification',
+        fromParticipantId: 'human.song',
+        taskId: 'task-rt',
+        threadId: 'thread-rt',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: 'Do you want to continue?' }
+        }
+      }
+    ],
+    { participantId: 'xiaok.main' }
+  );
+
+  assert.match(prompt, /output only the reply summary/i);
+  assert.match(prompt, /stop hook will auto-mirror/i);
+  assert.match(prompt, /xiaok-broker ask-and-wait/);
+  assert.match(prompt, /xiaok-broker approval-and-wait/);
 });

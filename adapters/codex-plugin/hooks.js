@@ -125,6 +125,98 @@ function pickToolUseId(input = {}) {
   return input.tool_use_id || input.toolUseId || input.tool_call_id || input.toolCallId || input.call_id || input.callId || input.id || null;
 }
 
+function pickExecCommand(toolInput = {}) {
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+    return '';
+  }
+
+  return [toolInput.command, toolInput.cmd]
+    .find((value) => typeof value === 'string' && value.trim().length > 0)?.trim() || '';
+}
+
+function readOptionalString(source, keys = []) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function readOptionalBoolean(source, keys = []) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function hasShellCommand(command, pattern) {
+  return new RegExp('(^|[;&|]\\s*|&&\\s*|\\|\\|\\s*)(sudo\\s+)?' + pattern + '(\\s|$)', 'i').test(command);
+}
+
+function isDestructiveExecCommand(command) {
+  const trimmed = typeof command === 'string' ? command.trim() : '';
+  if (!trimmed) {
+    return false;
+  }
+
+  return hasShellCommand(trimmed, 'rm')
+    || hasShellCommand(trimmed, 'rmdir')
+    || hasShellCommand(trimmed, 'mv')
+    || hasShellCommand(trimmed, 'chmod')
+    || hasShellCommand(trimmed, 'chown')
+    || hasShellCommand(trimmed, 'dd')
+    || /git\\s+reset\\s+--hard/i.test(trimmed)
+    || /git\\s+clean\\b[^\n]*\\s-f/i.test(trimmed)
+    || /git\\s+checkout\\s+--/i.test(trimmed)
+    || /git\\s+push\\b[^\n]*--force(?:-with-lease)?/i.test(trimmed)
+    || /git\\s+branch\\s+-D\\b/i.test(trimmed)
+    || /git\\s+tag\\s+-d\\b/i.test(trimmed);
+}
+
+function hasExplicitApprovalSignal(toolInput = {}) {
+  return readOptionalString(toolInput, ['sandbox_permissions', 'sandboxPermissions']) === 'require_escalated'
+    || readOptionalBoolean(toolInput, ['with_escalated_permissions', 'withEscalatedPermissions']) === true
+    || typeof readOptionalString(toolInput, ['justification']) === 'string';
+}
+
+function shouldMirrorCodexPreToolUseApproval(toolName, toolInput) {
+  if (toolName !== 'exec_command' && toolName !== 'Bash') {
+    return false;
+  }
+
+  const command = pickExecCommand(toolInput);
+  return hasExplicitApprovalSignal(toolInput) || isDestructiveExecCommand(command);
+}
+
+async function resolveCompletedTurnSummaryFromHookInput(input) {
+  const summary = readOptionalString(input, [
+    'last_assistant_message',
+    'lastAssistantMessage',
+    'assistant_message_preview',
+    'assistantMessagePreview'
+  ]);
+
+  return {
+    summary: summary || '',
+    transcriptPath: readOptionalString(input, ['transcript_path', 'transcriptPath']) || null
+  };
+}
+
 export async function runPreToolUseHook(
   input,
   {
@@ -142,6 +234,10 @@ export async function runPreToolUseHook(
   const sessionId = input.session_id || input.thread_id || env.CODEX_THREAD_ID || '';
   const toolName = pickToolName(input);
   const toolInput = pickToolInput(input);
+
+  if (!shouldMirrorCodexPreToolUseApproval(toolName, toolInput)) {
+    return { approved: true, skipped: true };
+  }
 
   return requestHookApproval({
     config: configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript }),
@@ -409,6 +505,7 @@ export async function runStopHook(
     maybeMirrorPendingReply = maybeMirrorPendingReplyDefault,
     markPendingReplyMirror = markPendingReplyMirrorDefault,
     sendProgress = sendProgressDefault,
+    resolveCompletedTurnSummary = resolveCompletedTurnSummaryFromHookInput,
     updateWorkState = updateWorkStateDefault,
     ackInbox = ackInboxDefault
   } = {}
@@ -422,8 +519,47 @@ export async function runStopHook(
     const runtimeState = loadRuntimeState(runtimeStatePath);
     const queueState = loadRealtimeQueueState(queueStatePath);
 
-    // IMPORTANT: Check queue BEFORE mirroring to avoid sending reply to wrong task
-    // If there are new actionable messages, they take priority and we skip the current mirror
+    const currentSessionId = input.session_id || input.thread_id || runtimeState.sessionId || null;
+    const currentTurnId = input.turn_id || null;
+
+    // Mirror the reply that just finished before draining any newly arrived actionable work.
+    // Otherwise a fresh approval/question can suppress the completion for the turn the user just saw.
+    const mirroredReply = await maybeMirrorPendingReply(config, {
+      toolName: 'codex',
+      sessionId: currentSessionId,
+      turnId: currentTurnId,
+      homeDir,
+      sendProgress
+    });
+
+    if (
+      mirroredReply?.mirrored !== true
+      && runtimeState.status === 'running'
+      && runtimeState.taskId
+      && runtimeState.threadId
+    ) {
+      const completedTurn = await resolveCompletedTurnSummary(input, {
+        toolName: 'codex',
+        sessionId: currentSessionId,
+        turnId: currentTurnId,
+        homeDir
+      });
+
+      if (completedTurn?.summary) {
+        await sendProgress(config, {
+          intentId: `${config.participantId}-stop-complete-${Date.now()}`,
+          taskId: runtimeState.taskId,
+          threadId: runtimeState.threadId,
+          stage: 'completed',
+          summary: completedTurn.summary,
+          delivery: {
+            semantic: 'informational',
+            source: 'stop-fallback'
+          }
+        }).catch(() => null);
+      }
+    }
+
     if (queueState.actionable.length) {
       // New messages arrived while we were busy - process them instead of mirroring old task
       const drainedQueue = drainRealtimeQueue(queueState);
@@ -469,20 +605,11 @@ export async function runStopHook(
       return buildCodexAutoContinuePrompt(items, { participantId: config.participantId });
     }
 
-    // No new messages - safe to mirror the current task's reply
-    await maybeMirrorPendingReply(config, {
-      toolName: 'codex',
-      sessionId: input.session_id || input.thread_id || runtimeState.sessionId || null,
-      turnId: input.turn_id || null,
-      homeDir,
-      sendProgress
-    });
-
     saveRuntimeState(runtimeStatePath, {
       ...runtimeState,
       status: 'idle',
-      sessionId: input.session_id || input.thread_id || runtimeState.sessionId,
-      turnId: input.turn_id || null,
+      sessionId: currentSessionId,
+      turnId: currentTurnId,
       source: 'stop-hook',
       updatedAt: new Date().toISOString()
     });

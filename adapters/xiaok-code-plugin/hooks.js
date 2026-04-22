@@ -5,6 +5,7 @@ import {
   ackInbox as ackInboxDefault,
   pollInbox as pollInboxDefault,
   registerParticipant as registerParticipantDefault,
+  sendAsk as sendAskDefault,
   sendProgress as sendProgressDefault,
   updateWorkState as updateWorkStateDefault
 } from '../session-bridge/api.js';
@@ -13,8 +14,8 @@ import {
   pickActiveWorkContext
 } from '../session-bridge/automatic-work-state.js';
 import {
-  buildCodexAutoContinuePrompt,
-  buildCodexHookContext,
+  buildXiaokAutoContinuePrompt,
+  buildXiaokHookContext,
   highestEventId
 } from '../session-bridge/codex-hooks.js';
 import {
@@ -151,12 +152,184 @@ async function runXiaokApprovalHook(input, hookEventName, {
   });
 }
 
-export async function runPreToolUseHook(input, options = {}) {
-  return runXiaokApprovalHook(input, 'PreToolUse', options);
-}
-
 export async function runPermissionRequestHook(input, options = {}) {
   return runXiaokApprovalHook(input, 'PermissionRequest', options);
+}
+
+function readStringValue(source, keys = []) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function readBooleanValue(source, keys = []) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === 'boolean') {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeAskUserQuestionOption(option, index) {
+  if (typeof option === 'string' && option.trim()) {
+    return {
+      value: option.trim(),
+      label: option.trim()
+    };
+  }
+
+  if (!option || typeof option !== 'object' || Array.isArray(option)) {
+    return null;
+  }
+
+  const value = readStringValue(option, ['value', 'id', 'key', 'name'])
+    ?? readStringValue(option, ['label', 'title', 'text'])
+    ?? String(index);
+  const label = readStringValue(option, ['label', 'title', 'text', 'name']) ?? value;
+  const description = readStringValue(option, ['description', 'detail', 'subtitle', 'helpText']);
+
+  return {
+    value,
+    label,
+    description
+  };
+}
+
+function buildAskUserQuestionRequest(config, input = {}) {
+  const toolName = pickToolName(input);
+  if (toolName !== 'AskUserQuestion') {
+    return null;
+  }
+
+  const toolInput = pickToolInput(input);
+  const firstQuestion = Array.isArray(toolInput.questions) && toolInput.questions.length > 0
+    ? toolInput.questions[0]
+    : null;
+  const source = firstQuestion && typeof firstQuestion === 'object'
+    ? firstQuestion
+    : toolInput;
+  const optionSource = Array.isArray(source.options)
+    ? source.options
+    : Array.isArray(source.choices)
+      ? source.choices
+      : Array.isArray(source.answers)
+        ? source.answers
+        : [];
+  const options = optionSource
+    .map((option, index) => normalizeAskUserQuestionOption(option, index))
+    .filter((option) => option !== null);
+
+  if (options.length === 0) {
+    return null;
+  }
+
+  const prompt = readStringValue(source, ['question', 'prompt', 'message', 'text'])
+    ?? readStringValue(source, ['header', 'title', 'summary'])
+    ?? 'Clarification requested';
+  const summary = readStringValue(source, ['header', 'title', 'summary']) ?? prompt;
+  const detailText = readStringValue(source, ['detailText', 'detail', 'description', 'context', 'warning']);
+  const isMultiSelect = readBooleanValue(source, ['multiSelect', 'multiple']) === true;
+  const selectionMode = isMultiSelect ? 'multi-select' : 'single-select';
+  const toolUseId = pickToolUseId(input) ?? 'ask-user-question';
+  const taskId = input.task_id || input.taskId || `${config.participantId}-ask-${toolUseId}`;
+  const threadId = input.thread_id || input.threadId || taskId;
+
+  return {
+    intentId: `${config.participantId}-ask-${toolUseId}`,
+    toParticipantId: 'human.local',
+    taskId,
+    threadId,
+    participantId: config.participantId,
+    summary,
+    prompt,
+    detailText,
+    selectionMode,
+    options,
+    metadata: {
+      agentTool: 'xiaok-code',
+      hookEventName: 'PreToolUse',
+      toolName
+    },
+    delivery: {
+      semantic: 'actionable',
+      source: 'xiaok-ask-user-question'
+    }
+  };
+}
+
+async function resolveCompletedTurnSummaryFromHookInput(input) {
+  const summary = [
+    input.last_assistant_message,
+    input.lastAssistantMessage,
+    input.assistant_message_preview,
+    input.assistantMessagePreview
+  ].find((value) => typeof value === 'string' && value.trim());
+
+  return {
+    summary: summary || '',
+    transcriptPath: (typeof input.transcript_path === 'string' && input.transcript_path)
+      || (typeof input.transcriptPath === 'string' && input.transcriptPath)
+      || null
+  };
+}
+
+export async function runPreToolUseHook(
+  input,
+  {
+    env = process.env,
+    cwd = process.cwd(),
+    homeDir,
+    resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
+    requestHookApproval = requestHookApprovalFailOpenDefault,
+    sendAsk = sendAskDefault
+  } = {}
+) {
+  if (env.INTENT_BROKER_SKIP_APPROVAL_SYNC === '1') {
+    return null;
+  }
+
+  return safelyRunHook(async () => {
+    const config = configFromHookInput(input, { env, cwd, homeDir, resolveSessionCwdFromTranscript });
+    const askUserQuestionRequest = buildAskUserQuestionRequest(config, input);
+    if (askUserQuestionRequest) {
+      await sendAsk(config, askUserQuestionRequest);
+      return {
+        preventContinuation: true,
+        additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
+        message: 'AskUserQuestion forwarded to Intent Broker'
+      };
+    }
+
+    const sessionId = input.session_id || env.XIAOK_CODE_SESSION_ID || '';
+    const toolName = pickToolName(input);
+    const toolInput = pickToolInput(input);
+    return requestHookApproval({
+      config,
+      agentTool: 'xiaok-code',
+      hookEventName: 'PreToolUse',
+      sessionId,
+      cwd: input.cwd || cwd,
+      toolName,
+      toolInput,
+      toolUseId: pickToolUseId(input) || `${sessionId || 'xiaok-code'}-${toolName}`
+    });
+  });
 }
 
 export async function runSessionStartHook(
@@ -228,7 +401,7 @@ export async function runSessionStartHook(
     const items = inbox.items || [];
 
     return {
-      context: buildCodexHookContext(items, { participantId: config.participantId, alias: registration?.alias }),
+      context: buildXiaokHookContext(items, { participantId: config.participantId, alias: registration?.alias }),
       registration
     };
   });
@@ -297,7 +470,7 @@ export async function runUserPromptSubmitHook(
 
     if (drainedQueue.items.length) {
       await registerParticipant(config);
-      const context = buildCodexHookContext(drainedQueue.items, { participantId: config.participantId });
+      const context = buildXiaokHookContext(drainedQueue.items, { participantId: config.participantId });
       const lastSeenEventId = highestEventId(drainedQueue.items);
       const recentContext = pickRecentContext(drainedQueue.items) || state.recentContext;
       const activeContext = pickActiveWorkContext(drainedQueue.items, recentContext);
@@ -368,7 +541,7 @@ export async function runUserPromptSubmitHook(
     ).catch(() => null);
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
-    const context = buildCodexHookContext(items, { participantId: config.participantId });
+    const context = buildXiaokHookContext(items, { participantId: config.participantId });
 
     if (!context) {
       return null;
@@ -413,6 +586,7 @@ export async function runStopHook(
     maybeMirrorPendingReply = maybeMirrorPendingReplyDefault,
     markPendingReplyMirror = markPendingReplyMirrorDefault,
     sendProgress = sendProgressDefault,
+    resolveCompletedTurnSummary = resolveCompletedTurnSummaryFromHookInput,
     updateWorkState = updateWorkStateDefault,
     ackInbox = ackInboxDefault
   } = {}
@@ -426,20 +600,51 @@ export async function runStopHook(
     const runtimeState = loadRuntimeState(runtimeStatePath);
     const queueState = loadRealtimeQueueState(queueStatePath);
 
-    await maybeMirrorPendingReply(config, {
+    const currentSessionId = input.session_id || runtimeState.sessionId || null;
+    const currentTurnId = input.turn_id || null;
+
+    const mirroredReply = await maybeMirrorPendingReply(config, {
       toolName: 'xiaok-code',
-      sessionId: input.session_id || runtimeState.sessionId || null,
-      turnId: input.turn_id || null,
+      sessionId: currentSessionId,
+      turnId: currentTurnId,
       homeDir,
       sendProgress
     });
+
+    if (
+      mirroredReply?.mirrored !== true
+      && runtimeState.status === 'running'
+      && runtimeState.taskId
+      && runtimeState.threadId
+    ) {
+      const completedTurn = await resolveCompletedTurnSummary(input, {
+        toolName: 'xiaok-code',
+        sessionId: currentSessionId,
+        turnId: currentTurnId,
+        homeDir
+      });
+
+      if (completedTurn?.summary) {
+        await sendProgress(config, {
+          intentId: `${config.participantId}-stop-complete-${Date.now()}`,
+          taskId: runtimeState.taskId,
+          threadId: runtimeState.threadId,
+          stage: 'completed',
+          summary: completedTurn.summary,
+          delivery: {
+            semantic: 'informational',
+            source: 'stop-fallback'
+          }
+        }).catch(() => null);
+      }
+    }
 
     if (!queueState.actionable.length) {
       saveRuntimeState(runtimeStatePath, {
         ...runtimeState,
         status: 'idle',
-        sessionId: input.session_id || runtimeState.sessionId,
-        turnId: input.turn_id || null,
+        sessionId: currentSessionId,
+        turnId: currentTurnId,
         source: 'stop-hook',
         updatedAt: new Date().toISOString()
       });
@@ -466,8 +671,8 @@ export async function runStopHook(
     saveRealtimeQueueState(queueStatePath, drainedQueue.state);
     saveRuntimeState(runtimeStatePath, {
       status: 'running',
-      sessionId: input.session_id || runtimeState.sessionId,
-      turnId: input.turn_id || null,
+      sessionId: currentSessionId,
+      turnId: currentTurnId,
       source: 'stop-hook',
       taskId: activeContext?.taskId || null,
       threadId: activeContext?.threadId || null,
@@ -483,13 +688,13 @@ export async function runStopHook(
         'xiaok-code',
         config.participantId,
         {
-          sessionId: input.session_id || runtimeState.sessionId || null,
+          sessionId: currentSessionId,
           recentContext: replyContext
         },
         { homeDir }
       );
     }
 
-    return buildCodexAutoContinuePrompt(items, { participantId: config.participantId });
+    return buildXiaokAutoContinuePrompt(items, { participantId: config.participantId });
   });
 }

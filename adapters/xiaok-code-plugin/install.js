@@ -34,8 +34,8 @@ function buildPluginManifest(cliPath) {
       {
         command: `node ${cliPath} hook pre-tool-use`,
         events: ['PreToolUse'],
-        async: false,
-        statusMessage: 'Intent Broker: waiting for approval...'
+        matcher: '*',
+        async: false
       },
       {
         command: `node ${cliPath} hook permission-request`,

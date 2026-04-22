@@ -38,7 +38,7 @@ test('defaultInstallPaths targets codex config, state root, and unified command 
   assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
-test('mergeIntentBrokerHooks adds session start and user prompt submit handlers', () => {
+test('mergeIntentBrokerHooks adds session start, user prompt submit, pre tool use, and stop handlers', () => {
   const merged = mergeIntentBrokerHooks(
     {},
     {
@@ -74,6 +74,7 @@ test('mergeIntentBrokerHooks adds session start and user prompt submit handlers'
       ],
       PreToolUse: [
         {
+          matcher: 'Bash|exec_command',
           hooks: [
             {
               type: 'command',
@@ -150,6 +151,16 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
             ]
           }
         ],
+        PreToolUse: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: 'node "/old/repo/codex-broker.js" hook pre-tool-use'
+              }
+            ]
+          }
+        ],
         Stop: [
           {
             hooks: [
@@ -181,6 +192,11 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
     merged.hooks.UserPromptSubmit[0].hooks[0].command,
     'node "/repo/codex-broker.js" hook user-prompt-submit'
   );
+  assert.equal(
+    merged.hooks.PreToolUse[0].hooks[0].command,
+    'node "/repo/codex-broker.js" hook pre-tool-use'
+  );
+  assert.equal(merged.hooks.PreToolUse[0].matcher, 'Bash|exec_command');
   assert.equal(
     merged.hooks.Stop[0].hooks[0].command,
     'node "/repo/codex-broker.js" hook stop'

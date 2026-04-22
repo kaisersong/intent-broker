@@ -48,10 +48,11 @@ test('defaultInstallPaths can install project settings while pointing commands a
   );
 });
 
-test('mergeIntentBrokerHooks adds session start, user prompt submit, and stop hooks', () => {
+test('mergeIntentBrokerHooks adds session start, user prompt submit, pre-tool-use, permission request, and stop hooks', () => {
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
     userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+    preToolUseCommand: 'node "/repo/claude-code-broker.js" hook pre-tool-use',
     permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
     stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
   });
@@ -79,12 +80,25 @@ test('mergeIntentBrokerHooks adds session start, user prompt submit, and stop ho
           ]
         }
       ],
-      PermissionRequest: [
+      PreToolUse: [
         {
+          matcher: '*',
           hooks: [
             {
               type: 'command',
-              command: 'node "/repo/claude-code-broker.js" hook permission-request'
+              command: 'node "/repo/claude-code-broker.js" hook pre-tool-use'
+            }
+          ]
+        }
+      ],
+      PermissionRequest: [
+        {
+          matcher: '*',
+          hooks: [
+            {
+              type: 'command',
+              command: 'node "/repo/claude-code-broker.js" hook permission-request',
+              timeout: 86400
             }
           ]
         }
@@ -107,6 +121,7 @@ test('mergeIntentBrokerHooks can opt into visible hook status messages', () => {
   const merged = mergeIntentBrokerHooks({}, {
     sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
     userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+    preToolUseCommand: 'node "/repo/claude-code-broker.js" hook pre-tool-use',
     permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
     stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
   }, { verbose: true });
@@ -147,6 +162,7 @@ test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing int
     {
       sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
       userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+      preToolUseCommand: 'node "/repo/claude-code-broker.js" hook pre-tool-use',
       permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
       stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
     }
@@ -156,6 +172,61 @@ test('mergeIntentBrokerHooks preserves unrelated hooks and replaces existing int
   assert.equal(merged.hooks.SessionStart[0].hooks[0].command, 'node keep-me');
   assert.equal(merged.hooks.SessionStart[1].hooks[0].command, 'node "/repo/claude-code-broker.js" hook session-start');
   assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook user-prompt-submit');
+  assert.equal(merged.hooks.PreToolUse[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook pre-tool-use');
+  assert.equal(merged.hooks.PermissionRequest[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook permission-request');
+  assert.equal(merged.hooks.Stop[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook stop');
+});
+
+test('mergeIntentBrokerHooks places broker approval hooks ahead of existing Open Island hooks', () => {
+  const merged = mergeIntentBrokerHooks(
+    {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: '*',
+            hooks: [
+              {
+                type: 'command',
+                command: "'/Users/song/Library/Application Support/OpenIsland/bin/OpenIslandHooks' --source claude"
+              }
+            ]
+          }
+        ],
+        PermissionRequest: [
+          {
+            matcher: '*',
+            hooks: [
+              {
+                type: 'command',
+                command: "'/Users/song/Library/Application Support/OpenIsland/bin/OpenIslandHooks' --source claude",
+                timeout: 86400
+              }
+            ]
+          }
+        ],
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command: "'/Users/song/Library/Application Support/OpenIsland/bin/OpenIslandHooks' --source claude"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      sessionStartCommand: 'node "/repo/claude-code-broker.js" hook session-start',
+      userPromptSubmitCommand: 'node "/repo/claude-code-broker.js" hook user-prompt-submit',
+      preToolUseCommand: 'node "/repo/claude-code-broker.js" hook pre-tool-use',
+      permissionRequestCommand: 'node "/repo/claude-code-broker.js" hook permission-request',
+      stopCommand: 'node "/repo/claude-code-broker.js" hook stop'
+    }
+  );
+
+  assert.equal(merged.hooks.PreToolUse[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook pre-tool-use');
+  assert.equal(merged.hooks.PermissionRequest[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook permission-request');
   assert.equal(merged.hooks.Stop[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook stop');
   assert.equal(merged.hooks.PermissionRequest[0].hooks[0].command, 'node "/repo/claude-code-broker.js" hook permission-request');
 });
