@@ -886,6 +886,26 @@ test('getProjectSnapshot aggregates project roster, counts, and recent events', 
   assert.ok(snapshot.participants.some((item) => item.alias === 'claude'));
 });
 
+test('getProjectSnapshot includes pending approval counts for the project', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [], context: { projectName: 'intent-broker' } });
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex', context: { projectName: 'intent-broker' } });
+
+  broker.sendIntent({
+    intentId: 'approval-snapshot',
+    kind: 'request_approval',
+    fromParticipantId: 'codex.a',
+    taskId: 'task-snapshot',
+    threadId: 'thread-snapshot',
+    to: { mode: 'participant', participants: ['human.song'] },
+    payload: { approvalId: 'app-snapshot', approvalScope: 'submit_result', body: { summary: 'Snapshot approval?' } }
+  });
+
+  const snapshot = broker.getProjectSnapshot('intent-broker');
+  assert.equal(snapshot.counts.pendingApproval, 1);
+});
+
 test('listProjectApprovals returns pending approvals for one project', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
 
@@ -905,6 +925,40 @@ test('listProjectApprovals returns pending approvals for one project', () => {
   const approvals = broker.listProjectApprovals('intent-broker', { status: 'pending' });
   assert.equal(approvals.length, 1);
   assert.equal(approvals[0].approvalId, 'app-1');
+  assert.equal(approvals[0].decision, 'pending');
+});
+
+test('listProjectApprovals still includes recent approvals after more than 100 older events', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [], context: { projectName: 'intent-broker' } });
+  broker.registerParticipant({ participantId: 'codex.a', kind: 'agent', roles: ['coder'], capabilities: [], alias: 'codex', context: { projectName: 'intent-broker' } });
+
+  for (let index = 0; index < 120; index += 1) {
+    broker.sendIntent({
+      intentId: `task-${index}`,
+      kind: 'request_task',
+      fromParticipantId: 'human.song',
+      taskId: `task-${index}`,
+      threadId: `thread-${index}`,
+      to: { mode: 'participant', participants: ['codex.a'] },
+      payload: { body: { summary: `Task ${index}` } }
+    });
+  }
+
+  broker.sendIntent({
+    intentId: 'approval-late',
+    kind: 'request_approval',
+    fromParticipantId: 'codex.a',
+    taskId: 'task-late',
+    threadId: 'thread-late',
+    to: { mode: 'participant', participants: ['human.song'] },
+    payload: { approvalId: 'app-late', approvalScope: 'submit_result', body: { summary: 'Review the late result?' } }
+  });
+
+  const approvals = broker.listProjectApprovals('intent-broker', { status: 'pending' });
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].approvalId, 'app-late');
   assert.equal(approvals[0].decision, 'pending');
 });
 

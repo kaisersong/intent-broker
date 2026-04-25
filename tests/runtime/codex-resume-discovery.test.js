@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import {
   attachDiscoveredCodexSession,
@@ -7,27 +8,70 @@ import {
 } from '../../src/runtime/codex-resume-discovery.js';
 
 test('discoverCodexResumeSessions prefers the real codex binary and ignores exec auto-dispatch helpers', async () => {
-  const sessions = await discoverCodexResumeSessions({
-    execFileImpl: async () => ({
-      stdout: [
-        '101 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
-        '102 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
-        '201 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex exec --json --full-auto resume 019d4c08-f640-7423-8ab8-b4f3d96715ec "auto prompt"',
-        '301 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d48da-9b3f-7f00-b9a2-1abf0d20c001'
-      ].join('\n')
-    })
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+
+  try {
+    const sessions = await discoverCodexResumeSessions({
+      execFileImpl: async () => ({
+        stdout: [
+          '101 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
+          '102 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
+          '201 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex exec --json --full-auto resume 019d4c08-f640-7423-8ab8-b4f3d96715ec "auto prompt"',
+          '301 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d48da-9b3f-7f00-b9a2-1abf0d20c001'
+        ].join('\n')
+      })
+    });
+
+    assert.deepEqual(sessions, [
+      {
+        pid: 102,
+        sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
+      },
+      {
+        pid: 301,
+        sessionId: '019d48da-9b3f-7f00-b9a2-1abf0d20c001'
+      }
+    ]);
+  } finally {
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+  }
+});
+
+test('discoverCodexResumeSessions parses Windows process JSON and normalizes codex paths', async () => {
+  const originalPlatform = process.platform;
+
+  Object.defineProperty(process, 'platform', {
+    value: 'win32'
   });
 
-  assert.deepEqual(sessions, [
-    {
-      pid: 102,
-      sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
-    },
-    {
-      pid: 301,
-      sessionId: '019d48da-9b3f-7f00-b9a2-1abf0d20c001'
-    }
-  ]);
+  try {
+    const sessions = await discoverCodexResumeSessions({
+      execFileImpl: async () => ({
+        stdout: JSON.stringify([
+          {
+            ProcessId: 4100,
+            CommandLine: '"C:\\Users\\song\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js" resume 019d4c08-f640-7423-8ab8-b4f3d96715ec'
+          },
+          {
+            ProcessId: 4200,
+            CommandLine: 'C:\\Users\\song\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe resume 019d4c08-f640-7423-8ab8-b4f3d96715ec'
+          }
+        ])
+      })
+    });
+
+    assert.deepEqual(sessions, [
+      {
+        pid: 4200,
+        sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
+      }
+    ]);
+  } finally {
+    Object.defineProperty(process, 'platform', {
+      value: originalPlatform
+    });
+  }
 });
 
 test('attachDiscoveredCodexSession starts broker sidecars for a resumed codex process', async () => {
@@ -184,7 +228,7 @@ test('attachDiscoveredCodexSession resets stale auto-dispatch runtime and replay
   });
 
   assert.equal(savedRuntime.length, 1);
-  assert.equal(savedRuntime[0].statePath, '/Users/song/.intent-broker/codex/codex-session-019d4c08.runtime.json');
+  assert.equal(savedRuntime[0].statePath, path.join('/Users/song', '.intent-broker', 'codex', 'codex-session-019d4c08.runtime.json'));
   assert.deepEqual(savedRuntime[0].state, {
     status: 'idle',
     sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec',
@@ -200,6 +244,6 @@ test('attachDiscoveredCodexSession resets stale auto-dispatch runtime and replay
     state: { status: 'idle', summary: null }
   });
   assert.equal(calls.at(-1).type, 'auto-dispatch');
-  assert.equal(calls.at(-1).input.runtimeStatePath, '/Users/song/.intent-broker/codex/codex-session-019d4c08.runtime.json');
-  assert.equal(calls.at(-1).input.queueStatePath, '/Users/song/.intent-broker/codex/codex-session-019d4c08.queue.json');
+  assert.equal(calls.at(-1).input.runtimeStatePath, path.join('/Users/song', '.intent-broker', 'codex', 'codex-session-019d4c08.runtime.json'));
+  assert.equal(calls.at(-1).input.queueStatePath, path.join('/Users/song', '.intent-broker', 'codex', 'codex-session-019d4c08.queue.json'));
 });

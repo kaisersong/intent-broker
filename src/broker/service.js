@@ -113,7 +113,7 @@ export function createBrokerService({
   }
 
   function buildState() {
-    return reduceEventStream(store.listEvents().map(toReducerEvent));
+    return reduceEventStream(store.listEvents({ limit: null }).map(toReducerEvent));
   }
 
   function normalizeAlias(alias) {
@@ -737,6 +737,7 @@ export function createBrokerService({
       const projectParticipants = this.listParticipants({ projectName });
       const presenceItems = new Map(presence.listPresence().map((item) => [item.participantId, item]));
       const workStateItems = new Map(this.listWorkStates({ projectName }).map((item) => [item.participantId, item]));
+      const pendingApprovalCount = this.listProjectApprovals(projectName, { status: 'pending' }).length;
       const recentEvents = store.listEvents({ limit: recentLimit })
         .filter((item) => {
           const sender = participants.get(item.fromParticipantId);
@@ -759,7 +760,7 @@ export function createBrokerService({
           online: projectedParticipants.filter((item) => item.presence === 'online').length,
           busy: projectedParticipants.filter((item) => item.workState?.status === 'implementing').length,
           blocked: projectedParticipants.filter((item) => item.workState?.status === 'blocked').length,
-          pendingApproval: 0
+          pendingApproval: pendingApprovalCount
         },
         participants: projectedParticipants,
         recentEvents
@@ -768,7 +769,7 @@ export function createBrokerService({
     listProjectApprovals(projectName, { status = null } = {}) {
       const state = buildState();
       const approvalEvents = new Map(
-        store.listEvents().filter((e) => e.kind === 'request_approval').map((e) => [e.payload.approvalId, e])
+        store.listEvents({ limit: null }).filter((e) => e.kind === 'request_approval').map((e) => [e.payload.approvalId, e])
       );
       return Object.values(state.approvals).filter((approval) => {
         const originEvent = approvalEvents.get(approval.approvalId);

@@ -114,15 +114,17 @@ export function createEventStore({ dbPath }) {
         params.push(threadId);
       }
 
-      params.push(limit);
-
       const sql = `
         SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
         FROM events
         WHERE ${conditions.join(' AND ')}
         ORDER BY event_id ASC
-        LIMIT ?
+        ${Number.isFinite(limit) ? 'LIMIT ?' : ''}
       `;
+
+      if (Number.isFinite(limit)) {
+        params.push(limit);
+      }
 
       return db.prepare(sql).all(...params).map(mapEventRow);
     }

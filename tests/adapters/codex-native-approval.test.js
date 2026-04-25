@@ -5,6 +5,7 @@ import {
   buildCodexNativeApprovalRequest,
   buildNativeApprovalActions,
   mirrorCodexNativeApproval,
+  resolveCodexAppServerSpawn,
   resolveCodexNativeDecision
 } from '../../adapters/session-bridge/codex-native-approval.js';
 
@@ -79,6 +80,46 @@ test('buildCodexNativeApprovalRequest preserves native binding metadata and acti
     request.body.payload.actions.map((action) => action.decisionMode),
     ['yes', 'always', 'cancel']
   );
+});
+
+test('resolveCodexAppServerSpawn uses cmd shim on Windows for bare codex commands', () => {
+  const resolved = resolveCodexAppServerSpawn(
+    {
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe'
+    },
+    'win32'
+  );
+
+  assert.deepEqual(resolved, {
+    command: 'C:\\Windows\\System32\\cmd.exe',
+    args: ['/d', '/s', '/c', 'codex app-server'],
+    windowsHide: true
+  });
+});
+
+test('resolveCodexAppServerSpawn preserves explicit exe paths on Windows', () => {
+  const resolved = resolveCodexAppServerSpawn(
+    {
+      INTENT_BROKER_CODEX_NATIVE_APP_SERVER_COMMAND: 'C:\\Program Files\\Codex\\codex.exe'
+    },
+    'win32'
+  );
+
+  assert.deepEqual(resolved, {
+    command: 'C:\\Program Files\\Codex\\codex.exe',
+    args: ['app-server'],
+    windowsHide: true
+  });
+});
+
+test('resolveCodexAppServerSpawn keeps direct codex invocation on macOS-like platforms', () => {
+  const resolved = resolveCodexAppServerSpawn({}, 'darwin');
+
+  assert.deepEqual(resolved, {
+    command: 'codex',
+    args: ['app-server'],
+    windowsHide: false
+  });
 });
 
 test('resolveCodexNativeDecision prefers explicit nativeDecision from broker response', () => {

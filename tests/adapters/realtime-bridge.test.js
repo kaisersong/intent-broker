@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { resolveRealtimeBridgeStatePath } from '../../adapters/hook-installer-core/state-paths.js';
 import {
   appendRealtimeEvent,
   createRealtimeQueueState,
@@ -592,6 +593,7 @@ test('ensureRealtimeBridge spawns a detached background bridge and records its p
   assert.equal(spawnCalls.length, 1);
   assert.deepEqual(spawnCalls[0].args.slice(-1), ['realtime-bridge']);
   assert.equal(spawnCalls[0].options.detached, true);
+  assert.equal(spawnCalls[0].options.windowsHide, process.platform === 'win32');
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_REALTIME_PARENT_PID, '4242');
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_INBOX_MODE, 'realtime');
   assert.equal(JSON.parse(readFileSync(result.statePath, 'utf8')).pid, 6262);
@@ -652,6 +654,61 @@ test('ensureRealtimeBridge replaces a live bridge when the persisted inbox mode 
   assert.equal(replaced.started, true);
   assert.deepEqual(kills, [6262]);
   assert.equal(JSON.parse(readFileSync(replaced.statePath, 'utf8')).pid, 7272);
+});
+
+test('ensureRealtimeBridge waits for an in-flight lock and reuses the bridge started by another process', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-realtime-'));
+  const statePath = resolveRealtimeBridgeStatePath('codex', 'codex-session-019d448e', { homeDir });
+  const lockPath = `${statePath}.lock`;
+  let spawnedAgain = false;
+
+  mkdirSync(path.dirname(statePath), { recursive: true });
+  writeFileSync(lockPath, JSON.stringify({ pid: 999999, acquiredAt: new Date().toISOString() }, null, 2), {
+    flag: 'wx'
+  });
+
+  setTimeout(() => {
+    writeFileSync(statePath, JSON.stringify({
+      pid: 6262,
+      sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      inboxMode: 'realtime',
+      brokerUrl: 'http://127.0.0.1:4318',
+      parentPid: 4242,
+      queueStatePath: path.join(homeDir, 'queue.json'),
+      startedAt: new Date().toISOString()
+    }, null, 2));
+    rmSync(lockPath, { force: true });
+  }, 10);
+
+  const result = await ensureRealtimeBridge({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: (pid) => pid === 6262,
+    spawnImpl: () => {
+      spawnedAgain = true;
+      return {
+        pid: 7373,
+        unref() {}
+      };
+    }
+  });
+
+  assert.equal(result.started, false);
+  assert.equal(result.pid, 6262);
+  assert.equal(spawnedAgain, false);
 });
 
 test('ensureRealtimeBridge replaces a live bridge when the same session resumes under a new parent pid', async () => {

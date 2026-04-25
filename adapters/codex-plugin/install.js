@@ -235,5 +235,5 @@ export function ensureSkillLink(skillSourcePath, skillLinkPath) {
     }
   }
 
-  symlinkSync(skillSourcePath, skillLinkPath, 'dir');
+  symlinkSync(skillSourcePath, skillLinkPath, process.platform === 'win32' ? 'junction' : 'dir');
 }

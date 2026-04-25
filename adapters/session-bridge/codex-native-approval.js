@@ -13,6 +13,47 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function quoteWindowsCommandSegment(value) {
+  const text = String(value ?? '');
+  return /[\s"]/u.test(text)
+    ? `"${text.replace(/"/g, '""')}"`
+    : text;
+}
+
+function buildWindowsCommandLine(command, args = []) {
+  return [command, ...args].map(quoteWindowsCommandSegment).join(' ');
+}
+
+export function resolveCodexAppServerSpawn(env = process.env, platform = process.platform) {
+  const configuredCommand = String(
+    env.INTENT_BROKER_CODEX_NATIVE_APP_SERVER_COMMAND
+      || env.INTENT_BROKER_CODEX_COMMAND
+      || 'codex'
+  ).trim() || 'codex';
+
+  if (platform !== 'win32') {
+    return {
+      command: configuredCommand,
+      args: ['app-server'],
+      windowsHide: false
+    };
+  }
+
+  if (configuredCommand.toLowerCase().endsWith('.exe')) {
+    return {
+      command: configuredCommand,
+      args: ['app-server'],
+      windowsHide: true
+    };
+  }
+
+  return {
+    command: env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', buildWindowsCommandLine(configuredCommand, ['app-server'])],
+    windowsHide: true
+  };
+}
+
 function normalizeOptionalString(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
@@ -376,10 +417,13 @@ class CodexAppServerClient {
   }
 
   async start() {
-    this.proc = this.spawnImpl('codex', ['app-server'], {
+    const spawnTarget = resolveCodexAppServerSpawn(this.env);
+
+    this.proc = this.spawnImpl(spawnTarget.command, spawnTarget.args, {
       cwd: this.cwd,
       env: this.env,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: spawnTarget.windowsHide === true
     });
 
     this.proc.stdout.setEncoding('utf8');

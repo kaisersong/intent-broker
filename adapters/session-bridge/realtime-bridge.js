@@ -37,6 +37,7 @@ import {
   markPendingReplyMirror as markPendingReplyMirrorDefault,
   resolveTranscriptPath as resolveTranscriptPathDefault
 } from './reply-mirror.js';
+import { acquireInterprocessLock } from './interprocess-lock.js';
 import { isProcessAlive } from './session-keeper.js';
 import {
   loadCursorState as loadCursorStateDefault,
@@ -463,95 +464,119 @@ export async function ensureRealtimeBridge({
   const statePath = resolveRealtimeBridgeStatePath(toolName, config.participantId, { homeDir });
   const queueStatePath = resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir });
   mkdirSync(path.dirname(statePath), { recursive: true });
+  const lockPath = `${statePath}.lock`;
   const desiredInboxMode = config.inboxMode || 'pull';
   const normalizedParentPid = normalizePid(parentPid);
+  let releaseLock = null;
 
-  const existing = readProcessState(statePath);
-  const sameBrokerUrl = existing?.brokerUrl === config.brokerUrl;
-  const sameParentPid = normalizedParentPid
-    ? normalizePid(existing?.parentPid) === normalizedParentPid
-    : true;
-  if (
-    existing?.sessionId === sessionId &&
-    existing?.inboxMode === desiredInboxMode &&
-    sameBrokerUrl &&
-    sameParentPid &&
-    existing?.pid &&
-    isProcessAliveImpl(existing.pid)
-  ) {
+  try {
+    releaseLock = await acquireInterprocessLock(lockPath, {
+      isProcessAlive: isProcessAliveImpl
+    });
+  } catch (error) {
+    const waitingExisting = readProcessState(statePath);
+    if (waitingExisting?.pid && isProcessAliveImpl(waitingExisting.pid)) {
+      return {
+        started: false,
+        pid: waitingExisting.pid,
+        statePath,
+        queueStatePath
+      };
+    }
+    throw error;
+  }
+
+  try {
+    const existing = readProcessState(statePath);
+    const sameBrokerUrl = existing?.brokerUrl === config.brokerUrl;
+    const sameParentPid = normalizedParentPid
+      ? normalizePid(existing?.parentPid) === normalizedParentPid
+      : true;
+    if (
+      existing?.sessionId === sessionId &&
+      existing?.inboxMode === desiredInboxMode &&
+      sameBrokerUrl &&
+      sameParentPid &&
+      existing?.pid &&
+      isProcessAliveImpl(existing.pid)
+    ) {
+      return {
+        started: false,
+        pid: existing.pid,
+        statePath,
+        queueStatePath
+      };
+    }
+
+    if (
+      existing?.sessionId === sessionId &&
+      existing?.pid &&
+      isProcessAliveImpl(existing.pid) &&
+      (existing?.inboxMode !== desiredInboxMode || !sameBrokerUrl || !sameParentPid)
+    ) {
+      try {
+        killImpl(existing.pid);
+      } catch {
+        // best effort only
+      }
+      removeProcessState(statePath);
+    }
+
+    if (existing?.pid && !isProcessAliveImpl(existing.pid)) {
+      removeProcessState(statePath);
+    }
+
+    pruneSiblingRealtimeBridgesForParentPid({
+      toolName,
+      homeDir,
+      statePath,
+      parentPid: normalizedParentPid,
+      killImpl,
+      isProcessAlive: isProcessAliveImpl
+    });
+
+    const child = spawnImpl(nodePath, [cliPath, 'realtime-bridge'], {
+      cwd,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: process.platform === 'win32',
+      env: {
+        ...env,
+        BROKER_URL: config.brokerUrl,
+        PARTICIPANT_ID: config.participantId,
+        ALIAS: config.alias,
+        PROJECT_NAME: config.context?.projectName || '',
+        INTENT_BROKER_INBOX_MODE: desiredInboxMode,
+        INTENT_BROKER_REALTIME_PARENT_PID: String(parentPid || ''),
+        INTENT_BROKER_REALTIME_RETRY_MS: String(retryMs),
+        INTENT_BROKER_REALTIME_STATE_PATH: statePath,
+        INTENT_BROKER_REALTIME_QUEUE_STATE_PATH: queueStatePath,
+        INTENT_BROKER_REALTIME_SESSION_ID: sessionId || '',
+        INTENT_BROKER_REALTIME_TOOL_NAME: toolName
+      }
+    });
+
+    child.unref?.();
+
+    writeFileSync(statePath, JSON.stringify({
+      pid: child.pid,
+      sessionId: sessionId || '',
+      inboxMode: desiredInboxMode,
+      brokerUrl: config.brokerUrl,
+      parentPid: normalizedParentPid,
+      queueStatePath,
+      startedAt: new Date().toISOString()
+    }, null, 2));
+
     return {
-      started: false,
-      pid: existing.pid,
+      started: true,
+      pid: child.pid,
       statePath,
       queueStatePath
     };
+  } finally {
+    releaseLock?.();
   }
-
-  if (
-    existing?.sessionId === sessionId &&
-    existing?.pid &&
-    isProcessAliveImpl(existing.pid) &&
-    (existing?.inboxMode !== desiredInboxMode || !sameBrokerUrl || !sameParentPid)
-  ) {
-    try {
-      killImpl(existing.pid);
-    } catch {
-      // best effort only
-    }
-    removeProcessState(statePath);
-  }
-
-  if (existing?.pid && !isProcessAliveImpl(existing.pid)) {
-    removeProcessState(statePath);
-  }
-
-  pruneSiblingRealtimeBridgesForParentPid({
-    toolName,
-    homeDir,
-    statePath,
-    parentPid: normalizedParentPid,
-    killImpl,
-    isProcessAlive: isProcessAliveImpl
-  });
-
-  const child = spawnImpl(nodePath, [cliPath, 'realtime-bridge'], {
-    cwd,
-    detached: true,
-    stdio: 'ignore',
-    env: {
-      ...env,
-      BROKER_URL: config.brokerUrl,
-      PARTICIPANT_ID: config.participantId,
-      ALIAS: config.alias,
-      PROJECT_NAME: config.context?.projectName || '',
-      INTENT_BROKER_INBOX_MODE: desiredInboxMode,
-      INTENT_BROKER_REALTIME_PARENT_PID: String(parentPid || ''),
-      INTENT_BROKER_REALTIME_RETRY_MS: String(retryMs),
-      INTENT_BROKER_REALTIME_STATE_PATH: statePath,
-      INTENT_BROKER_REALTIME_QUEUE_STATE_PATH: queueStatePath,
-      INTENT_BROKER_REALTIME_SESSION_ID: sessionId || '',
-      INTENT_BROKER_REALTIME_TOOL_NAME: toolName
-    }
-  });
-
-  child.unref?.();
-
-  writeFileSync(statePath, JSON.stringify({
-    pid: child.pid,
-    sessionId: sessionId || '',
-    inboxMode: desiredInboxMode,
-    brokerUrl: config.brokerUrl,
-    parentPid: normalizedParentPid,
-    queueStatePath,
-    startedAt: new Date().toISOString()
-  }, null, 2));
-
-  return {
-    started: true,
-    pid: child.pid,
-    statePath,
-    queueStatePath
-  };
 }
 
 async function connectRealtimeSocket({

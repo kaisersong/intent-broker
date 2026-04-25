@@ -186,6 +186,19 @@ function readBooleanValue(source, keys = []) {
   return undefined;
 }
 
+function hasExplicitPreToolUseApprovalSignal(toolInput = {}) {
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+    return false;
+  }
+
+  return readStringValue(toolInput, ['sandbox_permissions', 'sandboxPermissions']) === 'require_escalated'
+    || readBooleanValue(toolInput, ['with_escalated_permissions', 'withEscalatedPermissions']) === true
+    || readBooleanValue(toolInput, ['requiresApproval', 'approvalRequired']) === true
+    || readBooleanValue(toolInput, ['requires_confirmation', 'requiresConfirmation']) === true
+    || readBooleanValue(toolInput, ['askForConfirmation']) === true
+    || typeof readStringValue(toolInput, ['justification']) === 'string';
+}
+
 function normalizeAskUserQuestionOption(option, index) {
   if (typeof option === 'string' && option.trim()) {
     return {
@@ -319,6 +332,10 @@ export async function runPreToolUseHook(
     const sessionId = input.session_id || env.XIAOK_CODE_SESSION_ID || '';
     const toolName = pickToolName(input);
     const toolInput = pickToolInput(input);
+    if (!hasExplicitPreToolUseApprovalSignal(toolInput)) {
+      return { approved: true, skipped: true };
+    }
+
     return requestHookApproval({
       config,
       agentTool: 'xiaok-code',

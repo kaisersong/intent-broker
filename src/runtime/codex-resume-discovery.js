@@ -63,6 +63,22 @@ function parseProcessLine(line = '') {
   };
 }
 
+function normalizeCommand(command = '') {
+  return String(command || '').replaceAll('\\', '/');
+}
+
+function parseWindowsProcessList(stdout = '') {
+  const parsed = JSON.parse(String(stdout || 'null'));
+  const items = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+
+  return items
+    .map((item) => ({
+      pid: Number(item?.ProcessId),
+      command: typeof item?.CommandLine === 'string' ? item.CommandLine : ''
+    }))
+    .filter((item) => Number.isInteger(item.pid) && item.pid > 0 && item.command);
+}
+
 function isCodexResumeCandidate(command = '') {
   return /\bcodex\b/i.test(command)
     && SESSION_ID_PATTERN.test(command)
@@ -70,10 +86,12 @@ function isCodexResumeCandidate(command = '') {
 }
 
 function candidateRank(command = '') {
-  if (/\/codex\/codex\b/.test(command) || (/\bcodex\b/.test(command) && !/\bnode\b/.test(command))) {
+  const normalized = normalizeCommand(command);
+
+  if (/\/codex\/codex(?:\.exe)?\b/.test(normalized) || (/\bcodex\b/.test(normalized) && !/\bnode\b/.test(normalized))) {
     return 0;
   }
-  if (/\bnode\b/.test(command) && /(?:^|\s).*\/bin\/codex\b/.test(command)) {
+  if (/\bnode(?:\.exe)?\b/.test(normalized) && /(?:^|\s).*\/bin\/codex(?:\.js)?\b/.test(normalized)) {
     return 1;
   }
   return 2;
@@ -102,15 +120,30 @@ function shouldResetStaleAutoDispatchRuntime(runtimeState, mirrorState) {
 export async function discoverCodexResumeSessions({
   execFileImpl = execFileDefault
 } = {}) {
-  const { stdout } = await execFileImpl('ps', ['-axo', 'pid=,command='], {
-    encoding: 'utf8',
-    maxBuffer: 10 * 1024 * 1024
-  });
+  const processEntries = process.platform === 'win32'
+    ? parseWindowsProcessList((await execFileImpl(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
+      ],
+      {
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024
+      }
+    )).stdout)
+    : String((await execFileImpl('ps', ['-axo', 'pid=,command='], {
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024
+    })).stdout || '')
+      .split('\n')
+      .map((rawLine) => parseProcessLine(rawLine))
+      .filter(Boolean);
 
   const sessions = new Map();
 
-  for (const rawLine of String(stdout || '').split('\n')) {
-    const parsed = parseProcessLine(rawLine);
+  for (const parsed of processEntries) {
     if (!parsed?.pid || !parsed.command || !isCodexResumeCandidate(parsed.command)) {
       continue;
     }

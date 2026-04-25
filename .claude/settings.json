@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook session-start"
+            "command": "node \"adapters/claude-code-plugin/bin/claude-code-broker.js\" hook session-start"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook user-prompt-submit"
+            "command": "node \"adapters/claude-code-plugin/bin/claude-code-broker.js\" hook user-prompt-submit"
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook stop"
+            "command": "node \"adapters/claude-code-plugin/bin/claude-code-broker.js\" hook stop"
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook permission-request",
+            "command": "node \"adapters/claude-code-plugin/bin/claude-code-broker.js\" hook permission-request",
             "timeout": 86400
           }
         ]
@@ -49,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"/Users/song/projects/intent-broker/adapters/claude-code-plugin/bin/claude-code-broker.js\" hook pre-tool-use"
+            "command": "node \"adapters/claude-code-plugin/bin/claude-code-broker.js\" hook pre-tool-use"
           }
         ]
       }

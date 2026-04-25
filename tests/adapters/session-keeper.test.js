@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
   ensureSessionKeeper,
+  resolveSessionKeeperStatePath,
   resolveObservedParentPid,
   runSessionKeeperIteration
 } from '../../adapters/session-bridge/session-keeper.js';
@@ -43,6 +44,7 @@ test('ensureSessionKeeper spawns a detached background keeper and records its pi
   assert.equal(spawnCalls.length, 1);
   assert.deepEqual(spawnCalls[0].args.slice(-1), ['keepalive']);
   assert.equal(spawnCalls[0].options.detached, true);
+  assert.equal(spawnCalls[0].options.windowsHide, process.platform === 'win32');
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_KEEPALIVE_PARENT_PID, '4242');
   assert.equal(spawnCalls[0].options.env.INTENT_BROKER_INBOX_MODE, 'realtime');
   assert.equal(
@@ -356,10 +358,100 @@ test('resolveObservedParentPid skips shell wrapper processes when possible', () 
   ]);
 
   const resolved = resolveObservedParentPid(200, {
+    platform: 'linux',
     execFileSyncImpl: (command, args) => outputs.get(`${command} ${args.join(' ')}`)
   });
 
   assert.equal(resolved, 300);
+});
+
+test('ensureSessionKeeper waits for an in-flight lock and reuses the keeper started by another process', async () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-'));
+  const statePath = resolveSessionKeeperStatePath('codex', 'codex-session-019d448e', { homeDir });
+  const lockPath = `${statePath}.lock`;
+  let spawnedAgain = false;
+
+  mkdirSync(path.dirname(statePath), { recursive: true });
+  writeFileSync(lockPath, JSON.stringify({ pid: 999999, acquiredAt: new Date().toISOString() }, null, 2), {
+    flag: 'wx'
+  });
+
+  setTimeout(() => {
+    writeFileSync(statePath, JSON.stringify({
+      pid: 5151,
+      sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      inboxMode: 'realtime',
+      brokerUrl: 'http://127.0.0.1:4318',
+      parentPid: 4242,
+      startedAt: new Date().toISOString()
+    }, null, 2));
+    rmSync(lockPath, { force: true });
+  }, 10);
+
+  const result = await ensureSessionKeeper({
+    toolName: 'codex',
+    cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+    sessionId: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+    cwd: '/Users/song/projects/intent-broker',
+    homeDir,
+    parentPid: 4242,
+    config: {
+      brokerUrl: 'http://127.0.0.1:4318',
+      participantId: 'codex-session-019d448e',
+      alias: 'codex',
+      inboxMode: 'realtime',
+      roles: ['coder'],
+      capabilities: [],
+      context: { projectName: 'intent-broker' }
+    },
+    isProcessAlive: (pid) => pid === 5151,
+    spawnImpl: () => {
+      spawnedAgain = true;
+      return {
+        pid: 6161,
+        unref() {}
+      };
+    }
+  });
+
+  assert.equal(result.started, false);
+  assert.equal(result.pid, 5151);
+  assert.equal(spawnedAgain, false);
+});
+
+test('resolveObservedParentPid walks past Windows hook wrappers to a stable Codex parent', () => {
+  const outputs = new Map([
+    [
+      'powershell -NoProfile -NonInteractive -Command $ErrorActionPreference = "Stop"; $p = Get-CimInstance Win32_Process -Filter "ProcessId = 200"; if (-not $p) { return }; $p | Select-Object ProcessId, ParentProcessId, Name, CommandLine | ConvertTo-Json -Compress',
+      '{"ProcessId":200,"ParentProcessId":300,"Name":"node.exe","CommandLine":"node D:\\\\projects\\\\intent-broker\\\\adapters\\\\codex-plugin\\\\bin\\\\codex-broker.js hook user-prompt-submit"}\n'
+    ],
+    [
+      'powershell -NoProfile -NonInteractive -Command $ErrorActionPreference = "Stop"; $p = Get-CimInstance Win32_Process -Filter "ProcessId = 300"; if (-not $p) { return }; $p | Select-Object ProcessId, ParentProcessId, Name, CommandLine | ConvertTo-Json -Compress',
+      '{"ProcessId":300,"ParentProcessId":400,"Name":"cmd.exe","CommandLine":"cmd.exe /d /s /c node codex-broker.js hook user-prompt-submit"}\n'
+    ],
+    [
+      'powershell -NoProfile -NonInteractive -Command $ErrorActionPreference = "Stop"; $p = Get-CimInstance Win32_Process -Filter "ProcessId = 400"; if (-not $p) { return }; $p | Select-Object ProcessId, ParentProcessId, Name, CommandLine | ConvertTo-Json -Compress',
+      '{"ProcessId":400,"ParentProcessId":500,"Name":"codex.exe","CommandLine":"codex.exe app-server --analytics-default-enabled"}\n'
+    ]
+  ]);
+
+  const resolved = resolveObservedParentPid(200, {
+    platform: 'win32',
+    execFileSyncImpl: (command, args) => outputs.get(`${command} ${args.join(' ')}`)
+  });
+
+  assert.equal(resolved, 400);
+});
+
+test('resolveObservedParentPid returns null on Windows when it cannot prove a stable parent chain', () => {
+  const resolved = resolveObservedParentPid(200, {
+    platform: 'win32',
+    execFileSyncImpl: () => {
+      throw new Error('powershell unavailable');
+    }
+  });
+
+  assert.equal(resolved, null);
 });
 
 test('runSessionKeeperIteration marks the participant offline once the parent exits', async () => {
