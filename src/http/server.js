@@ -149,6 +149,8 @@ export function createServer({ broker, healthProvider = null } = {}) {
           taskId: body.taskId,
           fromParticipantId: body.fromParticipantId,
           decision: body.decision,
+          decisionMode: body.decisionMode ?? null,
+          nativeDecision: body.nativeDecision ?? null,
           completesTask: body.completesTask ?? false
         });
         writeJson(res, 200, { approval: broker.getApprovalView(approvalId) });

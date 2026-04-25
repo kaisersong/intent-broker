@@ -41,6 +41,31 @@ function deriveDeliverySemantic({ kind, fromParticipant }) {
   return 'informational';
 }
 
+function buildApprovalListItem(approval, originEvent) {
+  const payload = originEvent?.payload && typeof originEvent.payload === 'object'
+    ? originEvent.payload
+    : {};
+  const body = payload.body && typeof payload.body === 'object'
+    ? payload.body
+    : {};
+
+  return {
+    approvalId: approval.approvalId,
+    taskId: approval.taskId,
+    threadId: originEvent?.threadId ?? null,
+    createdAt: originEvent?.timestamp ?? null,
+    summary: body.summary ?? payload.summary ?? null,
+    decision: approval.status,
+    participantId: originEvent?.fromParticipantId ?? null,
+    actions: Array.isArray(payload.actions) ? payload.actions : [],
+    detailText: body.detailText ?? null,
+    commandTitle: body.commandTitle ?? null,
+    commandLine: body.commandLine ?? null,
+    commandPreview: body.commandPreview ?? null,
+    body: payload
+  };
+}
+
 export function createBrokerService({
   dbPath,
   presenceTimeoutMs = 600000,
@@ -627,7 +652,7 @@ export function createBrokerService({
     ackInbox(participantId, eventId) {
       return store.ackInbox(participantId, eventId);
     },
-    respondApproval({ approvalId, taskId, fromParticipantId, decision, completesTask = false }) {
+    respondApproval({ approvalId, taskId, fromParticipantId, decision, decisionMode = null, nativeDecision = null, completesTask = false }) {
       // Get task assignees to route approval response
       const task = this.getTaskView(taskId);
       const assignees = task?.assignees || [];
@@ -639,7 +664,13 @@ export function createBrokerService({
         taskId,
         threadId: null,
         to: { mode: 'participant', participants: assignees },
-        payload: { approvalId, decision, completesTask }
+        payload: {
+          approvalId,
+          decision,
+          ...(decisionMode ? { decisionMode } : {}),
+          ...(nativeDecision !== null && nativeDecision !== undefined ? { nativeDecision } : {}),
+          completesTask
+        }
       });
     },
     getApprovalView(approvalId) {
@@ -746,7 +777,7 @@ export function createBrokerService({
         const matchesProject = !projectName || sender?.context?.projectName === projectName;
         const matchesStatus = !status || approval.status === status;
         return matchesProject && matchesStatus;
-      });
+      }).map((approval) => buildApprovalListItem(approval, approvalEvents.get(approval.approvalId)));
     },
     close() {
       if (presenceSweepTimer) {

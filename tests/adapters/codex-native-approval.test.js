@@ -2,68 +2,152 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildCodexNativeApprovalRequest,
+  buildNativeApprovalActions,
   mirrorCodexNativeApproval,
-  parseCodexNativeApprovalCall,
-  sendTerminalApprovalDecision
+  resolveCodexNativeDecision
 } from '../../adapters/session-bridge/codex-native-approval.js';
 
-function codexFunctionCallLine(args, callId = 'call_abc123') {
-  return JSON.stringify({
-    type: 'response_item',
-    payload: {
-      type: 'function_call',
-      name: 'exec_command',
-      call_id: callId,
-      arguments: JSON.stringify(args)
+test('buildNativeApprovalActions preserves native decisions and disables unsupported amendments', () => {
+  const actions = buildNativeApprovalActions([
+    'accept',
+    'acceptForSession',
+    { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['mktemp'] } },
+    'cancel'
+  ]);
+
+  assert.deepEqual(actions[0], {
+    key: 'accept',
+    label: 'Allow once',
+    decisionMode: 'yes',
+    nativeDecision: 'accept',
+    disabled: false,
+    unsupportedReason: null
+  });
+  assert.deepEqual(actions[1], {
+    key: 'acceptForSession',
+    label: 'Always',
+    decisionMode: 'always',
+    nativeDecision: 'acceptForSession',
+    disabled: false,
+    unsupportedReason: null
+  });
+  assert.equal(actions[2].decisionMode, 'yes');
+  assert.equal(actions[2].disabled, true);
+  assert.match(actions[2].label, /Allow with exec policy change/);
+  assert.match(actions[2].unsupportedReason, /does not yet support amendment-bearing native Codex approval decisions/);
+  assert.deepEqual(actions[3], {
+    key: 'cancel',
+    label: 'Cancel',
+    decisionMode: 'cancel',
+    nativeDecision: 'cancel',
+    disabled: false,
+    unsupportedReason: null
+  });
+});
+
+test('buildCodexNativeApprovalRequest preserves native binding metadata and action semantics', () => {
+  const request = buildCodexNativeApprovalRequest({
+    config: {
+      participantId: 'codex-session-019d4489'
+    },
+    sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+    ownerInstanceId: 'owner-1',
+    serverRequest: {
+      id: 7,
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        itemId: 'call_real_1',
+        reason: 'Allow Desktop mktemp?',
+        command: "/bin/zsh -lc 'mktemp -d /Users/song/Desktop/codex-owner-XXXXXX'",
+        cwd: '/Users/song/projects/hexdeck',
+        availableDecisions: ['accept', 'acceptForSession', 'cancel']
+      }
     }
   });
-}
 
-test('parseCodexNativeApprovalCall extracts real Codex escalated exec approvals', () => {
-  const call = parseCodexNativeApprovalCall(codexFunctionCallLine({
-    cmd: "printf 'ok\\n'",
-    workdir: '/Users/song/projects/hexdeck',
-    sandbox_permissions: 'require_escalated',
-    justification: '需要用户确认'
-  }));
+  assert.equal(request.approvalId, 'codex-native-019d4489-1234-5678-9999-bbbbbbbbbbbb-turn-1-call_real_1');
+  assert.equal(request.taskId, 'codex-native-approval-019d4489-1234-5678-9999-bbbbbbbbbbbb-turn-1-call_real_1');
+  assert.equal(request.body.payload.body.summary, 'Allow Desktop mktemp?');
+  assert.equal(request.body.payload.body.commandLine, "/bin/zsh -lc 'mktemp -d /Users/song/Desktop/codex-owner-XXXXXX'");
+  assert.equal(request.body.payload.delivery.source, 'codex-native-approval');
+  assert.equal(request.body.payload.nativeCodexApproval.nativeRequestId, '7');
+  assert.equal(request.body.payload.nativeCodexApproval.ownerInstanceId, 'owner-1');
+  assert.equal(request.body.payload.nativeCodexApproval.responseTransport, 'native-app-server');
+  assert.deepEqual(
+    request.body.payload.actions.map((action) => action.decisionMode),
+    ['yes', 'always', 'cancel']
+  );
+});
 
-  assert.deepEqual(call, {
-    callId: 'call_abc123',
-    command: "printf 'ok\\n'",
-    workdir: '/Users/song/projects/hexdeck',
-    justification: '需要用户确认'
+test('resolveCodexNativeDecision prefers explicit nativeDecision from broker response', () => {
+  const nativeDecision = resolveCodexNativeDecision({
+    responseEvent: {
+      payload: {
+        approvalId: 'approval-1',
+        nativeDecision: 'acceptForSession',
+        decision: 'approved',
+        decisionMode: 'always'
+      }
+    },
+    availableDecisions: ['accept', 'acceptForSession', 'cancel']
   });
+
+  assert.equal(nativeDecision, 'acceptForSession');
 });
 
-test('parseCodexNativeApprovalCall ignores non-escalated exec calls', () => {
-  const call = parseCodexNativeApprovalCall(codexFunctionCallLine({
-    cmd: "printf 'ok\\n'",
-    workdir: '/Users/song/projects/hexdeck'
-  }));
+test('resolveCodexNativeDecision falls back from decisionMode and generic decision', () => {
+  assert.equal(
+    resolveCodexNativeDecision({
+      responseEvent: {
+        payload: {
+          approvalId: 'approval-1',
+          decision: 'approved',
+          decisionMode: 'yes'
+        }
+      },
+      availableDecisions: ['accept', 'cancel']
+    }),
+    'accept'
+  );
 
-  assert.equal(call, null);
+  assert.equal(
+    resolveCodexNativeDecision({
+      responseEvent: {
+        payload: {
+          approvalId: 'approval-2',
+          decision: 'cancelled',
+          decisionMode: 'cancel'
+        }
+      },
+      availableDecisions: ['accept', 'cancel']
+    }),
+    'cancel'
+  );
 });
 
-test('mirrorCodexNativeApproval posts a broker approval and applies the human response to Codex', async () => {
+test('mirrorCodexNativeApproval posts broker approval and resolves exact native decision', async () => {
   const requests = [];
-  const sentDecisions = [];
 
   const result = await mirrorCodexNativeApproval({
     config: {
       brokerUrl: 'http://127.0.0.1:4318',
       participantId: 'codex-session-019d4489'
     },
-    call: {
-      callId: 'call_real_1',
-      command: "printf 'real\\n'",
-      workdir: '/Users/song/projects/hexdeck',
-      justification: '真实 Codex 审批'
-    },
     sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
-    transcriptPath: '/Users/song/.codex/sessions/run.jsonl',
-    terminalMetadata: {
-      terminalApp: 'Ghostty',
-      terminalSessionID: 'ghostty-terminal-1'
+    ownerInstanceId: 'owner-1',
+    serverRequest: {
+      id: 3,
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        itemId: 'call_real_1',
+        reason: '真实 Codex 审批',
+        command: "printf 'real\\n'",
+        cwd: '/Users/song/projects/hexdeck',
+        availableDecisions: ['accept', 'acceptForSession', 'cancel']
+      }
     },
     requestJson: async (url, options = {}) => {
       requests.push({ url, options });
@@ -77,8 +161,10 @@ test('mirrorCodexNativeApproval posts a broker approval and applies the human re
               eventId: 101,
               kind: 'respond_approval',
               payload: {
-                approvalId: 'codex-native-call_real_1',
-                decision: 'approved'
+                approvalId: 'codex-native-019d4489-1234-5678-9999-bbbbbbbbbbbb-turn-1-call_real_1',
+                decision: 'approved',
+                decisionMode: 'always',
+                nativeDecision: 'acceptForSession'
               }
             }
           ]
@@ -86,61 +172,20 @@ test('mirrorCodexNativeApproval posts a broker approval and applies the human re
       }
       return { items: [] };
     },
-    sendApprovalDecision: async (terminalMetadata, decision) => {
-      sentDecisions.push({ terminalMetadata, decision });
-      return 'sent';
-    },
     sleep: async () => {}
   });
 
-  assert.equal(result.approvalId, 'codex-native-call_real_1');
+  assert.equal(result.approvalId, 'codex-native-019d4489-1234-5678-9999-bbbbbbbbbbbb-turn-1-call_real_1');
   assert.equal(result.responseEventId, 101);
-  assert.equal(result.keyResult, 'sent');
+  assert.equal(result.nativeDecision, 'acceptForSession');
+  assert.deepEqual(result.serverResponse, { decision: 'acceptForSession' });
 
   const requestBody = JSON.parse(requests[0].options.body);
   assert.equal(requestBody.kind, 'request_approval');
   assert.equal(requestBody.fromParticipantId, 'codex-session-019d4489');
-  assert.equal(requestBody.taskId, 'codex-native-approval-call_real_1');
-  assert.equal(requestBody.payload.approvalId, 'codex-native-call_real_1');
-  assert.equal(requestBody.payload.body.summary, '真实 Codex 审批');
-  assert.equal(requestBody.payload.body.commandLine, "printf 'real\\n'");
-  assert.equal(requestBody.payload.nativeCodexApproval.callId, 'call_real_1');
-  assert.equal(requestBody.payload.nativeCodexApproval.transcriptPath, '/Users/song/.codex/sessions/run.jsonl');
-  assert.equal(requestBody.payload.delivery.semantic, 'actionable');
-
-  assert.deepEqual(sentDecisions, [
-    {
-      terminalMetadata: {
-        terminalApp: 'Ghostty',
-        terminalSessionID: 'ghostty-terminal-1'
-      },
-      decision: 'approved'
-    }
-  ]);
-});
-
-test('sendTerminalApprovalDecision sends the Codex approval key to Ghostty', async () => {
-  const calls = [];
-
-  const result = await sendTerminalApprovalDecision(
-    {
-      terminalApp: 'Ghostty',
-      terminalSessionID: 'ghostty-terminal-1'
-    },
-    'approved',
-    {
-      execFile: async (command, args, options) => {
-        calls.push({ command, args, options });
-        return { stdout: 'sent\n' };
-      }
-    }
+  assert.equal(requestBody.payload.nativeCodexApproval.nativeRequestId, '3');
+  assert.deepEqual(
+    requestBody.payload.actions.map((action) => action.nativeDecision),
+    ['accept', 'acceptForSession', 'cancel']
   );
-
-  assert.equal(result, 'sent');
-  assert.equal(calls[0].command, '/usr/bin/osascript');
-  assert.deepEqual(calls[0].args.slice(0, 1), ['-e']);
-  assert.match(calls[0].args[1], /tell application "Ghostty"/);
-  assert.match(calls[0].args[1], /ghostty-terminal-1/);
-  assert.match(calls[0].args[1], /input text "y\n" to targetTerminal/);
-  assert.equal(calls[0].options.encoding, 'utf8');
 });

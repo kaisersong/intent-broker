@@ -106,6 +106,81 @@ test('respondApproval updates approval view to approved', () => {
   assert.equal(broker.getApprovalView('app-1').status, 'approved');
 });
 
+test('listProjectApprovals preserves native approval actions and broker response metadata', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({
+    participantId: 'human.song',
+    kind: 'human',
+    roles: ['approver'],
+    capabilities: []
+  });
+  broker.registerParticipant({
+    participantId: 'codex-session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    context: { projectName: 'hexdeck' }
+  });
+
+  broker.sendIntent({
+    intentId: 'int-task',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    taskId: 'task-native',
+    threadId: 'thread-native',
+    to: { mode: 'participant', participants: ['codex-session-1'] },
+    payload: {}
+  });
+  broker.sendIntent({
+    intentId: 'int-approval',
+    kind: 'request_approval',
+    fromParticipantId: 'codex-session-1',
+    taskId: 'task-native',
+    threadId: 'thread-native',
+    to: { mode: 'participant', participants: ['human.song'] },
+    payload: {
+      approvalId: 'approval-native',
+      approvalScope: 'run_command',
+      body: {
+        summary: 'Allow once?',
+        detailText: 'Native owner',
+        commandTitle: 'Codex',
+        commandLine: "printf 'ok\\n'",
+        commandPreview: '/Users/song/projects/hexdeck'
+      },
+      actions: [
+        { key: 'accept', label: 'Allow once', decisionMode: 'yes', nativeDecision: 'accept' },
+        { key: 'cancel', label: 'Cancel', decisionMode: 'cancel', nativeDecision: 'cancel' }
+      ],
+      nativeCodexApproval: {
+        nativeRequestId: '3'
+      }
+    }
+  });
+
+  const approvals = broker.listProjectApprovals('hexdeck', { status: 'pending' });
+  assert.equal(approvals.length, 1);
+  assert.equal(approvals[0].approvalId, 'approval-native');
+  assert.equal(approvals[0].summary, 'Allow once?');
+  assert.equal(approvals[0].actions[0].nativeDecision, 'accept');
+  assert.equal(approvals[0].actions[1].decisionMode, 'cancel');
+  assert.equal(approvals[0].body.nativeCodexApproval.nativeRequestId, '3');
+
+  broker.respondApproval({
+    approvalId: 'approval-native',
+    taskId: 'task-native',
+    fromParticipantId: 'human.song',
+    decision: 'cancelled',
+    decisionMode: 'cancel',
+    nativeDecision: 'cancel'
+  });
+
+  const replay = broker.replayEvents({ after: 0 }).items;
+  const responseEvent = replay.find((event) => event.kind === 'respond_approval' && event.payload?.approvalId === 'approval-native');
+  assert.equal(responseEvent.payload.decisionMode, 'cancel');
+  assert.equal(responseEvent.payload.nativeDecision, 'cancel');
+});
+
 test('registerParticipant stores projectName context and listParticipants can filter by projectName', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
 
@@ -366,7 +441,7 @@ test('registerParticipant refreshes metadata on later re-registration', () => {
 
   assert.deepEqual(participant.metadata, {
     terminalApp: 'Terminal.app',
-    sessionHint: null,
+    sessionHint: 'codex',
     projectPath: '/Users/song/projects/intent-broker'
   });
 });
@@ -830,7 +905,7 @@ test('listProjectApprovals returns pending approvals for one project', () => {
   const approvals = broker.listProjectApprovals('intent-broker', { status: 'pending' });
   assert.equal(approvals.length, 1);
   assert.equal(approvals[0].approvalId, 'app-1');
-  assert.equal(approvals[0].status, 'pending');
+  assert.equal(approvals[0].decision, 'pending');
 });
 
 test('broker.close terminates active websocket clients so shutdown can complete', async () => {

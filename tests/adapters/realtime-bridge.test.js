@@ -824,8 +824,7 @@ test('runRealtimeBridgeProcess starts the Codex native approval watcher when tra
 
   assert.equal(watcherCalls.length, 1);
   assert.equal(watcherCalls[0].sessionId, '019d4489-1234-5678-9999-bbbbbbbbbbbb');
-  assert.equal(watcherCalls[0].transcriptPath, '/Users/song/.codex/sessions/run.jsonl');
   assert.equal(watcherCalls[0].config.participantId, 'codex-session-019d4489');
-  assert.equal(watcherCalls[0].terminalMetadata.terminalSessionID, 'ghostty-terminal-1');
+  assert.equal(watcherCalls[0].env.INTENT_BROKER_REALTIME_SESSION_ID, '019d4489-1234-5678-9999-bbbbbbbbbbbb');
   assert.equal(stopped, true);
 });

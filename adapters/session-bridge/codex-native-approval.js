@@ -1,12 +1,13 @@
-import { execFile as execFileCallback } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
-import { promisify } from 'node:util';
+import process from 'node:process';
+import readline from 'node:readline';
+import { spawn as spawnDefault } from 'node:child_process';
 
 import { requestJson as requestJsonDefault } from './api.js';
 
-const execFileDefault = promisify(execFileCallback);
 const DEFAULT_POLL_MS = 250;
-const DEFAULT_RESPONSE_TIMEOUT_MS = 120000;
+const DEFAULT_RETRY_MS = 1000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_HUMAN_PARTICIPANT_ID = 'human.local';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -20,47 +21,137 @@ function safeIdentifier(value) {
   return String(value || Date.now()).replace(/[^A-Za-z0-9_-]/g, '-');
 }
 
-function escapeAppleScript(value) {
-  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+function stableStringify(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
-export function parseCodexNativeApprovalCall(line, { projectPath = process.cwd() } = {}) {
-  let entry;
-  try {
-    entry = JSON.parse(line);
-  } catch {
-    return null;
-  }
-
-  const payload = entry?.payload;
-  if (entry?.type !== 'response_item' || payload?.type !== 'function_call' || payload?.name !== 'exec_command') {
-    return null;
-  }
-
-  let args;
-  try {
-    args = JSON.parse(payload.arguments || '{}');
-  } catch {
-    return null;
-  }
-
-  if (args?.sandbox_permissions !== 'require_escalated') {
-    return null;
-  }
-
-  return {
-    callId: payload.call_id,
-    command: args.cmd || '',
-    workdir: args.workdir || projectPath,
-    justification: args.justification || 'Codex command approval requested'
-  };
+function deepEqualNativeDecision(left, right) {
+  return stableStringify(left) === stableStringify(right);
 }
 
-function buildApprovalRequest({ config, call, sessionId, transcriptPath }) {
-  const safeCallId = safeIdentifier(call.callId);
-  const approvalId = `codex-native-${safeCallId}`;
-  const taskId = `codex-native-approval-${safeCallId}`;
-  const threadId = `codex-native-approval-${sessionId || config.participantId}`;
+function resolveResponseTimeoutMs(env = process.env) {
+  const rawValue = env.INTENT_BROKER_CODEX_NATIVE_APPROVAL_TIMEOUT_MS;
+  if (!rawValue) {
+    return DEFAULT_RESPONSE_TIMEOUT_MS;
+  }
+
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_RESPONSE_TIMEOUT_MS;
+}
+
+function normalizeNativeRequestId(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+
+  return null;
+}
+
+function nativeDecisionKey(decision, index) {
+  if (typeof decision === 'string' && decision.trim()) {
+    return decision.trim();
+  }
+
+  if (decision && typeof decision === 'object' && !Array.isArray(decision)) {
+    const [kind] = Object.keys(decision);
+    if (kind) {
+      return `${kind}-${index}`;
+    }
+  }
+
+  return `unsupported-${index}`;
+}
+
+function nativeDecisionMode(decision) {
+  if (decision === 'accept') {
+    return 'yes';
+  }
+  if (decision === 'acceptForSession') {
+    return 'always';
+  }
+  if (decision === 'decline') {
+    return 'no';
+  }
+  if (decision === 'cancel') {
+    return 'cancel';
+  }
+
+  return 'yes';
+}
+
+function nativeDecisionLabel(decision) {
+  if (decision === 'accept') {
+    return 'Allow once';
+  }
+  if (decision === 'acceptForSession') {
+    return 'Always';
+  }
+  if (decision === 'decline') {
+    return 'Decline';
+  }
+  if (decision === 'cancel') {
+    return 'Cancel';
+  }
+  if (decision?.acceptWithExecpolicyAmendment) {
+    return 'Allow with exec policy change';
+  }
+  if (decision?.applyNetworkPolicyAmendment) {
+    return 'Allow with network policy change';
+  }
+
+  return 'Unsupported';
+}
+
+function isSupportedNativeDecision(decision) {
+  return decision === 'accept'
+    || decision === 'acceptForSession'
+    || decision === 'decline'
+    || decision === 'cancel';
+}
+
+export function buildNativeApprovalActions(availableDecisions = []) {
+  return availableDecisions.map((decision, index) => {
+    const supported = isSupportedNativeDecision(decision);
+    return {
+      key: nativeDecisionKey(decision, index),
+      label: nativeDecisionLabel(decision),
+      decisionMode: nativeDecisionMode(decision),
+      nativeDecision: decision,
+      disabled: !supported,
+      unsupportedReason: supported
+        ? null
+        : 'HexDeck does not yet support amendment-bearing native Codex approval decisions.'
+    };
+  });
+}
+
+export function buildCodexNativeApprovalRequest({
+  config,
+  sessionId,
+  ownerInstanceId,
+  serverRequest
+}) {
+  const params = serverRequest?.params ?? {};
+  const safeSessionId = safeIdentifier(sessionId || config?.participantId);
+  const safeTurnId = safeIdentifier(params.turnId || 'turn');
+  const safeItemId = safeIdentifier(params.itemId || normalizeNativeRequestId(serverRequest?.id) || 'item');
+  const approvalId = `codex-native-${safeSessionId}-${safeTurnId}-${safeItemId}`;
+  const taskId = `codex-native-approval-${safeSessionId}-${safeTurnId}-${safeItemId}`;
+  const threadId = `codex-native-approval-${safeSessionId}`;
+  const availableDecisions = Array.isArray(params.availableDecisions) ? params.availableDecisions : [];
+  const createdAt = new Date().toISOString();
 
   return {
     approvalId,
@@ -72,26 +163,29 @@ function buildApprovalRequest({ config, call, sessionId, transcriptPath }) {
       fromParticipantId: config.participantId,
       taskId,
       threadId,
-      to: { mode: 'participant', participants: ['human.local'] },
+      createdAt,
+      to: { mode: 'participant', participants: [DEFAULT_HUMAN_PARTICIPANT_ID] },
       payload: {
         participantId: config.participantId,
         approvalId,
         approvalScope: 'run_command',
         body: {
-          summary: call.justification,
-          detailText: 'Mirrored from the live Codex terminal approval prompt. Approving this card sends the approval key back to that Codex prompt.',
+          summary: params.reason || 'Codex command approval requested',
+          detailText: 'Resolved in-band by the live Codex native approval owner. Approval buttons preserve the native Codex decision semantics.',
           commandTitle: 'Codex',
-          commandLine: call.command,
-          commandPreview: call.workdir
+          commandLine: params.command || '',
+          commandPreview: params.cwd || ''
         },
-        actions: [
-          { label: '允许', decisionMode: 'yes' },
-          { label: '拒绝', decisionMode: 'no' }
-        ],
+        actions: buildNativeApprovalActions(availableDecisions),
         nativeCodexApproval: {
-          callId: call.callId,
-          transcriptPath,
-          terminalSessionId: normalizeOptionalString(config.metadata?.terminalSessionID)
+          sessionId: normalizeOptionalString(sessionId),
+          nativeRequestId: normalizeNativeRequestId(serverRequest?.id),
+          ownerInstanceId: normalizeOptionalString(ownerInstanceId),
+          threadId: normalizeOptionalString(params.threadId),
+          turnId: normalizeOptionalString(params.turnId),
+          itemId: normalizeOptionalString(params.itemId),
+          availableDecisions,
+          responseTransport: 'native-app-server'
         },
         delivery: {
           semantic: 'actionable',
@@ -108,7 +202,7 @@ async function waitForApprovalResponse({
   afterEventId,
   requestJson = requestJsonDefault,
   sleep: sleepImpl = sleep,
-  timeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS,
+  timeoutMs = resolveResponseTimeoutMs(),
   pollMs = DEFAULT_POLL_MS
 }) {
   let after = Math.max(0, Number(afterEventId || 0) - 1);
@@ -131,187 +225,390 @@ async function waitForApprovalResponse({
   throw new Error(`timeout waiting for ${approvalId}`);
 }
 
-export async function sendTerminalApprovalDecision(
-  terminalMetadata,
-  decision,
-  {
-    execFile = execFileDefault
-  } = {}
-) {
-  const terminalApp = String(terminalMetadata?.terminalApp || '');
-  const terminalSessionID = normalizeOptionalString(terminalMetadata?.terminalSessionID);
-  if (!terminalApp.toLowerCase().includes('ghostty')) {
-    throw new Error(`unsupported terminal for Codex native approval: ${terminalApp || 'unknown'}`);
+function resolveFallbackDecisionByMode(mode, availableDecisions = []) {
+  if (mode === 'always' && availableDecisions.includes('acceptForSession')) {
+    return 'acceptForSession';
   }
-  if (!terminalSessionID) {
-    throw new Error('missing Ghostty terminalSessionID for Codex native approval');
+  if (mode === 'yes' && availableDecisions.includes('accept')) {
+    return 'accept';
+  }
+  if (mode === 'no' && availableDecisions.includes('decline')) {
+    return 'decline';
+  }
+  if (mode === 'cancel' && availableDecisions.includes('cancel')) {
+    return 'cancel';
+  }
+  if (mode === 'cancel' && availableDecisions.includes('decline')) {
+    return 'decline';
+  }
+  if (mode === 'no' && availableDecisions.includes('cancel')) {
+    return 'cancel';
   }
 
-  const terminalId = escapeAppleScript(terminalSessionID);
-  const text = decision === 'denied' ? '' : 'y\n';
-  const approveCommand = decision === 'denied'
-    ? 'send key "escape" to targetTerminal'
-    : `input text "${escapeAppleScript(text)}" to targetTerminal`;
-  const script = `
-tell application "Ghostty"
-    set targetWindow to missing value
-    set targetTab to missing value
-    set targetTerminal to missing value
-    repeat with aWindow in windows
-        repeat with aTab in tabs of aWindow
-            repeat with aTerminal in terminals of aTab
-                if (id of aTerminal as text) is "${terminalId}" then
-                    set targetWindow to aWindow
-                    set targetTab to aTab
-                    set targetTerminal to aTerminal
-                    exit repeat
-                end if
-            end repeat
-            if targetTerminal is not missing value then exit repeat
-        end repeat
-        if targetTerminal is not missing value then exit repeat
-    end repeat
-    if targetTerminal is missing value then return "missing-terminal"
-    activate
-    activate window targetWindow
-    delay 0.05
-    select tab targetTab
-    delay 0.05
-    focus targetTerminal
-    delay 0.05
-    ${approveCommand}
-    return "sent"
-end tell
-`;
+  return null;
+}
 
-  const { stdout } = await execFile('/usr/bin/osascript', ['-e', script], { encoding: 'utf8' });
-  return String(stdout || '').trim();
+export function resolveCodexNativeDecision({
+  responseEvent,
+  availableDecisions = []
+}) {
+  const payload = responseEvent?.payload ?? {};
+  const explicitNativeDecision = payload.nativeDecision;
+  if (explicitNativeDecision !== undefined) {
+    const matched = availableDecisions.find((decision) => deepEqualNativeDecision(decision, explicitNativeDecision));
+    if (matched !== undefined) {
+      return matched;
+    }
+    throw new Error(`unsupported nativeDecision ${stableStringify(explicitNativeDecision)}`);
+  }
+
+  const decisionMode = typeof payload.decisionMode === 'string' ? payload.decisionMode : null;
+  if (decisionMode) {
+    const byMode = resolveFallbackDecisionByMode(decisionMode, availableDecisions);
+    if (byMode) {
+      return byMode;
+    }
+  }
+
+  const decision = typeof payload.decision === 'string' ? payload.decision : null;
+  if (decision === 'approved') {
+    return availableDecisions.includes('acceptForSession')
+      && decisionMode === 'always'
+      ? 'acceptForSession'
+      : availableDecisions.includes('accept')
+        ? 'accept'
+        : null;
+  }
+  if (decision === 'denied') {
+    return availableDecisions.includes('decline')
+      ? 'decline'
+      : availableDecisions.includes('cancel')
+        ? 'cancel'
+        : null;
+  }
+  if (decision === 'cancelled') {
+    return availableDecisions.includes('cancel')
+      ? 'cancel'
+      : availableDecisions.includes('decline')
+        ? 'decline'
+        : null;
+  }
+
+  throw new Error(`unsupported approval response ${stableStringify(payload)}`);
+}
+
+function chooseAbortDecision(availableDecisions = []) {
+  if (availableDecisions.includes('cancel')) {
+    return 'cancel';
+  }
+  if (availableDecisions.includes('decline')) {
+    return 'decline';
+  }
+  return null;
 }
 
 export async function mirrorCodexNativeApproval({
   config,
-  call,
   sessionId,
-  transcriptPath,
-  terminalMetadata = config?.metadata || {},
+  ownerInstanceId,
+  serverRequest,
   requestJson = requestJsonDefault,
-  sendApprovalDecision = sendTerminalApprovalDecision,
-  sleep: sleepImpl = sleep
+  sleep: sleepImpl = sleep,
+  timeoutMs = resolveResponseTimeoutMs()
 }) {
-  const approval = buildApprovalRequest({ config, call, sessionId, transcriptPath });
+  const approval = buildCodexNativeApprovalRequest({
+    config,
+    sessionId,
+    ownerInstanceId,
+    serverRequest
+  });
   const sent = await requestJson(`${config.brokerUrl}/intents`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(approval.body)
   });
-  const eventId = sent.event?.eventId ?? sent.eventId ?? 0;
-  const response = await waitForApprovalResponse({
+  const requestEventId = sent.event?.eventId ?? sent.eventId ?? 0;
+  const responseEvent = await waitForApprovalResponse({
     config,
     approvalId: approval.approvalId,
-    afterEventId: eventId,
+    afterEventId: requestEventId,
     requestJson,
-    sleep: sleepImpl
+    sleep: sleepImpl,
+    timeoutMs
   });
-  const decision = response.payload?.decision === 'denied' ? 'denied' : 'approved';
-  const keyResult = await sendApprovalDecision(terminalMetadata, decision);
+  const availableDecisions = approval.body.payload.nativeCodexApproval.availableDecisions;
+  const nativeDecision = resolveCodexNativeDecision({
+    responseEvent,
+    availableDecisions
+  });
 
   return {
     approvalId: approval.approvalId,
     taskId: approval.taskId,
     threadId: approval.threadId,
-    requestEventId: eventId,
-    responseEventId: response.eventId,
-    decision,
-    keyResult
+    requestEventId,
+    responseEventId: responseEvent.eventId,
+    nativeDecision,
+    serverResponse: { decision: nativeDecision }
   };
 }
 
-async function readTranscriptTail(transcriptPath, offset) {
-  const currentSize = (await stat(transcriptPath)).size;
-  if (currentSize <= offset) {
-    return { offset, tail: '' };
+class CodexAppServerClient {
+  constructor({
+    cwd,
+    env = process.env,
+    spawnImpl = spawnDefault,
+    onServerRequest = null,
+    onNotification = null
+  } = {}) {
+    this.cwd = cwd;
+    this.env = env;
+    this.spawnImpl = spawnImpl;
+    this.onServerRequest = onServerRequest;
+    this.onNotification = onNotification;
+    this.pending = new Map();
+    this.nextId = 1;
+    this.closed = false;
+    this.exited = false;
+    this.exitPromise = new Promise((resolve) => {
+      this.resolveExit = resolve;
+    });
   }
 
-  const buffer = await readFile(transcriptPath);
-  return {
-    offset: currentSize,
-    tail: buffer.subarray(offset).toString('utf8')
-  };
+  async start() {
+    this.proc = this.spawnImpl('codex', ['app-server'], {
+      cwd: this.cwd,
+      env: this.env,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+
+    this.proc.stdout.setEncoding('utf8');
+    this.proc.stderr.setEncoding('utf8');
+    this.proc.on('exit', () => {
+      this.handleExit();
+    });
+    this.proc.on('error', (error) => {
+      this.handleExit(error);
+    });
+
+    this.readline = readline.createInterface({ input: this.proc.stdout });
+    this.readline.on('line', (line) => {
+      this.handleLine(line);
+    });
+
+    await this.request('initialize', {
+      clientInfo: {
+        title: 'Intent Broker Native Approval Owner',
+        name: 'Intent Broker',
+        version: '0.0.0'
+      },
+      capabilities: {
+        experimentalApi: true,
+        optOutNotificationMethods: []
+      }
+    });
+    this.notify('initialized', {});
+  }
+
+  notify(method, params = {}) {
+    this.send({ method, params });
+  }
+
+  request(method, params) {
+    if (this.closed) {
+      throw new Error('codex app-server client is closed');
+    }
+
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, method });
+      this.send({ id, method, params });
+    });
+  }
+
+  send(message) {
+    if (!this.proc?.stdin || this.closed) {
+      return;
+    }
+    this.proc.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  handleLine(line) {
+    if (!line.trim()) {
+      return;
+    }
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch (error) {
+      this.handleExit(error);
+      return;
+    }
+
+    if (message.id !== undefined && message.method) {
+      void this.handleServerRequest(message);
+      return;
+    }
+
+    if (message.id !== undefined) {
+      const pending = this.pending.get(message.id);
+      if (!pending) {
+        return;
+      }
+      this.pending.delete(message.id);
+      if (message.error) {
+        pending.reject(new Error(`${pending.method}: ${stableStringify(message.error)}`));
+      } else {
+        pending.resolve(message.result ?? {});
+      }
+      return;
+    }
+
+    if (message.method && this.onNotification) {
+      this.onNotification(message);
+    }
+  }
+
+  async handleServerRequest(message) {
+    try {
+      if (!this.onServerRequest) {
+        throw new Error(`unsupported ${message.method}`);
+      }
+      const result = await this.onServerRequest(message);
+      this.send({ id: message.id, result });
+    } catch (error) {
+      this.send({
+        id: message.id,
+        error: {
+          code: -32000,
+          message: error instanceof Error ? error.message : String(error)
+        }
+      });
+    }
+  }
+
+  handleExit(error = null) {
+    if (this.exited) {
+      return;
+    }
+
+    this.exited = true;
+    this.closed = true;
+    for (const pending of this.pending.values()) {
+      pending.reject(error ?? new Error('codex app-server connection closed'));
+    }
+    this.pending.clear();
+    this.resolveExit?.();
+  }
+
+  async close() {
+    if (this.exited) {
+      await this.exitPromise;
+      return;
+    }
+
+    this.closed = true;
+    this.readline?.close();
+    if (this.proc && this.proc.exitCode === null && !this.proc.killed) {
+      this.proc.kill('SIGTERM');
+    } else {
+      this.handleExit();
+    }
+    await this.exitPromise;
+  }
+
+  async waitForExit() {
+    await this.exitPromise;
+  }
 }
 
 export function startCodexNativeApprovalWatcher({
   config,
   sessionId,
-  transcriptPath,
   cwd = process.cwd(),
-  terminalMetadata = config?.metadata || {},
+  env = process.env,
   requestJson = requestJsonDefault,
-  sendApprovalDecision = sendTerminalApprovalDecision,
   sleep: sleepImpl = sleep,
-  pollMs = DEFAULT_POLL_MS,
+  retryMs = DEFAULT_RETRY_MS,
+  timeoutMs = resolveResponseTimeoutMs(env),
+  spawnImpl = spawnDefault,
   onError = () => {}
 } = {}) {
   let stopped = false;
-  const seen = new Set();
+  let activeClient = null;
+  const ownerInstanceId = `owner-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
   const done = (async () => {
-    if (!config || !sessionId || !transcriptPath || !terminalMetadata?.terminalSessionID) {
+    if (!config || !sessionId) {
       return;
     }
-
-    let offset;
-    try {
-      offset = (await stat(transcriptPath)).size;
-    } catch (error) {
-      onError(error);
-      return;
-    }
-    let carry = '';
 
     while (!stopped) {
-      try {
-        const next = await readTranscriptTail(transcriptPath, offset);
-        offset = next.offset;
+      const client = new CodexAppServerClient({
+        cwd,
+        env,
+        spawnImpl,
+        onServerRequest: async (serverRequest) => {
+          if (serverRequest.method !== 'item/commandExecution/requestApproval') {
+            throw new Error(`unsupported ${serverRequest.method}`);
+          }
 
-        if (next.tail) {
-          const combined = `${carry}${next.tail}`;
-          const lines = combined.split('\n');
-          carry = combined.endsWith('\n') ? '' : lines.pop() || '';
+          const availableDecisions = Array.isArray(serverRequest?.params?.availableDecisions)
+            ? serverRequest.params.availableDecisions
+            : [];
 
-          for (const line of lines) {
-            if (!line.trim()) {
-              continue;
-            }
-
-            const call = parseCodexNativeApprovalCall(line, { projectPath: cwd });
-            if (!call || seen.has(call.callId)) {
-              continue;
-            }
-
-            seen.add(call.callId);
-            await mirrorCodexNativeApproval({
+          try {
+            const result = await mirrorCodexNativeApproval({
               config,
-              call,
               sessionId,
-              transcriptPath,
-              terminalMetadata,
+              ownerInstanceId,
+              serverRequest,
               requestJson,
-              sendApprovalDecision,
-              sleep: sleepImpl
+              sleep: sleepImpl,
+              timeoutMs
             });
+            return result.serverResponse;
+          } catch (error) {
+            onError(error);
+            const abortDecision = chooseAbortDecision(availableDecisions);
+            if (abortDecision) {
+              return { decision: abortDecision };
+            }
+            throw error;
           }
         }
+      });
+
+      activeClient = client;
+      try {
+        await client.start();
+        await client.request('thread/resume', {
+          threadId: sessionId,
+          cwd,
+          approvalPolicy: 'on-request',
+          sandbox: 'workspace-write',
+          model: null,
+          experimentalRawEvents: false
+        });
+        await client.waitForExit();
       } catch (error) {
         onError(error);
+      } finally {
+        await client.close().catch(() => null);
+        activeClient = null;
       }
 
-      await sleepImpl(pollMs);
+      if (!stopped) {
+        await sleepImpl(retryMs);
+      }
     }
   })();
 
   return {
     stop() {
       stopped = true;
+      void activeClient?.close();
     },
     done
   };

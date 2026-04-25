@@ -685,19 +685,14 @@ export async function runRealtimeBridgeProcess({
     || resolveRealtimeQueueStatePath(toolName, config.participantId, { homeDir: os.homedir() });
   const cursorStatePath = resolveParticipantStatePath(toolName, config.participantId, { homeDir: os.homedir() });
   const runtimeStatePath = resolveRuntimeStatePath(toolName, config.participantId, { homeDir: os.homedir() });
-  const codexNativeApprovalTranscriptPath = toolName === 'codex'
-    ? resolveTranscriptPath('codex', sessionId, { homeDir: os.homedir() })
-    : null;
   const codexNativeApprovalWatcher = toolName === 'codex'
     && env.INTENT_BROKER_DISABLE_CODEX_NATIVE_APPROVALS !== '1'
-    && codexNativeApprovalTranscriptPath
-    && config.metadata?.terminalSessionID
+    && sessionId
     ? startCodexNativeApprovalWatcher({
       config,
       sessionId,
-      transcriptPath: codexNativeApprovalTranscriptPath,
       cwd,
-      terminalMetadata: config.metadata
+      env
     })
     : null;
 
