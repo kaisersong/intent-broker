@@ -1,33 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import {
   listPersistedAgentSessions,
   refreshPersistedAgentSessions
 } from '../../src/runtime/persisted-agent-sessions.js';
 
+function p(...segments) {
+  return path.join(...segments);
+}
+
 test('listPersistedAgentSessions returns live codex and claude sessions from keeper state', () => {
   const filesByDir = new Map([
-    ['/Users/song/.intent-broker/codex', ['codex-session-019d6cc6.keeper.json', 'codex-session-019d6cc6.runtime.json']],
-    ['/Users/song/.intent-broker/claude-code', ['claude-code-session-45ba7f3d.keeper.json', 'claude-code-session-45ba7f3d.runtime.json']]
+    [p('/Users/song', '.intent-broker', 'codex'), ['codex-session-019d6cc6.keeper.json', 'codex-session-019d6cc6.runtime.json']],
+    [p('/Users/song', '.intent-broker', 'claude-code'), ['claude-code-session-45ba7f3d.keeper.json', 'claude-code-session-45ba7f3d.runtime.json']]
   ]);
   const fileBodies = new Map([
-    ['/Users/song/.intent-broker/codex/codex-session-019d6cc6.keeper.json', JSON.stringify({
+    [p('/Users/song', '.intent-broker', 'codex', 'codex-session-019d6cc6.keeper.json'), JSON.stringify({
       pid: 4368,
       sessionId: '019d6cc6-5fbf-7183-b6ed-4af2158ce09a',
       inboxMode: 'realtime',
       brokerUrl: 'http://127.0.0.1:4318'
     })],
-    ['/Users/song/.intent-broker/codex/codex-session-019d6cc6.runtime.json', JSON.stringify({
+    [p('/Users/song', '.intent-broker', 'codex', 'codex-session-019d6cc6.runtime.json'), JSON.stringify({
       alias: null
     })],
-    ['/Users/song/.intent-broker/claude-code/claude-code-session-45ba7f3d.keeper.json', JSON.stringify({
+    [p('/Users/song', '.intent-broker', 'claude-code', 'claude-code-session-45ba7f3d.keeper.json'), JSON.stringify({
       pid: 89988,
       sessionId: '45ba7f3d-eae1-4e6d-af25-7113e006bd26',
       inboxMode: 'realtime',
       brokerUrl: 'http://127.0.0.1:4318'
     })],
-    ['/Users/song/.intent-broker/claude-code/claude-code-session-45ba7f3d.runtime.json', JSON.stringify({
+    [p('/Users/song', '.intent-broker', 'claude-code', 'claude-code-session-45ba7f3d.runtime.json'), JSON.stringify({
       alias: 'claude6'
     })]
   ]);
@@ -81,17 +86,17 @@ test('listPersistedAgentSessions returns live codex and claude sessions from kee
 
 test('listPersistedAgentSessions preserves the observed parent pid from keeper state', () => {
   const filesByDir = new Map([
-    ['/Users/song/.intent-broker/claude-code', ['claude-code-session-45ba7f3d.keeper.json', 'claude-code-session-45ba7f3d.runtime.json']]
+    [p('/Users/song', '.intent-broker', 'claude-code'), ['claude-code-session-45ba7f3d.keeper.json', 'claude-code-session-45ba7f3d.runtime.json']]
   ]);
   const fileBodies = new Map([
-    ['/Users/song/.intent-broker/claude-code/claude-code-session-45ba7f3d.keeper.json', JSON.stringify({
+    [p('/Users/song', '.intent-broker', 'claude-code', 'claude-code-session-45ba7f3d.keeper.json'), JSON.stringify({
       pid: 89988,
       parentPid: 5206,
       sessionId: '45ba7f3d-eae1-4e6d-af25-7113e006bd26',
       inboxMode: 'realtime',
       brokerUrl: 'http://127.0.0.1:4318'
     })],
-    ['/Users/song/.intent-broker/claude-code/claude-code-session-45ba7f3d.runtime.json', JSON.stringify({
+    [p('/Users/song', '.intent-broker', 'claude-code', 'claude-code-session-45ba7f3d.runtime.json'), JSON.stringify({
       alias: 'claude6'
     })]
   ]);
@@ -110,6 +115,84 @@ test('listPersistedAgentSessions preserves the observed parent pid from keeper s
   });
 
   assert.equal(sessions[0].parentPid, 5206);
+});
+
+test('listPersistedAgentSessions falls back to fresh running runtime sessions when keeper state is missing', () => {
+  const filesByDir = new Map([
+    [p('/Users/song', '.intent-broker', 'codex'), ['codex-session-019dc3ee.runtime.json']]
+  ]);
+  const fileBodies = new Map([
+    [p('/Users/song', '.intent-broker', 'codex', 'codex-session-019dc3ee.runtime.json'), JSON.stringify({
+      status: 'running',
+      sessionId: '019dc3ee-769f-7540-aae1-586d82cd0449',
+      alias: 'codex',
+      terminalApp: 'unknown',
+      projectPath: '/Users/song/projects/hexdeck',
+      updatedAt: '2026-04-26T02:15:40.410Z'
+    })]
+  ]);
+
+  const sessions = listPersistedAgentSessions({
+    homeDir: '/Users/song',
+    readdirSyncImpl: (dirPath) => filesByDir.get(dirPath) || [],
+    readFileSyncImpl: (filePath) => {
+      const body = fileBodies.get(filePath);
+      if (!body) {
+        throw new Error(`missing fixture: ${filePath}`);
+      }
+      return body;
+    },
+    isProcessAliveImpl: () => false,
+    now: Date.parse('2026-04-26T02:20:00.000Z')
+  });
+
+  assert.deepEqual(sessions, [
+    {
+      toolName: 'codex',
+      participantId: 'codex-session-019dc3ee',
+      sessionId: '019dc3ee-769f-7540-aae1-586d82cd0449',
+      alias: 'codex',
+      terminalApp: 'unknown',
+      projectPath: '/Users/song/projects/hexdeck',
+      sessionHint: null,
+      terminalTTY: null,
+      terminalSessionID: null,
+      brokerUrl: 'http://127.0.0.1:4318',
+      inboxMode: 'realtime',
+      pid: null,
+      parentPid: null
+    }
+  ]);
+});
+
+test('listPersistedAgentSessions ignores stale runtime-only sessions without keeper state', () => {
+  const filesByDir = new Map([
+    [p('/Users/song', '.intent-broker', 'codex'), ['codex-session-019dc3ee.runtime.json']]
+  ]);
+  const fileBodies = new Map([
+    [p('/Users/song', '.intent-broker', 'codex', 'codex-session-019dc3ee.runtime.json'), JSON.stringify({
+      status: 'running',
+      sessionId: '019dc3ee-769f-7540-aae1-586d82cd0449',
+      alias: 'codex',
+      updatedAt: '2026-04-26T00:00:00.000Z'
+    })]
+  ]);
+
+  const sessions = listPersistedAgentSessions({
+    homeDir: '/Users/song',
+    readdirSyncImpl: (dirPath) => filesByDir.get(dirPath) || [],
+    readFileSyncImpl: (filePath) => {
+      const body = fileBodies.get(filePath);
+      if (!body) {
+        throw new Error(`missing fixture: ${filePath}`);
+      }
+      return body;
+    },
+    isProcessAliveImpl: () => false,
+    now: Date.parse('2026-04-26T02:20:00.000Z')
+  });
+
+  assert.deepEqual(sessions, []);
 });
 
 test('refreshPersistedAgentSessions re-registers live sessions with derived terminal metadata', async () => {

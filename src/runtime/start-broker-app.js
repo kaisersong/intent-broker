@@ -9,6 +9,19 @@ import { createManagedChannelsRuntime } from './managed-channels.js';
 import { createChannelHealthRegistry } from './channel-health.js';
 import { refreshPersistedAgentSessions as refreshPersistedAgentSessionsDefault } from './persisted-agent-sessions.js';
 
+function asBrokerParticipantRegistration(config) {
+  return {
+    participantId: config.participantId,
+    kind: 'agent',
+    roles: config.roles,
+    capabilities: config.capabilities,
+    alias: config.alias,
+    context: config.context || {},
+    metadata: config.metadata || {},
+    inboxMode: config.inboxMode ?? 'pull'
+  };
+}
+
 export async function startBrokerApp({
   cwd = process.cwd(),
   env = process.env,
@@ -19,7 +32,10 @@ export async function startBrokerApp({
   createChannelsRuntime = createManagedChannelsRuntime,
   createCodexResumeDiscoveryRuntime = createCodexResumeDiscoveryRuntimeDefault,
   syncAgentBridges = syncAgentBridgesDefault,
-  refreshPersistedAgentSessions = refreshPersistedAgentSessionsDefault
+  refreshPersistedAgentSessions = refreshPersistedAgentSessionsDefault,
+  persistedSessionRefreshIntervalMs = Number(
+    env.INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS || 5000
+  )
 } = {}) {
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
@@ -52,11 +68,14 @@ export async function startBrokerApp({
   broker.attachWebSocket(server.raw());
 
   const brokerUrl = `http://${config.server.host}:${server.address().port}`;
+  const registerParticipantLocally = async (participantConfig) =>
+    broker.registerParticipant(asBrokerParticipantRegistration(participantConfig));
   await refreshPersistedAgentSessions({
     repoRoot: cwd,
     brokerUrl,
     env,
-    logger
+    logger,
+    registerParticipant: registerParticipantLocally
   });
   const channels = createChannelsRuntime({
     brokerUrl,
@@ -79,6 +98,23 @@ export async function startBrokerApp({
     throw error;
   }
 
+  const persistedSessionRefreshTimer = persistedSessionRefreshIntervalMs > 0
+    ? setInterval(() => {
+      void refreshPersistedAgentSessions({
+        repoRoot: cwd,
+        brokerUrl,
+        env,
+        logger: { warn: logger?.warn?.bind?.(logger) },
+        registerParticipant: registerParticipantLocally
+      }).catch((error) => {
+        logger?.warn?.(
+          `intent-broker persisted session refresh timer: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+    }, persistedSessionRefreshIntervalMs)
+    : null;
+  persistedSessionRefreshTimer?.unref?.();
+
   logger.log(`intent-broker listening on ${brokerUrl}`);
   logger.log(`intent-broker WebSocket: ws://${config.server.host}:${server.address().port}/ws`);
   logger.log(`intent-broker db: ${dbPath}`);
@@ -96,6 +132,9 @@ export async function startBrokerApp({
     channels,
     config,
     async close() {
+      if (persistedSessionRefreshTimer) {
+        clearInterval(persistedSessionRefreshTimer);
+      }
       await codexResumeDiscovery.stop?.();
       await channels.stopAll();
       broker.close?.();

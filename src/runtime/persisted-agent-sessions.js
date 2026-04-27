@@ -9,6 +9,7 @@ import { registerParticipant as registerParticipantDefault } from '../../adapter
 import { isProcessAlive as isProcessAliveDefault } from '../../adapters/session-bridge/session-keeper.js';
 
 const REFRESHABLE_TOOLS = ['codex', 'claude-code', 'xiaok-code'];
+const RUNTIME_ONLY_SESSION_FRESHNESS_MS = 10 * 60 * 1000;
 
 function log(logger, level, message) {
   const fn = logger?.[level];
@@ -33,6 +34,28 @@ function readJsonFile(filePath, readFileSyncImpl = readFileSync) {
 function normalizePid(value) {
   const pid = Number(value);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function parseIsoTimestamp(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isFreshRuntimeOnlySession(runtimeState, now = Date.now()) {
+  if (!runtimeState || runtimeState.status !== 'running' || !runtimeState.sessionId) {
+    return false;
+  }
+
+  const updatedAtMs = parseIsoTimestamp(runtimeState.updatedAt);
+  if (updatedAtMs === null) {
+    return false;
+  }
+
+  return now - updatedAtMs <= RUNTIME_ONLY_SESSION_FRESHNESS_MS;
 }
 
 export function resolveTerminalTTYFromPid(
@@ -101,7 +124,8 @@ export function listPersistedAgentSessions({
   homeDir = os.homedir(),
   readdirSyncImpl = readdirSync,
   readFileSyncImpl = readFileSync,
-  isProcessAliveImpl = isProcessAliveDefault
+  isProcessAliveImpl = isProcessAliveDefault,
+  now = Date.now()
 } = {}) {
   const sessions = [];
 
@@ -114,6 +138,8 @@ export function listPersistedAgentSessions({
     } catch {
       continue;
     }
+
+    const emittedParticipantIds = new Set();
 
     for (const fileName of names) {
       if (!fileName.endsWith('.keeper.json')) {
@@ -142,6 +168,39 @@ export function listPersistedAgentSessions({
         inboxMode: keeperState.inboxMode || 'pull',
         pid: keeperState.pid,
         parentPid: normalizePid(keeperState.parentPid)
+      });
+      emittedParticipantIds.add(participantId);
+    }
+
+    for (const fileName of names) {
+      if (!fileName.endsWith('.runtime.json')) {
+        continue;
+      }
+
+      const participantId = fileName.slice(0, -'.runtime.json'.length);
+      if (emittedParticipantIds.has(participantId)) {
+        continue;
+      }
+
+      const runtimeState = readJsonFile(path.join(stateRoot, fileName), readFileSyncImpl);
+      if (!isFreshRuntimeOnlySession(runtimeState, now)) {
+        continue;
+      }
+
+      sessions.push({
+        toolName,
+        participantId,
+        sessionId: runtimeState.sessionId,
+        alias: typeof runtimeState?.alias === 'string' && runtimeState.alias ? runtimeState.alias : null,
+        terminalApp: typeof runtimeState?.terminalApp === 'string' ? runtimeState.terminalApp : null,
+        projectPath: typeof runtimeState?.projectPath === 'string' ? runtimeState.projectPath : null,
+        sessionHint: typeof runtimeState?.sessionHint === 'string' ? runtimeState.sessionHint : null,
+        terminalTTY: typeof runtimeState?.terminalTTY === 'string' ? runtimeState.terminalTTY : null,
+        terminalSessionID: typeof runtimeState?.terminalSessionID === 'string' ? runtimeState.terminalSessionID : null,
+        brokerUrl: 'http://127.0.0.1:4318',
+        inboxMode: 'realtime',
+        pid: null,
+        parentPid: null
       });
     }
   }

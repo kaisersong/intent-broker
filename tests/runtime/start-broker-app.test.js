@@ -5,8 +5,13 @@ import { startBrokerApp } from '../../src/runtime/start-broker-app.js';
 
 test('startBrokerApp syncs local agent bridges before managed channels start', async () => {
   const order = [];
+  const registrations = [];
   const logger = { log() {}, warn() {} };
   const broker = {
+    registerParticipant(participant) {
+      registrations.push(participant);
+      return participant;
+    },
     attachWebSocket() {
       order.push('attach-ws');
     },
@@ -52,6 +57,7 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     cwd: '/Users/song/projects/intent-broker',
     env: {},
     logger,
+    persistedSessionRefreshIntervalMs: 0,
     loadConfig: () => ({
       server: { dbPath: '.tmp/test.db', host: '127.0.0.1', port: 4318 },
       channels: {},
@@ -67,6 +73,15 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
       return [];
     },
     refreshPersistedAgentSessions: async (options) => {
+      await options.registerParticipant({
+        participantId: 'codex-session-019dc3ee',
+        roles: ['coder'],
+        capabilities: ['broker.auto_dispatch'],
+        alias: 'codex',
+        context: { projectName: 'hexdeck' },
+        metadata: { projectPath: '/Users/song/projects/hexdeck' },
+        inboxMode: 'realtime'
+      });
       order.push(`refresh:${options.repoRoot}`);
       return [];
     }
@@ -80,6 +95,18 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     'channels-start'
   ]);
   assert.equal(order[5], 'discovery-start');
+  assert.deepEqual(registrations, [
+    {
+      participantId: 'codex-session-019dc3ee',
+      kind: 'agent',
+      roles: ['coder'],
+      capabilities: ['broker.auto_dispatch'],
+      alias: 'codex',
+      context: { projectName: 'hexdeck' },
+      metadata: { projectPath: '/Users/song/projects/hexdeck' },
+      inboxMode: 'realtime'
+    }
+  ]);
 
   await app.close();
 
