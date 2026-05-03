@@ -14,6 +14,7 @@ import {
 } from '../hook-installer-core/state-paths.js';
 import {
   ackInbox as ackInboxDefault,
+  pollInbox as pollInboxDefault,
   registerParticipant as registerParticipantDefault,
   sendProgress as sendProgressDefault,
   updateWorkState as updateWorkStateDefault
@@ -604,6 +605,21 @@ async function connectRealtimeSocket({
     // Broker may be starting up. The websocket attempt below will retry.
   }
 
+  // Sync backlog messages that arrived during previous disconnect
+  try {
+    const currentQueue = loadRealtimeQueueState(queueStatePath);
+    const backlogResponse = await pollInboxDefault(config, { after: currentQueue.lastEventId || 0 });
+    if (backlogResponse?.items?.length) {
+      let updatedQueue = currentQueue;
+      for (const event of backlogResponse.items) {
+        updatedQueue = appendRealtimeEvent(updatedQueue, event);
+      }
+      saveRealtimeQueueState(queueStatePath, updatedQueue);
+    }
+  } catch {
+    // Broker may be unavailable; WebSocket connection will retry
+  }
+
   const wsUrl = `${config.brokerUrl.replace(/^http/, 'ws')}/ws?participantId=${encodeURIComponent(config.participantId)}`;
 
   await new Promise((resolve) => {
@@ -722,6 +738,22 @@ export async function runRealtimeBridgeProcess({
     : null;
 
   saveRealtimeQueueState(resolvedQueueStatePath, loadRealtimeQueueState(resolvedQueueStatePath));
+
+  // Sync backlog messages from broker inbox that arrived while disconnected
+  try {
+    const currentQueue = loadRealtimeQueueState(resolvedQueueStatePath);
+    const backlogResponse = await pollInboxDefault(config, { after: currentQueue.lastEventId || 0 });
+    if (backlogResponse?.items?.length) {
+      let updatedQueue = currentQueue;
+      for (const event of backlogResponse.items) {
+        updatedQueue = appendRealtimeEvent(updatedQueue, event);
+      }
+      saveRealtimeQueueState(resolvedQueueStatePath, updatedQueue);
+    }
+  } catch {
+    // Broker may be unavailable; continue anyway - WebSocket will retry
+  }
+
   await maybeAutoDispatchRealtimeQueue({
     toolName,
     config,
