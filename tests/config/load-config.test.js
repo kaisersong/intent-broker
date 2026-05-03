@@ -33,7 +33,8 @@ test('loadIntentBrokerConfig merges file config and resolves yunzhijia env refer
     channels: {
       yunzhijia: {
         enabled: true,
-        sendUrlEnv: 'YZJ_SEND_URL'
+        sendUrlEnv: 'YZJ_SEND_URL',
+        defaultProjectName: 'hexdeck'
       }
     }
   }, null, 2));
@@ -50,6 +51,7 @@ test('loadIntentBrokerConfig merges file config and resolves yunzhijia env refer
   assert.equal(config.server.dbPath, './data/broker.sqlite');
   assert.equal(config.channels.yunzhijia.enabled, true);
   assert.equal(config.channels.yunzhijia.sendUrlEnv, 'YZJ_SEND_URL');
+  assert.equal(config.channels.yunzhijia.defaultProjectName, 'hexdeck');
   assert.equal(
     config.channels.yunzhijia.sendUrl,
     'https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken'

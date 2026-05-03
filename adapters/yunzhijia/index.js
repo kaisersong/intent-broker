@@ -7,6 +7,12 @@
 import { WebSocket } from 'ws';
 
 export const ADAPTER_ID = 'adapter.yunzhijia';
+const CHANNEL_FORWARD_KINDS = new Set([
+  'ask_clarification',
+  'request_approval',
+  'request_task',
+  'report_progress'
+]);
 
 export function deriveWebSocketUrl(sendMsgUrl) {
   const url = new URL(sendMsgUrl);
@@ -38,10 +44,12 @@ export class YunzhijiaAdapter {
   constructor({
     brokerUrl = process.env.BROKER_URL || 'http://127.0.0.1:4318',
     sendUrl = process.env.YZJ_SEND_URL,
+    defaultProjectName = process.env.YZJ_DEFAULT_PROJECT || null,
     reconnectDelayMs = 5000
   } = {}) {
     this.brokerUrl = brokerUrl;
     this.sendUrl = sendUrl;
+    this.defaultProjectName = defaultProjectName;
     this.reconnectDelayMs = reconnectDelayMs;
     this.userMapping = new Map(); // yzjUserId -> participantId
     this.participantLabels = new Map(); // participantId -> alias/label
@@ -282,7 +290,7 @@ export class YunzhijiaAdapter {
       console.log(`✓ Registered new user: ${participantId}`);
     }
 
-    if (await this.handleCommand(text, { yzjUserId, participantId, msgId })) {
+    if (await this.handleCommand(text, { yzjUserId, participantId, msgId, robotName: msg.robotName })) {
       return;
     }
 
@@ -336,9 +344,26 @@ export class YunzhijiaAdapter {
     };
   }
 
-  parseBrokerCommand(text) {
-    const normalized = String(text || '').trim();
-    const listMatch = normalized.match(/^(?:@broker|\/broker)\s+list(?:\s+(.+))?$/i);
+  normalizeBrokerCommandText(text, { robotName } = {}) {
+    let normalized = String(text || '')
+      .replace(/\uFF20/g, '@')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (robotName) {
+      const escapedRobotName = String(robotName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      normalized = normalized
+        .replace(new RegExp(`^@${escapedRobotName}\\s+`, 'i'), '')
+        .replace(new RegExp(`^${escapedRobotName}\\s+`, 'i'), '')
+        .trim();
+    }
+
+    return normalized;
+  }
+
+  parseBrokerCommand(text, options = {}) {
+    const normalized = this.normalizeBrokerCommandText(text, options);
+    const listMatch = normalized.match(/^(?:(?:@broker|\/broker)\s+)?(?:list|who|status|列表|状态)(?:\s+(.+))?$/i);
     if (listMatch) {
       return {
         action: 'list',
@@ -390,11 +415,11 @@ export class YunzhijiaAdapter {
     return true;
   }
 
-  async handleCommand(text, { yzjUserId, msgId } = {}) {
-    const brokerCommand = this.parseBrokerCommand(text);
+  async handleCommand(text, { yzjUserId, msgId, robotName } = {}) {
+    const brokerCommand = this.parseBrokerCommand(text, { robotName });
     if (brokerCommand?.action === 'list') {
-      const message = await this.renderBrokerList(brokerCommand.projectName);
-      await this.sendToChannel(message, msgId);
+      const message = await this.renderBrokerList(brokerCommand.projectName || this.defaultProjectName);
+      await this.sendToYunzhijia(yzjUserId, message, msgId);
       return true;
     }
 
@@ -408,13 +433,13 @@ export class YunzhijiaAdapter {
 
     if (brokerCommand?.action === 'away') {
       await this.setAwayMode(true);
-      await this.sendToChannel('已切换到离开模式。所有需要回复的消息将转发到此��道，发送 /back 返回正常模式。', msgId);
+      await this.sendToYunzhijia(yzjUserId, '已切换到离开模式。所有需要回复的消息将转发到此频道，发送 /back 返回正常模式。', msgId);
       return true;
     }
 
     if (brokerCommand?.action === 'back') {
       await this.setAwayMode(false);
-      await this.sendToChannel('已恢复正常模式。消息将直接发送给对应用户。', msgId);
+      await this.sendToYunzhijia(yzjUserId, '已恢复正常模式。消息将直接发送给对应用户。', msgId);
       return true;
     }
 
@@ -725,10 +750,7 @@ export class YunzhijiaAdapter {
     const normalizedEvent = this.unwrapBrokerEvent(event);
     if (normalizedEvent.fromParticipantId?.startsWith('human.yzj_')) return;
 
-    if (normalizedEvent.kind === 'participant_presence_updated') {
-      if (normalizedEvent.payload?.participantKind === 'agent') {
-        await this.sendToChannel(await this.formatMessage(normalizedEvent));
-      }
+    if (!this.shouldForwardBrokerEvent(normalizedEvent)) {
       return;
     }
 
@@ -747,6 +769,14 @@ export class YunzhijiaAdapter {
 
     const message = await this.formatMessage(normalizedEvent);
     await this.sendToYunzhijia(yzjUserId, message, metadata.msgId);
+  }
+
+  shouldForwardBrokerEvent(event) {
+    if (!event || event.kind === 'participant_presence_updated' || event.kind === 'participant_alias_updated') {
+      return false;
+    }
+
+    return CHANNEL_FORWARD_KINDS.has(event.kind);
   }
 
   unwrapBrokerEvent(event) {
@@ -865,11 +895,16 @@ export class YunzhijiaAdapter {
   }
 
   async postYunzhijiaPayload(payload) {
-    await fetch(this.sendUrl, {
+    const response = await fetch(this.sendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
+    const responseText = await response.text().catch(() => '');
+    if (!response.ok) {
+      throw new Error(`Yunzhijia send failed: ${response.status} ${response.statusText} ${responseText}`);
+    }
+    console.log(`Yunzhijia send response: ${response.status}${responseText ? ` ${responseText.slice(0, 200)}` : ''}`);
   }
 
   stop() {

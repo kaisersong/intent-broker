@@ -8,6 +8,20 @@ const DEFAULT_POLL_MS = 250;
 const DEFAULT_RETRY_MS = 1000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_HUMAN_PARTICIPANT_ID = 'human.local';
+const LEGACY_COMMAND_APPROVAL_METHODS = new Set([
+  'execCommandApproval',
+  'applyPatchApproval'
+]);
+const COMMAND_APPROVAL_METHODS = new Set([
+  'item/commandExecution/requestApproval',
+  ...LEGACY_COMMAND_APPROVAL_METHODS
+]);
+const LEGACY_COMMAND_DECISIONS = [
+  'approved',
+  'approved_for_session',
+  'denied',
+  'abort'
+];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -128,6 +142,18 @@ function nativeDecisionMode(decision) {
   if (decision === 'cancel') {
     return 'cancel';
   }
+  if (decision === 'approved') {
+    return 'yes';
+  }
+  if (decision === 'approved_for_session') {
+    return 'always';
+  }
+  if (decision === 'denied') {
+    return 'no';
+  }
+  if (decision === 'abort') {
+    return 'cancel';
+  }
 
   return 'yes';
 }
@@ -145,6 +171,18 @@ function nativeDecisionLabel(decision) {
   if (decision === 'cancel') {
     return 'Cancel';
   }
+  if (decision === 'approved') {
+    return 'Allow once';
+  }
+  if (decision === 'approved_for_session') {
+    return 'Always';
+  }
+  if (decision === 'denied') {
+    return 'Deny';
+  }
+  if (decision === 'abort') {
+    return 'Abort';
+  }
   if (decision?.acceptWithExecpolicyAmendment) {
     return 'Allow with exec policy change';
   }
@@ -159,7 +197,11 @@ function isSupportedNativeDecision(decision) {
   return decision === 'accept'
     || decision === 'acceptForSession'
     || decision === 'decline'
-    || decision === 'cancel';
+    || decision === 'cancel'
+    || decision === 'approved'
+    || decision === 'approved_for_session'
+    || decision === 'denied'
+    || decision === 'abort';
 }
 
 export function buildNativeApprovalActions(availableDecisions = []) {
@@ -178,6 +220,17 @@ export function buildNativeApprovalActions(availableDecisions = []) {
   });
 }
 
+function isLegacyCommandApproval(serverRequest) {
+  return LEGACY_COMMAND_APPROVAL_METHODS.has(serverRequest?.method);
+}
+
+function normalizeCommandLine(value) {
+  if (Array.isArray(value)) {
+    return value.map((part) => String(part)).join(' ');
+  }
+  return typeof value === 'string' ? value : '';
+}
+
 export function buildCodexNativeApprovalRequest({
   config,
   sessionId,
@@ -185,13 +238,23 @@ export function buildCodexNativeApprovalRequest({
   serverRequest
 }) {
   const params = serverRequest?.params ?? {};
+  const legacyCommandApproval = isLegacyCommandApproval(serverRequest);
   const safeSessionId = safeIdentifier(sessionId || config?.participantId);
-  const safeTurnId = safeIdentifier(params.turnId || 'turn');
-  const safeItemId = safeIdentifier(params.itemId || normalizeNativeRequestId(serverRequest?.id) || 'item');
+  const safeTurnId = safeIdentifier(params.turnId || params.conversationId || 'turn');
+  const safeItemId = safeIdentifier(
+    params.itemId
+    || params.approvalId
+    || params.callId
+    || normalizeNativeRequestId(serverRequest?.id)
+    || 'item'
+  );
   const approvalId = `codex-native-${safeSessionId}-${safeTurnId}-${safeItemId}`;
   const taskId = `codex-native-approval-${safeSessionId}-${safeTurnId}-${safeItemId}`;
   const threadId = `codex-native-approval-${safeSessionId}`;
-  const availableDecisions = Array.isArray(params.availableDecisions) ? params.availableDecisions : [];
+  const availableDecisions = legacyCommandApproval
+    ? LEGACY_COMMAND_DECISIONS
+    : Array.isArray(params.availableDecisions) ? params.availableDecisions : [];
+  const commandLine = normalizeCommandLine(params.command);
   const createdAt = new Date().toISOString();
 
   return {
@@ -214,7 +277,7 @@ export function buildCodexNativeApprovalRequest({
           summary: params.reason || 'Codex command approval requested',
           detailText: 'Resolved in-band by the live Codex native approval owner. Approval buttons preserve the native Codex decision semantics.',
           commandTitle: 'Codex',
-          commandLine: params.command || '',
+          commandLine,
           commandPreview: params.cwd || ''
         },
         actions: buildNativeApprovalActions(availableDecisions),
@@ -222,9 +285,11 @@ export function buildCodexNativeApprovalRequest({
           sessionId: normalizeOptionalString(sessionId),
           nativeRequestId: normalizeNativeRequestId(serverRequest?.id),
           ownerInstanceId: normalizeOptionalString(ownerInstanceId),
-          threadId: normalizeOptionalString(params.threadId),
+          method: normalizeOptionalString(serverRequest?.method),
+          threadId: normalizeOptionalString(params.threadId || params.conversationId),
           turnId: normalizeOptionalString(params.turnId),
           itemId: normalizeOptionalString(params.itemId),
+          callId: normalizeOptionalString(params.callId),
           availableDecisions,
           responseTransport: 'native-app-server'
         },
@@ -273,11 +338,23 @@ function resolveFallbackDecisionByMode(mode, availableDecisions = []) {
   if (mode === 'yes' && availableDecisions.includes('accept')) {
     return 'accept';
   }
+  if (mode === 'always' && availableDecisions.includes('approved_for_session')) {
+    return 'approved_for_session';
+  }
+  if (mode === 'yes' && availableDecisions.includes('approved')) {
+    return 'approved';
+  }
   if (mode === 'no' && availableDecisions.includes('decline')) {
     return 'decline';
   }
+  if (mode === 'no' && availableDecisions.includes('denied')) {
+    return 'denied';
+  }
   if (mode === 'cancel' && availableDecisions.includes('cancel')) {
     return 'cancel';
+  }
+  if (mode === 'cancel' && availableDecisions.includes('abort')) {
+    return 'abort';
   }
   if (mode === 'cancel' && availableDecisions.includes('decline')) {
     return 'decline';
@@ -313,6 +390,12 @@ export function resolveCodexNativeDecision({
 
   const decision = typeof payload.decision === 'string' ? payload.decision : null;
   if (decision === 'approved') {
+    if (availableDecisions.includes('approved_for_session') && decisionMode === 'always') {
+      return 'approved_for_session';
+    }
+    if (availableDecisions.includes('approved')) {
+      return 'approved';
+    }
     return availableDecisions.includes('acceptForSession')
       && decisionMode === 'always'
       ? 'acceptForSession'
@@ -321,6 +404,12 @@ export function resolveCodexNativeDecision({
         : null;
   }
   if (decision === 'denied') {
+    if (availableDecisions.includes('denied')) {
+      return 'denied';
+    }
+    if (availableDecisions.includes('abort') && decisionMode === 'cancel') {
+      return 'abort';
+    }
     return availableDecisions.includes('decline')
       ? 'decline'
       : availableDecisions.includes('cancel')
@@ -342,8 +431,14 @@ function chooseAbortDecision(availableDecisions = []) {
   if (availableDecisions.includes('cancel')) {
     return 'cancel';
   }
+  if (availableDecisions.includes('abort')) {
+    return 'abort';
+  }
   if (availableDecisions.includes('decline')) {
     return 'decline';
+  }
+  if (availableDecisions.includes('denied')) {
+    return 'denied';
   }
   return null;
 }
@@ -594,7 +689,7 @@ export function startCodexNativeApprovalWatcher({
         env,
         spawnImpl,
         onServerRequest: async (serverRequest) => {
-          if (serverRequest.method !== 'item/commandExecution/requestApproval') {
+          if (!COMMAND_APPROVAL_METHODS.has(serverRequest.method)) {
             throw new Error(`unsupported ${serverRequest.method}`);
           }
 

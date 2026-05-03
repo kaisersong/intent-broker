@@ -11,7 +11,8 @@ test('createManagedChannelsRuntime starts and stops managed yunzhijia channel', 
     channels: {
       yunzhijia: {
         enabled: true,
-        sendUrl: 'https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken'
+        sendUrl: 'https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken',
+        defaultProjectName: 'hexdeck'
       }
     },
     factories: {
@@ -31,7 +32,8 @@ test('createManagedChannelsRuntime starts and stops managed yunzhijia channel', 
 
   assert.deepEqual(calls, [{
     brokerUrl: 'http://127.0.0.1:4318',
-    sendUrl: 'https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken'
+    sendUrl: 'https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken',
+    defaultProjectName: 'hexdeck'
   }]);
   assert.deepEqual(runtime.describe(), [{
     name: 'yunzhijia',

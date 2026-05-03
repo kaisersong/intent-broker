@@ -386,7 +386,10 @@ export function deriveSessionBridgeConfig({
     participantId = `${toolName}-session-${threadId.slice(0, 8)}`;
   }
   if (!participantId) {
-    participantId = `${toolName}-session`;
+    // Generate unique session ID using timestamp when no threadId available
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).slice(2, 6);
+    participantId = `${toolName}-session-${timestamp}-${random}`;
   }
 
   return {

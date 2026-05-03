@@ -998,7 +998,7 @@ test('Yunzhijia adapter tells humans which recipients were reached in realtime a
   assert.ok(outboundPosts.some((post) => /当前不在线/.test(post.content) && /@claude/.test(post.content)));
 });
 
-test('Yunzhijia adapter forwards new client online notifications to channel', { concurrency: false }, async (t) => {
+test('Yunzhijia adapter does not forward new client online notifications to channel', { concurrency: false }, async (t) => {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
   const broker = createBrokerService({ dbPath: createTempDbPath() });
@@ -1081,21 +1081,17 @@ test('Yunzhijia adapter forwards new client online notifications to channel', { 
   agentSocket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ws?participantId=codex.a`);
   await once(agentSocket, 'open');
 
-  await waitFor(() => outboundPosts.some((post) => /已上线/.test(post.content)));
+  await new Promise((resolve) => setTimeout(resolve, 100));
 
   const onlinePosts = outboundPosts.filter((post) => /已上线/.test(post.content));
-  assert.equal(onlinePosts.length, 1);
-
-  const onlinePost = onlinePosts[0];
-  assert.match(onlinePost.content, /codex4/);
-  assert.equal(onlinePost.notifyParams, undefined);
+  assert.equal(onlinePosts.length, 0);
 
   const closed = once(agentSocket, 'close').catch(() => null);
   agentSocket.close();
   await closed;
 });
 
-test('Yunzhijia adapter supports @broker list and reports agent presence to channel', { concurrency: false }, async (t) => {
+test('Yunzhijia adapter supports @broker list and replies to the requesting user', { concurrency: false }, async (t) => {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
   const broker = createBrokerService({ dbPath: createTempDbPath() });
@@ -1121,8 +1117,17 @@ test('Yunzhijia adapter supports @broker list and reports agent presence to chan
     alias: 'claude2',
     context: { projectName: 'intent-broker' }
   });
+  broker.registerParticipant({
+    participantId: 'codex.other',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex-other',
+    context: { projectName: 'other-project' }
+  });
   broker.updateWorkState('codex.a', { status: 'implementing', summary: '修复 presence' });
   broker.updateWorkState('claude.b', { status: 'reviewing', summary: '检查路由' });
+  broker.updateWorkState('codex.other', { status: 'implementing', summary: '其他项目' });
 
   const outboundPosts = [];
   const yzjServer = https.createServer(
@@ -1149,7 +1154,8 @@ test('Yunzhijia adapter supports @broker list and reports agent presence to chan
 
   const adapter = new YunzhijiaAdapter({
     brokerUrl,
-    sendUrl: yzjSendUrl
+    sendUrl: yzjSendUrl,
+    defaultProjectName: 'intent-broker'
   });
   let agentSocket = null;
 
@@ -1195,13 +1201,42 @@ test('Yunzhijia adapter supports @broker list and reports agent presence to chan
   assert.match(listPost.content, /离线/);
   assert.match(listPost.content, /@codex4/);
   assert.match(listPost.content, /@claude2/);
+  assert.doesNotMatch(listPost.content, /@codex-other/);
   assert.match(listPost.content, /implementing/);
   assert.match(listPost.content, /reviewing/);
-  assert.equal(listPost.notifyParams, undefined);
+  assert.deepEqual(listPost.notifyParams[0].values, ['user_local']);
+  assert.equal(listPost.param.replyMsgId, 'msg_broker_list_1');
 
   const agentClosed = once(agentSocket, 'close').catch(() => null);
   agentSocket.close();
   await agentClosed;
+});
+
+test('Yunzhijia adapter accepts Yunzhijia broker list command variants', () => {
+  const adapter = new YunzhijiaAdapter({
+    brokerUrl: 'http://127.0.0.1:4318',
+    sendUrl: 'https://127.0.0.1/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken'
+  });
+
+  for (const text of [
+    '@broker list',
+    '＠broker list',
+    '@broker who',
+    '@broker status',
+    '@broker 列表',
+    'list',
+    'who',
+    'status',
+    '列表',
+    '@虾十二 list',
+    '虾十二 list'
+  ]) {
+    assert.deepEqual(
+      adapter.parseBrokerCommand(text, { robotName: '虾十二' }),
+      { action: 'list', projectName: null },
+      text
+    );
+  }
 });
 
 test('Yunzhijia adapter supports @broker alias rename commands in channel', { concurrency: false }, async (t) => {
@@ -1282,7 +1317,7 @@ test('Yunzhijia adapter supports @broker alias rename commands in channel', { co
   assert.ok(outboundPosts.some((post) => /alias 已更新/.test(post.content)));
 });
 
-test('Yunzhijia adapter broadcasts agent online and offline presence to channel', { concurrency: false }, async (t) => {
+test('Yunzhijia adapter suppresses agent online and offline presence in channel', { concurrency: false }, async (t) => {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
   const broker = createBrokerService({ dbPath: createTempDbPath() });
@@ -1343,18 +1378,17 @@ test('Yunzhijia adapter broadcasts agent online and offline presence to channel'
 
   const agentSocket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ws?participantId=codex.a`);
   await once(agentSocket, 'open');
-  await waitFor(() => outboundPosts.some((post) => /已上线/.test(post.content)));
 
-  assert.match(outboundPosts.find((post) => /已上线/.test(post.content)).content, /@codex4/);
-  assert.equal(outboundPosts.find((post) => /已上线/.test(post.content)).notifyParams, undefined);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(outboundPosts.filter((post) => /已上线/.test(post.content)).length, 0);
 
   agentSocket.close();
 
-  await waitFor(() => outboundPosts.some((post) => /已离线/.test(post.content)));
-  assert.match(outboundPosts.find((post) => /已离线/.test(post.content)).content, /@codex4/);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(outboundPosts.filter((post) => /已离线/.test(post.content)).length, 0);
 });
 
-test('Yunzhijia adapter reconnects broker websocket after disconnect and keeps forwarding presence updates', { concurrency: false }, async (t) => {
+test('Yunzhijia adapter reconnects broker websocket without forwarding presence updates', { concurrency: false }, async (t) => {
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
   const broker = createBrokerService({ dbPath: createTempDbPath() });
@@ -1436,5 +1470,6 @@ test('Yunzhijia adapter reconnects broker websocket after disconnect and keeps f
   agentSocket = new WebSocket(`ws://127.0.0.1:${brokerPort}/ws?participantId=codex.a`);
   await once(agentSocket, 'open');
 
-  await waitFor(() => outboundPosts.some((post) => /@codex4 已上线/.test(post.content)), { timeoutMs: 2000 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(outboundPosts.filter((post) => /@codex4 已上线/.test(post.content)).length, 0);
 });

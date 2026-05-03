@@ -43,7 +43,8 @@ export function createManagedChannelsRuntime({
 
       const instance = factories.yunzhijia({
         brokerUrl,
-        sendUrl: yunzhijia.sendUrl
+        sendUrl: yunzhijia.sendUrl,
+        defaultProjectName: yunzhijia.defaultProjectName
       });
       await instance.start();
       instances.push({ name: 'yunzhijia', instance });

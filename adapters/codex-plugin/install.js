@@ -31,7 +31,6 @@ export function mergeIntentBrokerHooks(existingConfig = {}, commands, { verbose 
   const hooks = { ...(merged.hooks || {}) };
 
   hooks.SessionStart = mergeManagedHookGroups(hooks.SessionStart || [], {
-    matcher: 'startup|resume',
     command: commands.sessionStartCommand,
     statusMessage: verbose ? managedHookStatusMessages.sessionStart : undefined,
     commandMatcher: buildManagedCommandMatcher('codex-broker.js', 'session-start')

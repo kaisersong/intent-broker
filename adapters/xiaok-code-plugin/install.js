@@ -21,7 +21,6 @@ function buildPluginManifest(cliPath) {
       {
         command: `node ${cliPath} hook session-start`,
         events: ['SessionStart'],
-        matcher: 'startup|resume',
         async: false,
         statusMessage: 'Intent Broker: syncing inbox...'
       },

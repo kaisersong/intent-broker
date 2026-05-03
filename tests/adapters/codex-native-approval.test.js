@@ -168,6 +168,79 @@ test('resolveCodexNativeDecision falls back from decisionMode and generic decisi
   );
 });
 
+test('buildCodexNativeApprovalRequest supports legacy execCommandApproval requests', () => {
+  const request = buildCodexNativeApprovalRequest({
+    config: {
+      participantId: 'codex-session-019d4489'
+    },
+    sessionId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+    ownerInstanceId: 'owner-1',
+    serverRequest: {
+      id: 9,
+      method: 'execCommandApproval',
+      params: {
+        callId: 'call_legacy_1',
+        conversationId: '019d4489-1234-5678-9999-bbbbbbbbbbbb',
+        reason: 'Legacy approval path',
+        command: ['/bin/zsh', '-lc', 'mktemp -d /Users/song/Desktop/hexdeck-native-approval-check-XXXXXX'],
+        cwd: '/Users/song/projects/hexdeck',
+        parsedCmd: []
+      }
+    }
+  });
+
+  assert.equal(
+    request.approvalId,
+    'codex-native-019d4489-1234-5678-9999-bbbbbbbbbbbb-019d4489-1234-5678-9999-bbbbbbbbbbbb-call_legacy_1'
+  );
+  assert.equal(
+    request.body.payload.body.commandLine,
+    '/bin/zsh -lc mktemp -d /Users/song/Desktop/hexdeck-native-approval-check-XXXXXX'
+  );
+  assert.equal(request.body.payload.nativeCodexApproval.method, 'execCommandApproval');
+  assert.equal(request.body.payload.nativeCodexApproval.threadId, '019d4489-1234-5678-9999-bbbbbbbbbbbb');
+  assert.equal(request.body.payload.nativeCodexApproval.callId, 'call_legacy_1');
+  assert.deepEqual(
+    request.body.payload.actions.map((action) => [action.label, action.decisionMode, action.nativeDecision]),
+    [
+      ['Allow once', 'yes', 'approved'],
+      ['Always', 'always', 'approved_for_session'],
+      ['Deny', 'no', 'denied'],
+      ['Abort', 'cancel', 'abort']
+    ]
+  );
+});
+
+test('resolveCodexNativeDecision maps broker choices to legacy execCommandApproval decisions', () => {
+  assert.equal(
+    resolveCodexNativeDecision({
+      responseEvent: {
+        payload: {
+          approvalId: 'approval-legacy-1',
+          decision: 'approved',
+          decisionMode: 'yes'
+        }
+      },
+      availableDecisions: ['approved', 'approved_for_session', 'denied', 'abort']
+    }),
+    'approved'
+  );
+
+  assert.equal(
+    resolveCodexNativeDecision({
+      responseEvent: {
+        payload: {
+          approvalId: 'approval-legacy-2',
+          decision: 'approved',
+          decisionMode: 'always'
+        }
+      },
+      availableDecisions: ['approved', 'approved_for_session', 'denied', 'abort']
+    }),
+    'approved_for_session'
+  );
+});
+
 test('mirrorCodexNativeApproval posts broker approval and resolves exact native decision', async () => {
   const requests = [];
 

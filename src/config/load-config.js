@@ -37,7 +37,8 @@ function resolveYunzhijiaConfig(config = {}, env = {}) {
   return {
     enabled: Boolean(config.enabled),
     sendUrlEnv: config.sendUrlEnv,
-    sendUrl
+    sendUrl,
+    defaultProjectName: config.defaultProjectName
   };
 }
 
