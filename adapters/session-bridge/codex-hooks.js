@@ -129,27 +129,11 @@ export function buildToolHookContext(
     lines.push(`Intent Broker: this session is @${alias} (${participantId || sessionLabel})`);
   }
   if (!items.length) {
-    // Empty inbox on session start: inject capability block so the agent
-    // knows how to coordinate through the broker without needing CLAUDE.md.
+    // Empty inbox on session start: inject a short capability reminder so the
+    // agent knows coordination is available. Full CLI syntax lives in
+    // `intent-broker --help`.
     if (alias) {
-      lines.push('You can coordinate with other agents through the intent-broker CLI:');
-      if (actionableReplyStyle === 'xiaok-cli') {
-        lines.push('`xiaok-broker who` — see who is online on the same project');
-        lines.push('`xiaok-broker task @<alias> <taskId> <threadId> "<summary>"` — send an actionable task to another agent');
-        lines.push('`xiaok-broker ask @<alias> <taskId> <threadId> "<summary>"` — send a blocking question');
-        lines.push('`xiaok-broker progress <taskId> <threadId> "<summary>"` — publish a non-blocking status update');
-        lines.push('`xiaok-broker reply "<summary>"` — reply on the most recent collaboration context');
-      } else {
-        lines.push('`intent-broker who` — see who is online on the same project');
-        lines.push('`intent-broker task @<alias> <taskId> <threadId> "<summary>"` — send an actionable task to another agent (triggers their auto-continue)');
-        lines.push('`intent-broker ask @<alias> <taskId> <threadId> "<summary>"` — send a blocking question (triggers their auto-continue)');
-        lines.push('`intent-broker progress <taskId> <threadId> "<summary>"` — publish a non-blocking status update');
-        lines.push('`intent-broker note @<alias> <taskId> <threadId> "<summary>"` — send a non-blocking FYI');
-        lines.push('`intent-broker reply "<summary>"` — reply on the most recent collaboration context');
-        lines.push('`intent-broker inbox` — check your unread messages');
-      }
-      lines.push('`task` and `ask` are actionable (interrupt the recipient). `progress`, `note`, and `reply` are informational (no interruption).');
-      lines.push('Before starting work on a project with other agents, run `intent-broker who` and send a `note` to clarify scope.');
+      lines.push('Coordination is available via the broker: `intent-broker task|ask|progress|note|reply|who|inbox` (run `intent-broker --help` for syntax). `task`/`ask` interrupt the recipient; `progress`/`note`/`reply` do not. Before working on a shared project, run `intent-broker who` and send a `note` to avoid overlap.');
     }
     return lines.join('\n') || null;
   }
