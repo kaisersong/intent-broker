@@ -885,3 +885,163 @@ test('runRealtimeBridgeProcess starts the Codex native approval watcher when tra
   assert.equal(watcherCalls[0].env.INTENT_BROKER_REALTIME_SESSION_ID, '019d4489-1234-5678-9999-bbbbbbbbbbbb');
   assert.equal(stopped, true);
 });
+
+test('runRealtimeBridgeProcess syncs backlog messages from broker inbox on startup', async () => {
+  const savedQueue = [];
+  const pollCalls = [];
+
+  await runRealtimeBridgeProcess({
+    toolName: 'claude-code',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      PARTICIPANT_ID: 'claude-code-session-backlog-test',
+      ALIAS: 'claude',
+      PROJECT_NAME: 'intent-broker',
+      BROKER_URL: 'http://127.0.0.1:4318',
+      INTENT_BROKER_REALTIME_SESSION_ID: 'backlog-test-session'
+    },
+    parentPid: 4242,
+    statePath: null,
+    queueStatePath: '/tmp/backlog-test-queue.json',
+    loadRuntimeState: () => ({ status: 'idle' }),
+    loadRealtimeQueueStateImpl: () => ({ actionable: [], informational: [], lastEventId: 100 }),
+    saveRealtimeQueueStateImpl: (statePath, state) => savedQueue.push({ statePath, state }),
+    registerParticipant: async () => ({ ok: true }),
+    ackInbox: async () => ({ ok: true }),
+    spawnImpl: () => ({ pid: 5151, unref() {} }),
+    isProcessAlive: () => false,
+    pollInbox: async (config, options) => {
+      pollCalls.push({ participantId: config.participantId, after: options.after });
+      return {
+        items: [
+          {
+            eventId: 101,
+            intentId: 'backlog-msg-1',
+            kind: 'message',
+            fromParticipantId: 'human.song',
+            payload: {
+              delivery: { semantic: 'informational' },
+              body: { summary: ' backlog message 1' }
+            }
+          },
+          {
+            eventId: 102,
+            intentId: 'backlog-msg-2',
+            kind: 'ask_clarification',
+            fromParticipantId: 'human.song',
+            payload: {
+              delivery: { semantic: 'actionable' },
+              body: { summary: 'backlog actionable' }
+            }
+          }
+        ]
+      };
+    },
+    sleepImpl: async () => {}
+  });
+
+  assert.equal(pollCalls.length, 1);
+  assert.equal(pollCalls[0].after, 100);
+  // Initial save + backlog sync save
+  assert.equal(savedQueue.length >= 1, true);
+  const finalState = savedQueue[savedQueue.length - 1].state;
+  assert.equal(finalState.lastEventId, 102);
+  assert.deepEqual(finalState.informational.map((i) => i.intentId), ['backlog-msg-1']);
+  assert.deepEqual(finalState.actionable.map((i) => i.intentId), ['backlog-msg-2']);
+});
+
+test('runRealtimeBridgeProcess continues when pollInbox fails on startup', async () => {
+  const savedQueue = [];
+
+  await runRealtimeBridgeProcess({
+    toolName: 'claude-code',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      PARTICIPANT_ID: 'claude-code-session-poll-fail',
+      ALIAS: 'claude',
+      PROJECT_NAME: 'intent-broker',
+      BROKER_URL: 'http://127.0.0.1:4318',
+      INTENT_BROKER_REALTIME_SESSION_ID: 'poll-fail-session'
+    },
+    parentPid: 4242,
+    statePath: null,
+    queueStatePath: '/tmp/poll-fail-queue.json',
+    loadRuntimeState: () => ({ status: 'idle' }),
+    loadRealtimeQueueStateImpl: () => ({ actionable: [], informational: [], lastEventId: 0 }),
+    saveRealtimeQueueStateImpl: (statePath, state) => savedQueue.push({ statePath, state }),
+    registerParticipant: async () => ({ ok: true }),
+    ackInbox: async () => ({ ok: true }),
+    spawnImpl: () => ({ pid: 5151, unref() {} }),
+    isProcessAlive: () => false,
+    pollInbox: async () => {
+      throw new Error('broker_unavailable');
+    },
+    sleepImpl: async () => {}
+  });
+
+  // Should have saved initial queue state without crashing
+  assert.equal(savedQueue.length >= 1, true);
+  assert.deepEqual(savedQueue[0].state, { actionable: [], informational: [], lastEventId: 0 });
+});
+
+test('runRealtimeBridgeProcess deduplicates backlog events already in local queue', async () => {
+  const savedQueue = [];
+
+  await runRealtimeBridgeProcess({
+    toolName: 'claude-code',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      PARTICIPANT_ID: 'claude-code-session-dedup',
+      ALIAS: 'claude',
+      PROJECT_NAME: 'intent-broker',
+      BROKER_URL: 'http://127.0.0.1:4318',
+      INTENT_BROKER_REALTIME_SESSION_ID: 'dedup-session'
+    },
+    parentPid: 4242,
+    statePath: null,
+    queueStatePath: '/tmp/dedup-queue.json',
+    loadRuntimeState: () => ({ status: 'idle' }),
+    loadRealtimeQueueStateImpl: () => ({
+      actionable: [{
+        eventId: 101,
+        intentId: 'existing-msg',
+        kind: 'message',
+        payload: { delivery: { semantic: 'actionable' } }
+      }],
+      informational: [],
+      lastEventId: 101
+    }),
+    saveRealtimeQueueStateImpl: (statePath, state) => savedQueue.push({ statePath, state }),
+    registerParticipant: async () => ({ ok: true }),
+    ackInbox: async () => ({ ok: true }),
+    spawnImpl: () => ({ pid: 5151, unref() {} }),
+    isProcessAlive: () => false,
+    pollInbox: async (config, options) => {
+      // Returns same event plus a new one
+      return {
+        items: [
+          {
+            eventId: 101, // Already in local queue
+            intentId: 'existing-msg',
+            kind: 'message',
+            payload: { delivery: { semantic: 'actionable' } }
+          },
+          {
+            eventId: 102, // New event
+            intentId: 'new-msg',
+            kind: 'message',
+            payload: { delivery: { semantic: 'informational' } }
+          }
+        ]
+      };
+    },
+    sleepImpl: async () => {}
+  });
+
+  // Should dedupe 101 and only add 102
+  assert.equal(savedQueue.length >= 1, true);
+  const finalState = savedQueue[savedQueue.length - 1].state;
+  assert.equal(finalState.lastEventId, 102);
+  assert.deepEqual(finalState.actionable.map((i) => i.intentId), ['existing-msg']);
+  assert.deepEqual(finalState.informational.map((i) => i.intentId), ['new-msg']);
+});

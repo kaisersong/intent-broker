@@ -593,6 +593,7 @@ async function connectRealtimeSocket({
   isProcessAlive: isProcessAliveImpl = isProcessAlive,
   registerParticipant = registerParticipantDefault,
   ackInbox = ackInboxDefault,
+  pollInbox = pollInboxDefault,
   spawnImpl = spawnDefault,
   loadCursorState = loadCursorStateDefault,
   saveCursorState = saveCursorStateDefault,
@@ -608,7 +609,7 @@ async function connectRealtimeSocket({
   // Sync backlog messages that arrived during previous disconnect
   try {
     const currentQueue = loadRealtimeQueueState(queueStatePath);
-    const backlogResponse = await pollInboxDefault(config, { after: currentQueue.lastEventId || 0 });
+    const backlogResponse = await pollInbox(config, { after: currentQueue.lastEventId || 0 });
     if (backlogResponse?.items?.length) {
       let updatedQueue = currentQueue;
       for (const event of backlogResponse.items) {
@@ -699,12 +700,15 @@ export async function runRealtimeBridgeProcess({
   parentPid = env.INTENT_BROKER_REALTIME_PARENT_PID,
   registerParticipant = registerParticipantDefault,
   ackInbox = ackInboxDefault,
+  pollInbox = pollInboxDefault,
   isProcessAlive: isProcessAliveImpl = isProcessAlive,
   spawnImpl = spawnDefault,
   loadCursorState = loadCursorStateDefault,
   saveCursorState = saveCursorStateDefault,
   loadRuntimeState = loadRuntimeStateDefault,
   saveRuntimeState = saveRuntimeStateDefault,
+  loadRealtimeQueueStateImpl = loadRealtimeQueueState,
+  saveRealtimeQueueStateImpl = saveRealtimeQueueState,
   resolveTranscriptPath = resolveTranscriptPathDefault,
   startCodexNativeApprovalWatcher = startCodexNativeApprovalWatcherDefault,
   sleepImpl = sleep
@@ -737,18 +741,18 @@ export async function runRealtimeBridgeProcess({
     })
     : null;
 
-  saveRealtimeQueueState(resolvedQueueStatePath, loadRealtimeQueueState(resolvedQueueStatePath));
+  saveRealtimeQueueStateImpl(resolvedQueueStatePath, loadRealtimeQueueStateImpl(resolvedQueueStatePath));
 
   // Sync backlog messages from broker inbox that arrived while disconnected
   try {
-    const currentQueue = loadRealtimeQueueState(resolvedQueueStatePath);
-    const backlogResponse = await pollInboxDefault(config, { after: currentQueue.lastEventId || 0 });
+    const currentQueue = loadRealtimeQueueStateImpl(resolvedQueueStatePath);
+    const backlogResponse = await pollInbox(config, { after: currentQueue.lastEventId || 0 });
     if (backlogResponse?.items?.length) {
       let updatedQueue = currentQueue;
       for (const event of backlogResponse.items) {
         updatedQueue = appendRealtimeEvent(updatedQueue, event);
       }
-      saveRealtimeQueueState(resolvedQueueStatePath, updatedQueue);
+      saveRealtimeQueueStateImpl(resolvedQueueStatePath, updatedQueue);
     }
   } catch {
     // Broker may be unavailable; continue anyway - WebSocket will retry
@@ -802,6 +806,7 @@ export async function runRealtimeBridgeProcess({
         isProcessAlive: isProcessAliveImpl,
         registerParticipant,
         ackInbox,
+        pollInbox,
         spawnImpl,
         loadRealtimeQueueState: loadRealtimeQueueState,
         saveRealtimeQueueState: saveRealtimeQueueState,
