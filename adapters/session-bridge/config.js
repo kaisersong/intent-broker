@@ -265,6 +265,7 @@ function deriveTerminalMetadata({ env, cwd, sessionCwd }) {
   const terminalTTY = resolveCurrentTTY();
 
   return {
+    source: 'cli',
     terminalApp,
     sessionHint: terminalApp === 'Terminal.app' ? terminalTTY : null,
     terminalTTY,
