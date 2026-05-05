@@ -641,19 +641,9 @@ export async function runStopHook(
         homeDir
       });
 
-      if (completedTurn?.summary) {
-        await sendProgress(config, {
-          intentId: `${config.participantId}-stop-complete-${Date.now()}`,
-          taskId: runtimeState.taskId,
-          threadId: runtimeState.threadId,
-          stage: 'completed',
-          summary: completedTurn.summary,
-          delivery: {
-            semantic: 'informational',
-            source: 'stop-fallback'
-          }
-        }).catch(() => null);
-      }
+      // Don't send stop-fallback completion - the summary would be historical
+      // conversation content (last agent message), not current task completion.
+      // This causes confusing popups showing old messages like lunch suggestions.
     }
 
     if (!queueState.actionable.length) {
