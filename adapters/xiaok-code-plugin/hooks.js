@@ -641,19 +641,12 @@ export async function runStopHook(
         homeDir
       });
 
-      if (completedTurn?.summary) {
-        await sendProgress(config, {
-          intentId: `${config.participantId}-stop-complete-${Date.now()}`,
-          taskId: runtimeState.taskId,
-          threadId: runtimeState.threadId,
-          stage: 'completed',
-          summary: completedTurn.summary,
-          delivery: {
-            semantic: 'informational',
-            source: 'stop-fallback'
-          }
-        }).catch(() => null);
-      }
+      // Don't send stop-fallback completion events.
+      // The summary content is from the last assistant message in transcript,
+      // which could be historical conversation (e.g., lunch suggestions from hours ago).
+      // This causes confusing popups showing old content as "new completions".
+      // Time-based freshness filtering cannot fix this because the event IS new,
+      // only the content is historical.
     }
 
     if (!queueState.actionable.length) {
