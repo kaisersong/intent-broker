@@ -545,9 +545,19 @@ export async function runStopHook(
         homeDir
       });
 
-      // Don't send stop-fallback completion - the summary would be historical
-      // conversation content (last agent message), not current task completion.
-      // This causes confusing popups showing old messages.
+      if (completedTurn?.summary) {
+        await sendProgress(config, {
+          intentId: `${config.participantId}-stop-complete-${Date.now()}`,
+          taskId: runtimeState.taskId,
+          threadId: runtimeState.threadId,
+          stage: 'completed',
+          summary: completedTurn.summary,
+          delivery: {
+            semantic: 'informational',
+            source: 'stop-fallback'
+          }
+        }).catch(() => null);
+      }
     }
 
     if (queueState.actionable.length) {
