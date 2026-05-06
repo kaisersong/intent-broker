@@ -35,6 +35,16 @@ export function createServer({ broker, healthProvider = null } = {}) {
     const requestUrl = new URL(req.url, 'http://127.0.0.1');
     const pathname = requestUrl.pathname;
 
+    // CORS headers for Tauri webview fetch requests
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     try {
       if (req.method === 'GET' && pathname === '/health') {
         writeJson(res, 200, getHealth());
