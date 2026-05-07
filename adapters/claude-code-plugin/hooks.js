@@ -593,7 +593,8 @@ export async function runUserPromptSubmitHook(
     registerParticipant = registerParticipantDefault,
     saveCursorState = saveCursorStateDefault,
     pollInbox = pollInboxDefault,
-    ackInbox = ackInboxDefault
+    ackInbox = ackInboxDefault,
+    updateWorkState = updateWorkStateDefault
   } = {}
 ) {
   if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
@@ -652,6 +653,12 @@ export async function runUserPromptSubmitHook(
         terminalSessionID: config.metadata?.terminalSessionID || null,
         updatedAt: new Date().toISOString()
       });
+      await updateWorkState(config, {
+        status: 'implementing',
+        taskId: state.recentContext?.taskId || null,
+        threadId: state.recentContext?.threadId || null,
+        summary: null
+      }).catch(() => null);
       const context = buildToolHookContext(drainedQueue.items, {
         participantId: config.participantId,
         sessionLabel: 'Claude Code session'
@@ -698,6 +705,12 @@ export async function runUserPromptSubmitHook(
       terminalSessionID: config.metadata?.terminalSessionID || null,
       updatedAt: new Date().toISOString()
     });
+    await updateWorkState(config, {
+      status: 'implementing',
+      taskId: state.recentContext?.taskId || null,
+      threadId: state.recentContext?.threadId || null,
+      summary: null
+    }).catch(() => null);
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
 
