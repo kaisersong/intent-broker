@@ -1,6 +1,6 @@
 # Intent Broker
 
-> You have multiple AI assistants (Codex, Claude Code, OpenCode) working on the same project, but they don't know about each other — until the human becomes the router, memory, and conflict detector between all windows. Intent Broker solves this coordination problem: persist events first, then deliver; let multiple agents collaborate around the same task object, with humans handling approvals and final decisions, while daily sync, task handoff, and state recovery all flow through broker-managed coordination.
+> You have multiple AI assistants (Codex, Claude Code, Qoder CLI, OpenCode) working on the same project, but they don't know about each other — until the human becomes the router, memory, and conflict detector between all windows. Intent Broker solves this coordination problem: persist events first, then deliver; let multiple agents collaborate around the same task object, with humans handling approvals and final decisions, while daily sync, task handoff, and state recovery all flow through broker-managed coordination.
 
 Local-first multi-agent collaboration broker. Not a chat server, not a workflow platform — a reliable coordination protocol layer.
 
@@ -91,6 +91,15 @@ git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-br
 
 ```bash
 git clone https://github.com/kaisersong/intent-broker ~/.codex/skills/intent-broker
+```
+
+### Qoder CLI
+
+Hooks are auto-installed to `~/.qoder/settings.json` when the broker starts. No manual setup needed.
+
+To install manually:
+```bash
+node adapters/qodercli-plugin/bin/qodercli-broker.js install
 ```
 
 ### Start Broker
@@ -247,7 +256,7 @@ intent-broker confirm reply <requestId> Y
 
 ## For AI Agents
 
-If you're Claude Code, Codex, OpenCode, or other coding agent, Intent Broker should be used as a collaboration protocol layer.
+If you're Claude Code, Codex, Qoder CLI, OpenCode, or other coding agent, Intent Broker should be used as a collaboration protocol layer.
 
 ### 1. Register on Session Start
 
@@ -424,12 +433,17 @@ See:
 |------|-------------|
 | Claude Code | `.claude/settings.json` hooks |
 | Codex | `~/.codex/hooks.json` + skill symlink |
+| Qoder CLI | `~/.qoder/settings.json` hooks |
+| xiaok-code | `~/.xiaok/plugins/intent-broker/` plugin |
 | OpenCode | TBD |
-| xiaok-code | TBD |
 
 ---
 
 ## Version History
+
+**v0.3.5** — Qoder CLI adapter: full hook integration (SessionStart, UserPromptSubmit, PreToolUse, Stop), auto-install on broker startup, `QODER_SESSION_ID` environment detection.
+
+**v0.3.4** — Push `implementing` work-state on user-prompt-submit hook so `who` correctly shows agents as active.
 
 **v0.3.3** — Release refresh for the latest HexDeck packaging/install flow; no protocol or adapter behavior change relative to v0.3.2.
 

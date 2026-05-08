@@ -1,6 +1,6 @@
 # Intent Broker
 
-> 你有多个 AI 助手（Codex、Claude Code、OpenCode）在同一个项目上工作，但它们彼此不知道对方的存在——直到人类变成所有窗口之间的路由器、记忆体和冲突探测器。Intent Broker 解决这个协调问题：先持久化事件，再进行投递；让多 agent 围绕同一任务对象协作，人类负责审批和裁决，日常同步、任务交接、状态恢复全部进入 broker 托管的协作流。
+> 你有多个 AI 助手（Codex、Claude Code、Qoder CLI、OpenCode）在同一个项目上工作，但它们彼此不知道对方的存在——直到人类变成所有窗口之间的路由器、记忆体和冲突探测器。Intent Broker 解决这个协调问题：先持久化事件，再进行投递；让多 agent 围绕同一任务对象协作，人类负责审批和裁决，日常同步、任务交接、状态恢复全部进入 broker 托管的协作流。
 
 本地优先的多 Agent 协作 broker。不是聊天服务器，也不是工作流平台，而是可靠的协作协议中间层。
 
@@ -91,6 +91,15 @@ git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-br
 
 ```bash
 git clone https://github.com/kaisersong/intent-broker ~/.codex/skills/intent-broker
+```
+
+### Qoder CLI
+
+Broker 启动时自动安装 hooks 到 `~/.qoder/settings.json`，无需手动配置。
+
+手动安装：
+```bash
+node adapters/qodercli-plugin/bin/qodercli-broker.js install
 ```
 
 ### 启动 Broker
@@ -247,7 +256,7 @@ intent-broker confirm reply <requestId> Y
 
 ## 面向 AI 智能体
 
-如果你是 Claude Code、Codex、OpenCode 或其他代码智能体，Intent Broker 应该被当成协作协议层来使用。
+如果你是 Claude Code、Codex、Qoder CLI、OpenCode 或其他代码智能体，Intent Broker 应该被当成协作协议层来使用。
 
 ### 1. 每次会话启动先注册
 
@@ -424,12 +433,17 @@ npm run verify:collaboration
 |------|----------|
 | Claude Code | `.claude/settings.json` hooks |
 | Codex | `~/.codex/hooks.json` + skill symlink |
+| Qoder CLI | `~/.qoder/settings.json` hooks |
+| xiaok-code | `~/.xiaok/plugins/intent-broker/` plugin |
 | OpenCode | 待实现 |
-| xiaok-code | 待实现 |
 
 ---
 
 ## 版本日志
+
+**v0.3.5** — Qoder CLI adapter：完整 hook 接入（SessionStart、UserPromptSubmit、PreToolUse、Stop），broker 启动时自动安装，`QODER_SESSION_ID` 环境变量检测。
+
+**v0.3.4** — user-prompt-submit hook 中推送 `implementing` work-state，`who` 命令能正确显示工作中的 agent。
 
 **v0.2.0** — Agent Group 协作：同项目自动发现、文件变更广播、冲突检测、文件锁；人机交互确认：阻塞式确认、超时 fallback；任务分发与审查；协作历史；降级容错。
 
