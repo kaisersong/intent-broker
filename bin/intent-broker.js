@@ -24,7 +24,7 @@ import { runCommand as runPhase2Command } from '../adapters/phase2/cli.js';
 
 function usage() {
   console.log(`Usage:
-  intent-broker [--tool codex|claude-code|opencode|xiaok-code] register
+  intent-broker [--tool codex|claude-code|opencode|xiaok-code|qodercli] register
   intent-broker [--tool ...] inbox
   intent-broker [--tool ...] who
   intent-broker [--tool ...] reply [@alias] <summary>
@@ -60,6 +60,9 @@ function inferToolName(env = process.env) {
   }
   if (env.XIAOK_CODE_SESSION_ID) {
     return 'xiaok-code';
+  }
+  if (env.QODER_SESSION_ID) {
+    return 'qodercli';
   }
   return env.INTENT_BROKER_TOOL || 'codex';
 }

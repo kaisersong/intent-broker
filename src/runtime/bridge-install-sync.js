@@ -2,6 +2,7 @@ import os from 'node:os';
 
 import { ensureClaudeCodeInstall } from '../../adapters/claude-code-plugin/install.js';
 import { ensureCodexInstall } from '../../adapters/codex-plugin/install.js';
+import { ensureQodercliInstall } from '../../adapters/qodercli-plugin/install.js';
 import { ensureXiaokInstall } from '../../adapters/xiaok-code-plugin/install.js';
 
 function log(logger, level, message) {
@@ -33,6 +34,10 @@ export async function syncAgentBridges({
     {
       name: 'xiaok-code',
       run: () => ensureXiaokInstall({ repoRoot, homeDir })
+    },
+    {
+      name: 'qodercli',
+      run: () => ensureQodercliInstall({ repoRoot, homeDir })
     }
   ];
 

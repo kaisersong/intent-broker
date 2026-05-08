@@ -34,6 +34,8 @@ function titleForAgentTool(agentTool) {
       return 'xiaok';
     case 'codex':
       return 'Codex';
+    case 'qodercli':
+      return 'Qoder CLI';
     default:
       return agentTool || 'Agent';
   }
@@ -47,6 +49,8 @@ function deliverySourceForAgentTool(agentTool) {
       return 'xiaok-code-hook-approval';
     case 'codex':
       return 'codex-hook-approval';
+    case 'qodercli':
+      return 'qodercli-hook-approval';
     default:
       return 'agent-hook-approval';
   }

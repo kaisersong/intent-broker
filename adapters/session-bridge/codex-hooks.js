@@ -284,6 +284,22 @@ export function buildXiaokAutoContinuePrompt(items = [], { participantId } = {})
   ].join('\n');
 }
 
+export function buildQodercliHookContext(items = [], { participantId, alias = null } = {}) {
+  return buildToolHookContext(items, {
+    participantId,
+    alias,
+    sessionLabel: 'Qoder CLI session'
+  });
+}
+
+export function buildQodercliAutoContinuePrompt(items = [], { participantId } = {}) {
+  return buildToolAutoContinuePrompt(items, {
+    participantId,
+    sessionLabel: 'Qoder CLI session',
+    actionableReplyStyle: 'mirror'
+  });
+}
+
 export function buildCodexHookOutput(hookEventName, additionalContext) {
   return {
     hookSpecificOutput: {

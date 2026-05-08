@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] - 2026-05-08
+
+### Added
+
+- QoderCLI adapter (`adapters/qodercli-plugin/`) with full hook support (SessionStart, UserPromptSubmit, PreToolUse, Stop)
+- Auto-install QoderCLI hooks on broker startup via `syncAgentBridges`
+- `QODER_SESSION_ID` environment variable detection for tool inference
+
 ## [0.3.4] - 2026-05-08
 
 ### Fixed

@@ -119,14 +119,15 @@ function deriveAlias({ toolName, env }) {
     codex: 'codex',
     'claude-code': 'claude',
     opencode: 'opencode',
-    'xiaok-code': 'xiaok'
+    'xiaok-code': 'xiaok',
+    qodercli: 'qoder'
   };
 
   return aliasMap[toolName] || toolName.replace(/-code$/, '');
 }
 
 function deriveCapabilities({ toolName }) {
-  if (toolName === 'codex' || toolName === 'claude-code' || toolName === 'xiaok-code') {
+  if (toolName === 'codex' || toolName === 'claude-code' || toolName === 'xiaok-code' || toolName === 'qodercli') {
     return ['broker.auto_dispatch'];
   }
 
@@ -378,7 +379,7 @@ export function deriveSessionBridgeConfig({
 } = {}) {
   const brokerUrl = env.BROKER_URL || 'http://127.0.0.1:4318';
   const explicitParticipantId = env.PARTICIPANT_ID;
-  const threadId = env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || env.XIAOK_CODE_SESSION_ID || '';
+  const threadId = env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || env.XIAOK_CODE_SESSION_ID || env.QODER_SESSION_ID || '';
   const projectName = deriveProjectName({ env, cwd, sessionCwd });
   const inboxMode = env.INTENT_BROKER_INBOX_MODE || 'pull';
 
