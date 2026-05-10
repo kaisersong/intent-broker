@@ -75,7 +75,12 @@ async function readJsonStdin() {
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString('utf8').trim();
-  return text ? JSON.parse(text) : {};
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
 }
 
 async function handleSessionStartHook() {
