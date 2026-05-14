@@ -348,6 +348,7 @@ export function createBrokerService({
   }
 
   function sendIntentInternal(input) {
+    const intentId = input.intentId || `${input.fromParticipantId}-${input.kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const recipients = resolveRecipients(input.fromParticipantId, input.to);
     const sender = participants.get(input.fromParticipantId);
     const delivery = {
@@ -363,11 +364,11 @@ export function createBrokerService({
       delivery
     };
     const event = store.appendIntent({
-      intentId: input.intentId,
+      intentId,
       kind: input.kind,
       fromParticipantId: input.fromParticipantId,
-      taskId: input.taskId,
-      threadId: input.threadId,
+      taskId: input.taskId || null,
+      threadId: input.threadId || null,
       payload,
       recipients
     });
