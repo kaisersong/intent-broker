@@ -278,6 +278,7 @@ test('refreshPersistedAgentSessions re-registers live sessions with derived term
       capabilities: ['broker.auto_dispatch'],
       context: { projectName: 'hexdeck' },
       metadata: {
+        source: 'cli',
         terminalApp: 'Ghostty',
         projectPath: '/Users/song/projects/hexdeck',
         sessionHint: null,
@@ -293,6 +294,7 @@ test('refreshPersistedAgentSessions re-registers live sessions with derived term
       capabilities: ['broker.auto_dispatch'],
       context: { projectName: 'xiaok-cli' },
       metadata: {
+        source: 'cli',
         terminalApp: 'Ghostty',
         projectPath: '/Users/song/projects/xiaok-cli',
         sessionHint: null,

@@ -112,3 +112,82 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
 
   assert.deepEqual(order.slice(-4), ['discovery-stop', 'channels-stop', 'broker-close', 'server-close']);
 });
+
+test('startBrokerApp can skip bridge sync for isolated test brokers', async () => {
+  const order = [];
+  const logger = { log() {}, warn() {} };
+  const broker = {
+    registerParticipant(participant) {
+      return participant;
+    },
+    attachWebSocket() {
+      order.push('attach-ws');
+    },
+    close() {
+      order.push('broker-close');
+    }
+  };
+  const server = {
+    async listen() {
+      order.push('listen');
+    },
+    raw() {
+      return {};
+    },
+    address() {
+      return { port: 4318 };
+    },
+    async close() {
+      order.push('server-close');
+    }
+  };
+  const channels = {
+    async startAll() {
+      order.push('channels-start');
+    },
+    async stopAll() {
+      order.push('channels-stop');
+    },
+    describe() {
+      return [];
+    }
+  };
+  const discovery = {
+    async start() {
+      order.push('discovery-start');
+    },
+    async stop() {
+      order.push('discovery-stop');
+    }
+  };
+
+  const app = await startBrokerApp({
+    cwd: '/Users/song/projects/intent-broker',
+    env: { INTENT_BROKER_SKIP_BRIDGE_SYNC: '1' },
+    logger,
+    persistedSessionRefreshIntervalMs: 0,
+    loadConfig: () => ({
+      server: { dbPath: '.tmp/test.db', host: '127.0.0.1', port: 4318 },
+      channels: {},
+      configPath: '/repo/intent-broker.config.json',
+      localConfigPath: '/repo/intent-broker.local.json'
+    }),
+    createBroker: () => broker,
+    createHttpServer: () => server,
+    createChannelsRuntime: () => channels,
+    createCodexResumeDiscoveryRuntime: () => discovery,
+    syncAgentBridges: async () => {
+      order.push('sync');
+      return [];
+    },
+    refreshPersistedAgentSessions: async () => {
+      order.push('refresh');
+      return [];
+    }
+  });
+
+  assert.deepEqual(order.slice(0, 4), ['listen', 'attach-ws', 'refresh', 'channels-start']);
+  assert.equal(order.includes('sync'), false);
+
+  await app.close();
+});

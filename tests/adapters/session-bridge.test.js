@@ -22,6 +22,7 @@ test('deriveSessionBridgeConfig prefers explicit participant id', () => {
   assert.deepEqual(config.roles, ['coder']);
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'unknown',
     sessionHint: null,
     terminalTTY: null,
@@ -44,6 +45,7 @@ test('deriveSessionBridgeConfig derives participant id from codex thread id', ()
   assert.deepEqual(config.capabilities, ['broker.auto_dispatch']);
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'unknown',
     sessionHint: null,
     terminalTTY: null,
@@ -74,7 +76,7 @@ test('deriveSessionBridgeConfig falls back to tool name when no thread id exists
     cwd: '/Users/song/projects/intent-broker'
   });
 
-  assert.equal(config.participantId, 'claude-code-session');
+  assert.match(config.participantId, /^claude-code-session-[a-z0-9]+-[a-z0-9]+$/);
   assert.equal(config.alias, 'claude');
   assert.deepEqual(config.context, { projectName: 'manual-project' });
 });
@@ -113,6 +115,7 @@ test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd fo
 
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'unknown',
     sessionHint: null,
     terminalTTY: null,
@@ -130,6 +133,7 @@ test('deriveSessionBridgeConfig maps TERM_PROGRAM into jump metadata', () => {
   });
 
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'Ghostty',
     sessionHint: null,
     terminalTTY: null,
