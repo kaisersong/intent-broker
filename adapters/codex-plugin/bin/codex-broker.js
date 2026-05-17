@@ -34,7 +34,6 @@ import {
   defaultInstallPaths,
   ensureCodexInstall,
   ensureSkillLink,
-  enableCodexHooksFeature,
   mergeIntentBrokerHooks,
   readCodexConfig,
   readHooksConfig,

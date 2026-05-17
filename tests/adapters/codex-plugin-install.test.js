@@ -261,7 +261,9 @@ test('ensureCodexInstall writes missing managed files and becomes stable on reru
     assert.deepEqual(first.updated.sort(), ['command-shim', 'config', 'hooks', 'skill-link']);
 
     const paths = defaultInstallPaths({ homeDir, repoRoot });
-    assert.match(readFileSync(paths.configPath, 'utf8'), /\[features\]\ncodex_hooks = true/);
+    const configText = readFileSync(paths.configPath, 'utf8');
+    assert.match(configText, /\[features\]\nhooks = true/);
+    assert.doesNotMatch(configText, /codex_hooks = true/);
     assert.match(readFileSync(paths.hooksConfigPath, 'utf8'), /hook stop/);
     assert.match(readFileSync(paths.commandShimPath, 'utf8'), /bin\/intent-broker\.js/);
     assert.equal(lstatSync(paths.skillLinkPath).isSymbolicLink(), true);

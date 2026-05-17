@@ -89,9 +89,23 @@ git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-br
 
 ### Codex
 
+从源码 checkout 安装：
+
 ```bash
-git clone https://github.com/kaisersong/intent-broker ~/.codex/skills/intent-broker
+git clone https://github.com/kaisersong/intent-broker ~/projects/intent-broker
+cd ~/projects/intent-broker
+npm install
+npm run codex:install
 ```
+
+安装器会写入 `~/.codex/hooks.json`，创建或刷新受管的 `~/.codex/skills/intent-broker` symlink，安装 `intent-broker` 命令 shim，并用下面的新开关启用 Codex hooks：
+
+```toml
+[features]
+hooks = true
+```
+
+如果旧配置里还有 `[features].codex_hooks`，重新运行 `npm run codex:install` 即可迁移到 `[features].hooks`。
 
 ### Qoder CLI
 
@@ -432,7 +446,7 @@ npm run verify:collaboration
 | 工具 | 接入方式 |
 |------|----------|
 | Claude Code | `.claude/settings.json` hooks |
-| Codex | `~/.codex/hooks.json` + skill symlink |
+| Codex | `[features].hooks` + `~/.codex/hooks.json` + 受管 skill symlink |
 | Qoder CLI | `~/.qoder/settings.json` hooks |
 | xiaok-code | `~/.xiaok/plugins/intent-broker/` plugin |
 | OpenCode | 待实现 |
@@ -440,6 +454,8 @@ npm run verify:collaboration
 ---
 
 ## 版本日志
+
+**v0.3.6** — Codex hook 安装器改用 `[features].hooks`，不再写入已废弃的 `[features].codex_hooks`；安装时会迁移旧配置，并可通过 `npm run codex:install` 刷新本地受管 hooks。
 
 **v0.3.5** — Qoder CLI adapter：完整 hook 接入（SessionStart、UserPromptSubmit、PreToolUse、Stop），broker 启动时自动安装，`QODER_SESSION_ID` 环境变量检测。
 

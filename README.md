@@ -89,9 +89,23 @@ git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-br
 
 ### Codex
 
+From a source checkout:
+
 ```bash
-git clone https://github.com/kaisersong/intent-broker ~/.codex/skills/intent-broker
+git clone https://github.com/kaisersong/intent-broker ~/projects/intent-broker
+cd ~/projects/intent-broker
+npm install
+npm run codex:install
 ```
+
+The installer writes `~/.codex/hooks.json`, creates or refreshes the managed `~/.codex/skills/intent-broker` symlink, installs the `intent-broker` command shim, and enables Codex hooks with:
+
+```toml
+[features]
+hooks = true
+```
+
+If an older config still has `[features].codex_hooks`, rerun `npm run codex:install`; the installer migrates it to `[features].hooks`.
 
 ### Qoder CLI
 
@@ -432,7 +446,7 @@ See:
 | Tool | Integration |
 |------|-------------|
 | Claude Code | `.claude/settings.json` hooks |
-| Codex | `~/.codex/hooks.json` + skill symlink |
+| Codex | `[features].hooks` + `~/.codex/hooks.json` + managed skill symlink |
 | Qoder CLI | `~/.qoder/settings.json` hooks |
 | xiaok-code | `~/.xiaok/plugins/intent-broker/` plugin |
 | OpenCode | TBD |
@@ -440,6 +454,8 @@ See:
 ---
 
 ## Version History
+
+**v0.3.6** — Codex hook installer now uses `[features].hooks` instead of deprecated `[features].codex_hooks`, migrates existing configs, and refreshes managed local hooks with `npm run codex:install`.
 
 **v0.3.5** — Qoder CLI adapter: full hook integration (SessionStart, UserPromptSubmit, PreToolUse, Stop), auto-install on broker startup, `QODER_SESSION_ID` environment detection.
 

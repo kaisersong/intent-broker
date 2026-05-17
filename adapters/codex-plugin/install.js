@@ -70,18 +70,22 @@ export function defaultInstallPaths({ homeDir = os.homedir(), repoRoot } = {}) {
   };
 }
 
-export function enableCodexHooksFeature(configText = '') {
-  if (/\bcodex_hooks\s*=\s*true\b/.test(configText)) {
-    return configText;
+export function enableHooksFeature(configText = '') {
+  const configWithoutLegacyFlag = configText.replace(/^[ \t]*codex_hooks[ \t]*=.*(?:\n|$)/gm, '');
+
+  if (/\bhooks\s*=\s*true\b/.test(configWithoutLegacyFlag)) {
+    return configWithoutLegacyFlag;
   }
 
-  if (/\[features\]/.test(configText)) {
-    return configText.replace(/\[features\]\n/, '[features]\ncodex_hooks = true\n');
+  if (/\[features\]/.test(configWithoutLegacyFlag)) {
+    return configWithoutLegacyFlag.replace(/\[features\]\n/, '[features]\nhooks = true\n');
   }
 
-  const suffix = configText.endsWith('\n') || configText.length === 0 ? '' : '\n';
-  return `${configText}${suffix}[features]\ncodex_hooks = true\n`;
+  const suffix = configWithoutLegacyFlag.endsWith('\n') || configWithoutLegacyFlag.length === 0 ? '' : '\n';
+  return `${configWithoutLegacyFlag}${suffix}[features]\nhooks = true\n`;
 }
+
+export const enableCodexHooksFeature = enableHooksFeature;
 
 export function readCodexConfig(configPath) {
   try {
@@ -152,7 +156,7 @@ function buildCodexInstallArtifacts({ repoRoot, homeDir = os.homedir(), verbose 
     paths,
     cliPath,
     effectiveVerbose,
-    desiredConfigText: enableCodexHooksFeature(configText),
+    desiredConfigText: enableHooksFeature(configText),
     existingConfigText: configText,
     existingHooksConfig,
     desiredHooksConfig,
