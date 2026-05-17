@@ -42,10 +42,12 @@ export async function startBrokerApp({
 
   mkdirSync(dirname(dbPath), { recursive: true });
 
-  await syncAgentBridges({
-    repoRoot: cwd,
-    logger
-  });
+  if (env.INTENT_BROKER_SKIP_BRIDGE_SYNC !== '1') {
+    await syncAgentBridges({
+      repoRoot: cwd,
+      logger
+    });
+  }
 
   const broker = createBroker({ dbPath });
   const channelHealth = createChannelHealthRegistry();

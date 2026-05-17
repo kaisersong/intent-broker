@@ -76,9 +76,10 @@ test('permission request hook mirrors a live Claude Code approval request throug
   assert.equal(calls[0].config.participantId, 'claude-code-session-019d448e');
 });
 
-test('pre-tool-use hook mirrors AskUserQuestion as a structured clarification request', async () => {
+test('pre-tool-use hook mirrors AskUserQuestion and returns the HexDeck answer to Claude Code', async () => {
   const saved = [];
   const asks = [];
+  const replayUrls = [];
 
   const result = await runPreToolUseHook(
     {
@@ -103,17 +104,35 @@ test('pre-tool-use hook mirrors AskUserQuestion as a structured clarification re
       },
       sendAsk: async (config, request) => {
         asks.push({ config, request });
+        return { eventId: 43 };
+      },
+      requestJson: async (url) => {
+        replayUrls.push(url);
+        return {
+          items: [
+            {
+              eventId: 44,
+              kind: 'answer_clarification',
+              taskId: 'claude-code-session-019d448e-ask-toolu-cc-ask-1',
+              threadId: 'claude-code-session-019d448e-ask-toolu-cc-ask-1',
+              payload: {
+                body: { summary: 'yes' }
+              }
+            }
+          ]
+        };
       }
     }
   );
 
   assert.deepEqual(result, {
     permissionDecision: 'deny',
-    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
-    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+    permissionDecisionReason: 'The user answered via HexDeck: "yes". Use this answer instead of asking again.'
   });
   assert.equal(saved.length, 1);
   assert.equal(asks.length, 1);
+  assert.equal(replayUrls.length, 1);
+  assert.match(replayUrls[0], /\/events\/replay\?after=42&limit=100$/);
   assert.equal(asks[0].config.participantId, 'claude-code-session-019d448e');
   assert.deepEqual(asks[0].request, {
     intentId: 'claude-code-session-019d448e-ask-toolu-cc-ask-1',
@@ -141,7 +160,7 @@ test('pre-tool-use hook mirrors AskUserQuestion as a structured clarification re
   });
 });
 
-test('pre-tool-use hook mirrors the first supported AskUserQuestion entry from questions[] and suppresses the native tool', async () => {
+test('pre-tool-use hook mirrors the first supported AskUserQuestion entry from questions[] and returns the answer', async () => {
   const asks = [];
 
   const result = await runPreToolUseHook(
@@ -176,16 +195,30 @@ test('pre-tool-use hook mirrors the first supported AskUserQuestion entry from q
     {
       env: {},
       cwd: '/Users/song/projects/kai-export-ppt-lite',
+      savePendingToolUseContext: () => {},
       sendAsk: async (config, request) => {
         asks.push({ config, request });
-      }
+        return { event: { eventId: 72 } };
+      },
+      requestJson: async () => ({
+        items: [
+          {
+            eventId: 73,
+            kind: 'answer_clarification',
+            taskId: 'claude-code-session-019d448e-ask-toolu-cc-ask-batch-1',
+            threadId: 'claude-code-session-019d448e-ask-toolu-cc-ask-batch-1',
+            payload: {
+              body: { summary: 'React' }
+            }
+          }
+        ]
+      })
     }
   );
 
   assert.deepEqual(result, {
     permissionDecision: 'deny',
-    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
-    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+    permissionDecisionReason: 'The user answered via HexDeck: "React". Use this answer instead of asking again.'
   });
   assert.equal(asks.length, 1);
   assert.equal(asks[0].config.participantId, 'claude-code-session-019d448e');
@@ -213,6 +246,78 @@ test('pre-tool-use hook mirrors the first supported AskUserQuestion entry from q
       source: 'claude-ask-user-question'
     }
   });
+});
+
+test('pre-tool-use hook falls back to native AskUserQuestion when HexDeck answer times out', async () => {
+  const asks = [];
+
+  const result = await runPreToolUseHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects',
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        header: '删除文件',
+        question: '是否确认永久删除此文件？',
+        options: [
+          { value: 'yes', label: '确认删除' },
+          { value: 'no', label: '取消' }
+        ]
+      },
+      tool_use_id: 'toolu-cc-ask-timeout'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects',
+      savePendingToolUseContext: () => {},
+      sendAsk: async (config, request) => {
+        asks.push({ config, request });
+        return { eventId: 91 };
+      },
+      requestJson: async () => ({ items: [] }),
+      pollMs: 0,
+      timeoutMs: 0
+    }
+  );
+
+  assert.equal(result, null);
+  assert.equal(asks.length, 1);
+});
+
+test('pre-tool-use hook falls back to native AskUserQuestion when broker ask send fails', async () => {
+  let replayRequested = false;
+
+  const result = await runPreToolUseHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa',
+      cwd: '/Users/song/projects',
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        header: '删除文件',
+        question: '是否确认永久删除此文件？',
+        options: [
+          { value: 'yes', label: '确认删除' },
+          { value: 'no', label: '取消' }
+        ]
+      },
+      tool_use_id: 'toolu-cc-ask-send-fail'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects',
+      savePendingToolUseContext: () => {},
+      sendAsk: async () => {
+        throw new Error('broker unavailable');
+      },
+      requestJson: async () => {
+        replayRequested = true;
+        return { items: [] };
+      }
+    }
+  );
+
+  assert.equal(result, null);
+  assert.equal(replayRequested, false);
 });
 
 test('pre-tool-use hook persists tool context for a later permission request', async () => {

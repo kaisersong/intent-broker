@@ -20,6 +20,7 @@ import {
   resolveSessionCwdFromTranscript as resolveSessionCwdFromTranscriptDefault
 } from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
+import { shouldWaitForAskUserQuestionAnswer } from '../session-bridge/ask-user-question-policy.js';
 import {
   markPendingReplyMirror as markPendingReplyMirrorDefault,
   maybeMirrorPendingReply as maybeMirrorPendingReplyDefault
@@ -419,13 +420,14 @@ export async function runPreToolUseHook(
     if (askUserQuestionRequest) {
       // Send ask_clarification to HexDeck and wait for answer_clarification
       const sent = await sendAsk(config, askUserQuestionRequest).catch(() => null);
-      if (sent) {
+      if (sent && shouldWaitForAskUserQuestionAnswer('claude-code')) {
         const afterEventId = sent.eventId ?? sent.event?.eventId ?? 0;
         try {
           const response = await waitForAskResponse({
             config,
             intentId: askUserQuestionRequest.intentId,
             afterEventId,
+            requestJson,
             pollMs,
             timeoutMs
           });
