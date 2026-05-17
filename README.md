@@ -21,6 +21,15 @@ English | [简体中文](README.zh-CN.md)
 
 **This is not "let agents chat" — it's letting humans delegate work in parallel while agents retain enough shared state to coordinate.**
 
+## Current Integration Baseline
+
+Intent Broker is the coordination layer used by xiaok Desktop and KSwarm:
+
+- xiaok agents register presence, aliases, project context, and work-state through broker hooks.
+- KSwarm sends `assign_po`, `request_task`, `review_submission`, `cancel_run`, and recovery intents through the broker protocol.
+- Runtime recovery depends on broker inbox delivery plus durable event replay, so interrupted PO planning and worker execution can be resumed or retried instead of disappearing into a local terminal.
+- Codex hook installation uses the stable `[features].hooks` switch; legacy `[features].codex_hooks` configs are migrated by `npm run codex:install`.
+
 ---
 
 ## Design Philosophy: Collaboration Protocol Layer

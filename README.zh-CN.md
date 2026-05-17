@@ -21,6 +21,15 @@
 
 **这不是"让几个 agent 能聊天"，而是让人可以并行分派工作，同时让 agent 之间保留足够的共享状态。**
 
+## 当前集成基线
+
+Intent Broker 是 xiaok Desktop 与 KSwarm 使用的协作协议层：
+
+- xiaok agent 通过 broker hooks 注册在线状态、alias、项目上下文和 work-state。
+- KSwarm 通过 broker 协议发送 `assign_po`、`request_task`、`review_submission`、`cancel_run` 和恢复类 intent。
+- Runtime 恢复依赖 broker inbox 投递和持久化事件重放，因此 PO 制定计划或 worker 执行被中断后，可以恢复或重试，而不是消失在某个本地终端里。
+- Codex hook 安装使用稳定的 `[features].hooks` 开关；旧的 `[features].codex_hooks` 配置会由 `npm run codex:install` 迁移。
+
 ---
 
 ## 设计理念：协作协议层
