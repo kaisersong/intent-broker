@@ -5,8 +5,15 @@ import {
   enrichConfigWithFocusedTerminalLocator
 } from '../../adapters/session-bridge/config.js';
 
+function deriveTestSessionBridgeConfig(options) {
+  return deriveSessionBridgeConfig({
+    resolveCurrentTTYImpl: () => null,
+    ...options
+  });
+}
+
 test('deriveSessionBridgeConfig prefers explicit participant id', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'codex',
     env: {
       BROKER_URL: 'http://127.0.0.1:9999',
@@ -31,7 +38,7 @@ test('deriveSessionBridgeConfig prefers explicit participant id', () => {
 });
 
 test('deriveSessionBridgeConfig derives participant id from codex thread id', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'codex',
     env: {
       CODEX_THREAD_ID: '019d42b4-f5bd-7f51-91b7-5df7eee4fdbb'
@@ -54,7 +61,7 @@ test('deriveSessionBridgeConfig derives participant id from codex thread id', ()
 });
 
 test('deriveSessionBridgeConfig derives participant id from claude code session id', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'claude-code',
     env: {
       CLAUDE_CODE_SESSION_ID: '019d42d0-1111-2222-3333-444444444444'
@@ -68,7 +75,7 @@ test('deriveSessionBridgeConfig derives participant id from claude code session 
 });
 
 test('deriveSessionBridgeConfig falls back to tool name when no thread id exists', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'claude-code',
     env: {
       PROJECT_NAME: 'manual-project'
@@ -82,7 +89,7 @@ test('deriveSessionBridgeConfig falls back to tool name when no thread id exists
 });
 
 test('deriveSessionBridgeConfig prefers explicit alias override', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'xiaok-code',
     env: {
       ALIAS: 'backend'
@@ -94,7 +101,7 @@ test('deriveSessionBridgeConfig prefers explicit alias override', () => {
 });
 
 test('deriveSessionBridgeConfig honors explicit inbox mode override', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'codex',
     env: {
       INTENT_BROKER_INBOX_MODE: 'realtime'
@@ -106,7 +113,7 @@ test('deriveSessionBridgeConfig honors explicit inbox mode override', () => {
 });
 
 test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd for project name', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'codex',
     env: {},
     cwd: '/Users/song/projects',
@@ -124,7 +131,7 @@ test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd fo
 });
 
 test('deriveSessionBridgeConfig maps TERM_PROGRAM into jump metadata', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestSessionBridgeConfig({
     toolName: 'codex',
     env: {
       TERM_PROGRAM: 'ghostty'
