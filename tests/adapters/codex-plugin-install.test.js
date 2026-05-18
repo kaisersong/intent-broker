@@ -53,7 +53,6 @@ test('mergeIntentBrokerHooks adds session start, user prompt submit, pre tool us
     hooks: {
       SessionStart: [
         {
-          matcher: 'startup|resume',
           hooks: [
             {
               type: 'command',

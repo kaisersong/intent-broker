@@ -5,8 +5,15 @@ import {
   enrichConfigWithFocusedTerminalLocator
 } from '../../adapters/session-bridge/config.js';
 
+function deriveTestConfig(options) {
+  return deriveSessionBridgeConfig({
+    ...options,
+    resolveCurrentTTYImpl: () => null
+  });
+}
+
 test('deriveSessionBridgeConfig prefers explicit participant id', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'codex',
     env: {
       BROKER_URL: 'http://127.0.0.1:9999',
@@ -22,6 +29,7 @@ test('deriveSessionBridgeConfig prefers explicit participant id', () => {
   assert.deepEqual(config.roles, ['coder']);
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'unknown',
     sessionHint: null,
     terminalTTY: null,
@@ -30,7 +38,7 @@ test('deriveSessionBridgeConfig prefers explicit participant id', () => {
 });
 
 test('deriveSessionBridgeConfig derives participant id from codex thread id', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'codex',
     env: {
       CODEX_THREAD_ID: '019d42b4-f5bd-7f51-91b7-5df7eee4fdbb'
@@ -44,6 +52,7 @@ test('deriveSessionBridgeConfig derives participant id from codex thread id', ()
   assert.deepEqual(config.capabilities, ['broker.auto_dispatch']);
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'unknown',
     sessionHint: null,
     terminalTTY: null,
@@ -52,7 +61,7 @@ test('deriveSessionBridgeConfig derives participant id from codex thread id', ()
 });
 
 test('deriveSessionBridgeConfig derives participant id from claude code session id', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'claude-code',
     env: {
       CLAUDE_CODE_SESSION_ID: '019d42d0-1111-2222-3333-444444444444'
@@ -66,7 +75,7 @@ test('deriveSessionBridgeConfig derives participant id from claude code session 
 });
 
 test('deriveSessionBridgeConfig falls back to tool name when no thread id exists', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'claude-code',
     env: {
       PROJECT_NAME: 'manual-project'
@@ -74,13 +83,13 @@ test('deriveSessionBridgeConfig falls back to tool name when no thread id exists
     cwd: '/Users/song/projects/intent-broker'
   });
 
-  assert.equal(config.participantId, 'claude-code-session');
+  assert.match(config.participantId, /^claude-code-session-[a-z0-9]+-[a-z0-9]{4}$/);
   assert.equal(config.alias, 'claude');
   assert.deepEqual(config.context, { projectName: 'manual-project' });
 });
 
 test('deriveSessionBridgeConfig prefers explicit alias override', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'xiaok-code',
     env: {
       ALIAS: 'backend'
@@ -92,7 +101,7 @@ test('deriveSessionBridgeConfig prefers explicit alias override', () => {
 });
 
 test('deriveSessionBridgeConfig honors explicit inbox mode override', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'codex',
     env: {
       INTENT_BROKER_INBOX_MODE: 'realtime'
@@ -104,7 +113,7 @@ test('deriveSessionBridgeConfig honors explicit inbox mode override', () => {
 });
 
 test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd for project name', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'codex',
     env: {},
     cwd: '/Users/song/projects',
@@ -113,6 +122,7 @@ test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd fo
 
   assert.deepEqual(config.context, { projectName: 'intent-broker' });
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'unknown',
     sessionHint: null,
     terminalTTY: null,
@@ -121,7 +131,7 @@ test('deriveSessionBridgeConfig prefers explicit session cwd over process cwd fo
 });
 
 test('deriveSessionBridgeConfig maps TERM_PROGRAM into jump metadata', () => {
-  const config = deriveSessionBridgeConfig({
+  const config = deriveTestConfig({
     toolName: 'codex',
     env: {
       TERM_PROGRAM: 'ghostty'
@@ -130,6 +140,7 @@ test('deriveSessionBridgeConfig maps TERM_PROGRAM into jump metadata', () => {
   });
 
   assert.deepEqual(config.metadata, {
+    source: 'cli',
     terminalApp: 'Ghostty',
     sessionHint: null,
     terminalTTY: null,

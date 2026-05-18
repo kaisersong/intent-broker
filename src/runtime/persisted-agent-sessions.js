@@ -229,7 +229,8 @@ export async function refreshPersistedAgentSessions({
       toolName: session.toolName,
       env: buildRefreshEnv({ ...session, brokerUrl }, env),
       cwd: sessionCwd,
-      sessionCwd
+      sessionCwd,
+      resolveCurrentTTYImpl: () => null
     });
     const effectiveAlias = config.alias || session.alias || null;
     const terminalTTY = resolveTerminalTTYFromPidImpl(session.parentPid ?? session.pid);

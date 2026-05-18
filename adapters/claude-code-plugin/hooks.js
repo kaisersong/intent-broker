@@ -7,7 +7,6 @@ import {
   registerParticipant as registerParticipantDefault,
   sendProgress as sendProgressDefault,
   sendAsk as sendAskDefault,
-  requestJson as requestJsonDefault,
   updateWorkState as updateWorkStateDefault
 } from '../session-bridge/api.js';
 import {
@@ -53,90 +52,6 @@ import {
   resolveRealtimeQueueStatePath,
   resolveRuntimeStatePath
 } from '../hook-installer-core/state-paths.js';
-
-const DEFAULT_POLL_MS = 500;
-const DEFAULT_RESPONSE_TIMEOUT_MS = 120000; // 2 minutes
-
-async function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForAskResponse({
-  config,
-  intentId,
-  afterEventId = 0,
-  requestJson = requestJsonDefault,
-  pollMs = DEFAULT_POLL_MS,
-  timeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS
-}) {
-  const deadline = Date.now() + timeoutMs;
-  let after = Math.max(0, Number(afterEventId) - 1);
-  // The intentId for ask_clarification is also the taskId
-  const askTaskId = intentId;
-
-  while (Date.now() < deadline) {
-    const replay = await requestJson(`${config.brokerUrl}/events/replay?after=${after}&limit=100`);
-    for (const event of replay.items || []) {
-      after = Math.max(after, Number(event.eventId || event.id || 0));
-      const kind = event.kind || event.type || '';
-
-      // HexDeck uses answer_clarification for question responses
-      // Match by taskId (which equals intentId for ask_clarification events)
-      if (kind === 'answer_clarification') {
-        const eventTaskId = event.taskId || '';
-        const eventThreadId = event.threadId || '';
-
-        // taskId and threadId of answer should match the ask's intentId (which is also taskId)
-        if (eventTaskId === askTaskId || eventThreadId === askTaskId) {
-          return event;
-        }
-      }
-
-      // Also support respond_ask for future compatibility
-      if ((kind === 'respond_ask' || kind === 'respond_clarification')) {
-        const eventIntentId = event.intentId || '';
-        if (eventIntentId === intentId) {
-          return event;
-        }
-      }
-    }
-    await sleep(pollMs);
-  }
-
-  throw new Error(`timeout waiting for ask response ${intentId}`);
-}
-
-function extractUserSelectionFromResponse(event) {
-  const payload = event.payload || {};
-  const body = payload.body || {};
-
-  let selectedValue = null;
-  let selectedValues = null;
-
-  // answer_clarification from HexDeck puts the selected option value in body.summary
-  if (typeof body.summary === 'string' && body.summary.trim()) {
-    selectedValue = body.summary.trim();
-  }
-
-  // Also check other possible fields
-  if (typeof body.value === 'string') {
-    selectedValue = body.value;
-  }
-  if (Array.isArray(body.values)) {
-    selectedValues = body.values;
-  }
-  if (typeof payload.selection === 'string') {
-    selectedValue = payload.selection;
-  }
-  if (typeof body.option === 'string') {
-    selectedValue = body.option;
-  }
-  if (Array.isArray(body.selectedOptions)) {
-    selectedValues = body.selectedOptions;
-  }
-
-  return { selectedValue, selectedValues, summary: body.summary || payload.summary || null };
-}
 
 const __filename = fileURLToPath(import.meta.url);
 const cliPath = path.resolve(path.dirname(__filename), 'bin', 'claude-code-broker.js');
@@ -395,10 +310,7 @@ export async function runPreToolUseHook(
     homeDir,
     resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
     savePendingToolUseContext = savePendingToolUseContextDefault,
-    sendAsk = sendAskDefault,
-    requestJson = requestJsonDefault,
-    pollMs = DEFAULT_POLL_MS,
-    timeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS
+    sendAsk = sendAskDefault
   } = {}
 ) {
   if (env.INTENT_BROKER_SKIP_APPROVAL_SYNC === '1') {
@@ -417,30 +329,12 @@ export async function runPreToolUseHook(
     }, { homeDir });
 
     if (askUserQuestionRequest) {
-      // Send ask_clarification to HexDeck and wait for answer_clarification
-      const sent = await sendAsk(config, askUserQuestionRequest).catch(() => null);
-      if (sent) {
-        const afterEventId = sent.eventId ?? sent.event?.eventId ?? 0;
-        try {
-          const response = await waitForAskResponse({
-            config,
-            intentId: askUserQuestionRequest.intentId,
-            afterEventId,
-            pollMs,
-            timeoutMs
-          });
-          const userSelection = extractUserSelectionFromResponse(response);
-          const answer = userSelection.selectedValue || userSelection.summary || '';
-          // Deny the tool — return the answer as the reason so Claude uses it directly
-          return {
-            permissionDecision: 'deny',
-            permissionDecisionReason: `The user answered via HexDeck: "${answer}". Use this answer instead of asking again.`
-          };
-        } catch {
-          // Timeout or error — fall through to let AskUserQuestion run natively
-        }
-      }
-      return null;
+      await sendAsk(config, askUserQuestionRequest);
+      return {
+        permissionDecision: 'deny',
+        permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
+        additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT
+      };
     }
     return null;
   });

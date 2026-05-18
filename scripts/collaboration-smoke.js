@@ -165,7 +165,7 @@ async function runCommand({
   });
 }
 
-function spawnBroker({ repoRoot, port, dbPath, logDir }) {
+function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
   const configPath = join(logDir, 'intent-broker.smoke.config.json');
   const localConfigPath = join(logDir, 'intent-broker.smoke.local.json');
   writeJsonLog(logDir, 'intent-broker.smoke.config.json', {
@@ -185,7 +185,10 @@ function spawnBroker({ repoRoot, port, dbPath, logDir }) {
       PORT: String(port),
       INTENT_BROKER_DB: dbPath,
       INTENT_BROKER_CONFIG: configPath,
-      INTENT_BROKER_LOCAL_CONFIG: localConfigPath
+      INTENT_BROKER_LOCAL_CONFIG: localConfigPath,
+      INTENT_BROKER_DISABLE_CODEX_DISCOVERY: '1',
+      INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS: '0',
+      HOME: homeDir
     }
   });
 
@@ -272,7 +275,8 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     repoRoot: resolvedRepoRoot,
     port,
     dbPath,
-    logDir: resolvedLogDir
+    logDir: resolvedLogDir,
+    homeDir
   });
 
   try {

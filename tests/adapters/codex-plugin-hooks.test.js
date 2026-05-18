@@ -741,7 +741,7 @@ test('stop hook mirrors the current completion before draining a new actionable 
   ]);
 });
 
-test('stop hook sends fallback completion before draining a new actionable queue when mirror is missing', async () => {
+test('stop hook does not send fallback completion before draining a new actionable queue when mirror is missing', async () => {
   const sent = [];
   const savedRuntime = [];
   const workStates = [];
@@ -798,15 +798,7 @@ test('stop hook sends fallback completion before draining a new actionable queue
   );
 
   assert.match(result, /Intent Broker auto-continue for codex-session-019d4489/);
-  assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0], {
-    intentId: sent[0].intentId,
-    taskId: 'task-current',
-    threadId: 'thread-current',
-    stage: 'completed',
-    summary: 'Codex finished the current task',
-    delivery: { semantic: 'informational', source: 'stop-fallback' }
-  });
+  assert.equal(sent.length, 0);
   assert.equal(savedRuntime[0].state.status, 'running');
   assert.deepEqual(workStates, [
     {
@@ -867,7 +859,7 @@ test('stop hook marks runtime idle when there is no actionable queue', async () 
   ]);
 });
 
-test('stop hook falls back to a completed progress event when no pending reply mirror exists', async () => {
+test('stop hook marks runtime idle without fallback completion when no pending reply mirror exists', async () => {
   const sent = [];
   const savedRuntime = [];
   const workStates = [];
@@ -903,15 +895,7 @@ test('stop hook falls back to a completed progress event when no pending reply m
   );
 
   assert.equal(result, null);
-  assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0], {
-    intentId: sent[0].intentId,
-    taskId: 'task-complete-1',
-    threadId: 'thread-complete-1',
-    stage: 'completed',
-    summary: 'Codex completed the task',
-    delivery: { semantic: 'informational', source: 'stop-fallback' }
-  });
+  assert.equal(sent.length, 0);
   assert.equal(savedRuntime[0].state.status, 'idle');
   assert.deepEqual(workStates, [
     {

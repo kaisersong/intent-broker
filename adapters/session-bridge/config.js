@@ -260,10 +260,10 @@ end tell
   return { sessionID: null, workingDirectory: null, tty: null, title: null };
 }
 
-function deriveTerminalMetadata({ env, cwd, sessionCwd }) {
+function deriveTerminalMetadata({ env, cwd, sessionCwd, resolveCurrentTTYImpl = resolveCurrentTTY }) {
   const projectPath = sessionCwd || cwd || null;
   const terminalApp = normalizeTerminalApp(env.TERM_PROGRAM);
-  const terminalTTY = resolveCurrentTTY();
+  const terminalTTY = resolveCurrentTTYImpl();
 
   return {
     source: 'cli',
@@ -375,7 +375,8 @@ export function deriveSessionBridgeConfig({
   toolName,
   env = process.env,
   cwd = process.cwd(),
-  sessionCwd = null
+  sessionCwd = null,
+  resolveCurrentTTYImpl = resolveCurrentTTY
 } = {}) {
   const brokerUrl = env.BROKER_URL || 'http://127.0.0.1:4318';
   const explicitParticipantId = env.PARTICIPANT_ID;
@@ -402,6 +403,6 @@ export function deriveSessionBridgeConfig({
     roles: ['coder'],
     capabilities: deriveCapabilities({ toolName }),
     context: projectName ? { projectName } : {},
-    metadata: deriveTerminalMetadata({ env, cwd, sessionCwd })
+    metadata: deriveTerminalMetadata({ env, cwd, sessionCwd, resolveCurrentTTYImpl })
   };
 }
