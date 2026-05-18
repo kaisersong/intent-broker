@@ -10,3 +10,4 @@ docs/
 coverage/
 .tmp/
 .worktrees/
+.qoder/
