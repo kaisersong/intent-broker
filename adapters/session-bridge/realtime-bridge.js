@@ -52,6 +52,7 @@ import {
 const DEFAULT_RETRY_MS = 2000;
 const DEFAULT_CLAUDE_MAX_BUFFER = 10 * 1024 * 1024;
 const DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS = 30 * 1000;
+const DEFAULT_AUTO_DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
 const execFileDefault = promisify(execFileCallback);
 
 function normalizePid(value) {
@@ -136,6 +137,11 @@ function normalizeQueueState(state) {
 function parseTimestampMs(value) {
   const ms = Date.parse(String(value || ''));
   return Number.isFinite(ms) ? ms : null;
+}
+
+function parsePositiveMs(value, fallback) {
+  const ms = Number(value);
+  return Number.isFinite(ms) && ms > 0 ? ms : fallback;
 }
 
 function hasEvent(state, eventId) {
@@ -226,6 +232,15 @@ function shouldRecoverStaleAutoDispatchRuntime(toolName, runtimeState, staleMs) 
   return Date.now() - updatedAtMs >= staleMs;
 }
 
+function hasLiveAutoDispatchOwner(runtimeState, isProcessAliveImpl) {
+  if (runtimeState?.status !== 'running' || runtimeState?.source !== 'auto-dispatch') {
+    return false;
+  }
+
+  const ownerPid = normalizePid(runtimeState.ownerPid);
+  return Boolean(ownerPid && isProcessAliveImpl(ownerPid));
+}
+
 function buildAutoDispatchPrompt(toolName, items, participantId) {
   if (toolName === 'codex') {
     return buildCodexAutoContinuePrompt(items, { participantId });
@@ -271,7 +286,8 @@ export async function maybeAutoDispatchRealtimeQueue({
   loadCursorState = loadCursorStateDefault,
   saveCursorState = saveCursorStateDefault,
   loadRuntimeState = loadRuntimeStateDefault,
-  saveRuntimeState = saveRuntimeStateDefault
+  saveRuntimeState = saveRuntimeStateDefault,
+  isProcessAlive: isProcessAliveImpl = isProcessAlive
 } = {}) {
   if (toolName !== 'codex' && toolName !== 'claude-code' && toolName !== 'xiaok-code') {
     return { dispatched: false, reason: 'unsupported-tool' };
@@ -283,11 +299,20 @@ export async function maybeAutoDispatchRealtimeQueue({
     return { dispatched: false, reason: 'missing-session' };
   }
 
-  const staleAutoDispatchMs = Number(
-    env.INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS || DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS
+  const staleAutoDispatchMs = parsePositiveMs(
+    env.INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS,
+    DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS
+  );
+  const autoDispatchTimeoutMs = parsePositiveMs(
+    env.INTENT_BROKER_AUTO_DISPATCH_TIMEOUT_MS,
+    DEFAULT_AUTO_DISPATCH_TIMEOUT_MS
   );
   const runtimeState = loadRuntimeState(runtimeStatePath);
   if (runtimeState.status !== 'idle') {
+    if (hasLiveAutoDispatchOwner(runtimeState, isProcessAliveImpl)) {
+      return { dispatched: false, reason: 'busy-owner-alive' };
+    }
+
     if (!shouldRecoverStaleAutoDispatchRuntime(toolName, runtimeState, staleAutoDispatchMs)) {
       return { dispatched: false, reason: 'busy' };
     }
@@ -297,6 +322,7 @@ export async function maybeAutoDispatchRealtimeQueue({
       sessionId: runtimeState.sessionId || sessionId,
       turnId: null,
       source: 'auto-dispatch-recovered',
+      ownerPid: null,
       taskId: null,
       threadId: null,
       updatedAt: new Date().toISOString()
@@ -336,6 +362,7 @@ export async function maybeAutoDispatchRealtimeQueue({
     sessionId,
     turnId: null,
     source: 'auto-dispatch',
+    ownerPid: process.pid,
     taskId: activeContext?.taskId || null,
     threadId: activeContext?.threadId || null,
     updatedAt: new Date().toISOString()
@@ -392,7 +419,9 @@ export async function maybeAutoDispatchRealtimeQueue({
           INTENT_BROKER_SKIP_INBOX_SYNC: '1'
         },
         encoding: 'utf8',
-        maxBuffer: DEFAULT_CLAUDE_MAX_BUFFER
+        maxBuffer: DEFAULT_CLAUDE_MAX_BUFFER,
+        timeout: autoDispatchTimeoutMs,
+        killSignal: 'SIGTERM'
       }
     );
 
@@ -431,6 +460,7 @@ export async function maybeAutoDispatchRealtimeQueue({
       sessionId,
       turnId: null,
       source: 'auto-dispatch-complete',
+      ownerPid: null,
       taskId: null,
       threadId: null,
       updatedAt: new Date().toISOString()

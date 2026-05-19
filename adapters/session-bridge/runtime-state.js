@@ -9,12 +9,18 @@ function normalizeStatus(value) {
   return value === 'running' ? 'running' : 'idle';
 }
 
+function normalizeOptionalPid(value) {
+  const pid = Number(value);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
 export function createRuntimeState() {
   return {
     status: 'idle',
     sessionId: null,
     turnId: null,
     source: null,
+    ownerPid: null,
     taskId: null,
     threadId: null,
     alias: null,
@@ -28,11 +34,17 @@ export function createRuntimeState() {
 }
 
 function normalizeRuntimeState(state) {
+  const status = normalizeStatus(state?.status);
+  const source = normalizeOptionalString(state?.source);
+
   return {
-    status: normalizeStatus(state?.status),
+    status,
     sessionId: normalizeOptionalString(state?.sessionId),
     turnId: normalizeOptionalString(state?.turnId),
-    source: normalizeOptionalString(state?.source),
+    source,
+    ownerPid: status === 'running' && source === 'auto-dispatch'
+      ? normalizeOptionalPid(state?.ownerPid)
+      : null,
     taskId: normalizeOptionalString(state?.taskId),
     threadId: normalizeOptionalString(state?.threadId),
     alias: normalizeOptionalString(state?.alias),

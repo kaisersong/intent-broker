@@ -28,7 +28,24 @@ function normalizePid(value) {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
-export function isProcessAlive(pid) {
+function isZombieProcess(pid, { execFileSyncImpl = execFileSync, platform = process.platform } = {}) {
+  if (platform === 'win32') {
+    return false;
+  }
+
+  try {
+    const stat = execFileSyncImpl(
+      'ps',
+      ['-o', 'stat=', '-p', String(pid)],
+      { encoding: 'utf8' }
+    ).trim();
+    return /Z/.test(stat);
+  } catch {
+    return false;
+  }
+}
+
+export function isProcessAlive(pid, options = {}) {
   const normalizedPid = normalizePid(pid);
   if (!normalizedPid) {
     return false;
@@ -36,9 +53,9 @@ export function isProcessAlive(pid) {
 
   try {
     process.kill(normalizedPid, 0);
-    return true;
+    return !isZombieProcess(normalizedPid, options);
   } catch (error) {
-    return error?.code === 'EPERM';
+    return error?.code === 'EPERM' && !isZombieProcess(normalizedPid, options);
   }
 }
 

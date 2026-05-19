@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   ensureSessionKeeper,
+  isProcessAlive,
   resolveSessionKeeperStatePath,
   resolveObservedParentPid,
   runSessionKeeperIteration
@@ -452,6 +453,15 @@ test('resolveObservedParentPid returns null on Windows when it cannot prove a st
   });
 
   assert.equal(resolved, null);
+});
+
+test('isProcessAlive treats zombie processes as exited on POSIX', () => {
+  const alive = isProcessAlive(process.pid, {
+    platform: 'linux',
+    execFileSyncImpl: () => 'Z+\n'
+  });
+
+  assert.equal(alive, false);
 });
 
 test('runSessionKeeperIteration marks the participant offline once the parent exits', async () => {

@@ -463,6 +463,74 @@ test('maybeAutoDispatchRealtimeQueue recovers a stale claude code auto-dispatch 
   ]);
 });
 
+test('maybeAutoDispatchRealtimeQueue keeps stale claude code runtime busy while owner bridge is alive', async () => {
+  const execCalls = [];
+  const savedRuntime = [];
+  const workStates = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-owner-alive' },
+    sessionId: 'owner-alive-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS: '1000'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({
+      status: 'running',
+      sessionId: 'owner-alive-session-1234',
+      turnId: null,
+      source: 'auto-dispatch',
+      taskId: 'old-task',
+      threadId: 'old-thread',
+      ownerPid: 4242,
+      updatedAt: '2000-01-01T00:00:00.000Z'
+    }),
+    isProcessAlive: (pid) => pid === 4242,
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return { stdout: 'SHOULD_NOT_RUN\n', stderr: '' };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+    updateWorkState: async (config, state) => {
+      workStates.push({ participantId: config.participantId, state });
+      return { ok: true };
+    },
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 93,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-owner-alive',
+          threadId: 'thread-owner-alive',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '不要重复 spawn' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 93
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, false);
+  assert.equal(result.reason, 'busy-owner-alive');
+  assert.deepEqual(execCalls, []);
+  assert.deepEqual(savedRuntime, []);
+  assert.deepEqual(workStates, []);
+});
+
 test('maybeAutoDispatchRealtimeQueue requeues claude code work when auto-dispatch execution fails', async () => {
   const savedQueue = [];
   const savedRuntime = [];
@@ -558,6 +626,61 @@ test('maybeAutoDispatchRealtimeQueue requeues claude code work when auto-dispatc
       }
     }
   ]);
+});
+
+test('maybeAutoDispatchRealtimeQueue passes a timeout to claude code auto-dispatch', async () => {
+  const execCalls = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-timeout-1' },
+    sessionId: 'timeout-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_AUTO_DISPATCH_TIMEOUT_MS: '1234'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({ status: 'idle', sessionId: 'timeout-session-1234' }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: 'timeout option observed\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: () => {},
+    updateWorkState: async () => ({ ok: true }),
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 94,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-timeout-1',
+          threadId: 'thread-timeout-1',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '检查 timeout' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 94
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 1);
+  assert.equal(execCalls[0].options.timeout, 1234);
+  assert.equal(execCalls[0].options.killSignal, 'SIGTERM');
 });
 
 test('ensureRealtimeBridge spawns a detached background bridge and records its pid', async () => {
