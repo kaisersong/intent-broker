@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   ensureSessionKeeper,
+  getProcessStartedAtMs,
   isProcessAlive,
   resolveSessionKeeperStatePath,
   resolveObservedParentPid,
@@ -462,6 +463,26 @@ test('isProcessAlive treats zombie processes as exited on POSIX', () => {
   });
 
   assert.equal(alive, false);
+});
+
+test('getProcessStartedAtMs parses POSIX ps lstart output', () => {
+  const startedAt = getProcessStartedAtMs(4242, {
+    platform: 'linux',
+    execFileSyncImpl: () => 'Tue May 19 10:11:12 2026\n'
+  });
+
+  assert.equal(startedAt, Date.parse('Tue May 19 10:11:12 2026'));
+});
+
+test('getProcessStartedAtMs returns null when process start time cannot be read', () => {
+  const startedAt = getProcessStartedAtMs(4242, {
+    platform: 'linux',
+    execFileSyncImpl: () => {
+      throw new Error('ps failed');
+    }
+  });
+
+  assert.equal(startedAt, null);
 });
 
 test('runSessionKeeperIteration marks the participant offline once the parent exits', async () => {

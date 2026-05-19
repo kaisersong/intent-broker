@@ -45,6 +45,25 @@ function isZombieProcess(pid, { execFileSyncImpl = execFileSync, platform = proc
   }
 }
 
+export function getProcessStartedAtMs(pid, { execFileSyncImpl = execFileSync, platform = process.platform } = {}) {
+  const normalizedPid = normalizePid(pid);
+  if (!normalizedPid || platform === 'win32') {
+    return null;
+  }
+
+  try {
+    const startedAt = execFileSyncImpl(
+      'ps',
+      ['-o', 'lstart=', '-p', String(normalizedPid)],
+      { encoding: 'utf8' }
+    ).trim();
+    const startedAtMs = Date.parse(startedAt);
+    return Number.isFinite(startedAtMs) ? startedAtMs : null;
+  } catch {
+    return null;
+  }
+}
+
 export function isProcessAlive(pid, options = {}) {
   const normalizedPid = normalizePid(pid);
   if (!normalizedPid) {

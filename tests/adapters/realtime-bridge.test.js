@@ -467,6 +467,7 @@ test('maybeAutoDispatchRealtimeQueue keeps stale claude code runtime busy while 
   const execCalls = [];
   const savedRuntime = [];
   const workStates = [];
+  const ownerStartedAt = '2026-05-19T10:11:12.000Z';
 
   const result = await maybeAutoDispatchRealtimeQueue({
     toolName: 'claude-code',
@@ -487,9 +488,11 @@ test('maybeAutoDispatchRealtimeQueue keeps stale claude code runtime busy while 
       taskId: 'old-task',
       threadId: 'old-thread',
       ownerPid: 4242,
+      ownerStartedAt,
       updatedAt: '2000-01-01T00:00:00.000Z'
     }),
     isProcessAlive: (pid) => pid === 4242,
+    getProcessStartedAtMs: (pid) => (pid === 4242 ? Date.parse(ownerStartedAt) : null),
     loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
     execFileImpl: async (command, args, options) => {
       execCalls.push({ command, args, options });
@@ -529,6 +532,134 @@ test('maybeAutoDispatchRealtimeQueue keeps stale claude code runtime busy while 
   assert.deepEqual(execCalls, []);
   assert.deepEqual(savedRuntime, []);
   assert.deepEqual(workStates, []);
+});
+
+test('maybeAutoDispatchRealtimeQueue recovers a stale auto-dispatch runtime when the owner pid was reused', async () => {
+  const execCalls = [];
+  const savedRuntime = [];
+  const oldOwnerStartedAt = '2026-05-19T10:11:12.000Z';
+  const reusedPidStartedAt = '2026-05-19T10:20:00.000Z';
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-reused-owner' },
+    sessionId: 'reused-owner-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS: '1000'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({
+      status: 'running',
+      sessionId: 'reused-owner-session-1234',
+      turnId: null,
+      source: 'auto-dispatch',
+      taskId: 'old-task',
+      threadId: 'old-thread',
+      ownerPid: 4242,
+      ownerStartedAt: oldOwnerStartedAt,
+      updatedAt: '2000-01-01T00:00:00.000Z'
+    }),
+    isProcessAlive: (pid) => pid === 4242,
+    getProcessStartedAtMs: (pid) => (pid === 4242 ? Date.parse(reusedPidStartedAt) : null),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: 'RECOVERED_AFTER_PID_REUSE\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: (statePath, state) => savedRuntime.push({ statePath, state }),
+    updateWorkState: async () => ({ ok: true }),
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 95,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-owner-reused',
+          threadId: 'thread-owner-reused',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: 'PID 已复用时不要误判 busy' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 95
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 1);
+  assert.equal(savedRuntime[0].state.source, 'auto-dispatch-recovered');
+  assert.equal(savedRuntime[1].state.source, 'auto-dispatch');
+});
+
+test('maybeAutoDispatchRealtimeQueue treats stale threshold 0 as immediate recovery', async () => {
+  const execCalls = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-zero-stale' },
+    sessionId: 'zero-stale-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS: '0'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({
+      status: 'running',
+      sessionId: 'zero-stale-session-1234',
+      source: 'auto-dispatch',
+      updatedAt: new Date().toISOString()
+    }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: 'ZERO_STALE_RECOVERED\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: () => {},
+    updateWorkState: async () => ({ ok: true }),
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 96,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-zero-stale',
+          threadId: 'thread-zero-stale',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: 'stale=0 应立即恢复' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 96
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 1);
 });
 
 test('maybeAutoDispatchRealtimeQueue requeues claude code work when auto-dispatch execution fails', async () => {
@@ -681,6 +812,194 @@ test('maybeAutoDispatchRealtimeQueue passes a timeout to claude code auto-dispat
   assert.equal(execCalls.length, 1);
   assert.equal(execCalls[0].options.timeout, 1234);
   assert.equal(execCalls[0].options.killSignal, 'SIGTERM');
+});
+
+test('maybeAutoDispatchRealtimeQueue allows timeout 0 to disable execFile timeout', async () => {
+  const execCalls = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-timeout-zero' },
+    sessionId: 'timeout-zero-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_AUTO_DISPATCH_TIMEOUT_MS: '0'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({ status: 'idle', sessionId: 'timeout-zero-session-1234' }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: 'timeout disabled\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: () => {},
+    updateWorkState: async () => ({ ok: true }),
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 97,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-timeout-zero',
+          threadId: 'thread-timeout-zero',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '检查 timeout=0' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 97
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 1);
+  assert.equal(execCalls[0].options.timeout, 0);
+});
+
+test('maybeAutoDispatchRealtimeQueue passes a timeout to xiaok code auto-dispatch', async () => {
+  const execCalls = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'xiaok-code',
+    config: { participantId: 'xiaok-code-session-timeout-1' },
+    sessionId: 'xiaok-timeout-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_AUTO_DISPATCH_TIMEOUT_MS: '4321'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({ status: 'idle', sessionId: 'xiaok-timeout-session-1234' }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return {
+        stdout: 'xiaok timeout option observed\n',
+        stderr: ''
+      };
+    },
+    ackInbox: async () => ({ ok: true }),
+    saveCursorState: () => {},
+    saveRuntimeState: () => {},
+    updateWorkState: async () => ({ ok: true }),
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 98,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-xiaok-timeout',
+          threadId: 'thread-xiaok-timeout',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '检查 xiaok timeout' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 98
+    }),
+    saveRealtimeQueueState: () => {}
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 1);
+  assert.equal(execCalls[0].command, 'xiaok');
+  assert.equal(execCalls[0].options.timeout, 4321);
+  assert.equal(execCalls[0].options.killSignal, 'SIGTERM');
+});
+
+test('maybeAutoDispatchRealtimeQueue drains actionable work queued while claude auto-dispatch is running', async () => {
+  const execCalls = [];
+  const acked = [];
+  let queueState = {
+    actionable: [
+      {
+        eventId: 99,
+        kind: 'ask_clarification',
+        fromParticipantId: 'human.song',
+        fromAlias: 'song',
+        taskId: 'task-drain-1',
+        threadId: 'thread-drain-1',
+        payload: {
+          delivery: { semantic: 'actionable', source: 'default' },
+          body: { summary: '第一条' }
+        }
+      }
+    ],
+    informational: [],
+    lastEventId: 99
+  };
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-drain-after-complete' },
+    sessionId: 'drain-after-complete-session-1234',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {},
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({ status: 'idle', sessionId: 'drain-after-complete-session-1234' }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      if (execCalls.length === 1) {
+        queueState = appendRealtimeEvent(queueState, {
+          eventId: 100,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          fromAlias: 'song',
+          taskId: 'task-drain-2',
+          threadId: 'thread-drain-2',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '第二条' }
+          }
+        });
+      }
+      return {
+        stdout: `handled ${execCalls.length}\n`,
+        stderr: ''
+      };
+    },
+    ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId }),
+    saveCursorState: () => {},
+    saveRuntimeState: () => {},
+    updateWorkState: async () => ({ ok: true }),
+    sendProgress: async () => ({ ok: true }),
+    loadRealtimeQueueState: () => queueState,
+    saveRealtimeQueueState: (statePath, state) => {
+      queueState = state;
+    }
+  });
+
+  assert.equal(result.dispatched, true);
+  assert.equal(execCalls.length, 2);
+  assert.deepEqual(acked, [
+    { participantId: 'claude-code-session-drain-after-complete', eventId: 99 },
+    { participantId: 'claude-code-session-drain-after-complete', eventId: 100 }
+  ]);
+  assert.deepEqual(queueState, {
+    actionable: [],
+    informational: [],
+    lastEventId: 100
+  });
 });
 
 test('ensureRealtimeBridge spawns a detached background bridge and records its pid', async () => {

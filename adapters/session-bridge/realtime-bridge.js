@@ -39,7 +39,7 @@ import {
   resolveTranscriptPath as resolveTranscriptPathDefault
 } from './reply-mirror.js';
 import { acquireInterprocessLock } from './interprocess-lock.js';
-import { isProcessAlive } from './session-keeper.js';
+import { getProcessStartedAtMs, isProcessAlive } from './session-keeper.js';
 import {
   loadCursorState as loadCursorStateDefault,
   saveCursorState as saveCursorStateDefault
@@ -53,6 +53,7 @@ const DEFAULT_RETRY_MS = 2000;
 const DEFAULT_CLAUDE_MAX_BUFFER = 10 * 1024 * 1024;
 const DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS = 30 * 1000;
 const DEFAULT_AUTO_DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
+const PROCESS_START_TIME_TOLERANCE_MS = 2000;
 const execFileDefault = promisify(execFileCallback);
 
 function normalizePid(value) {
@@ -139,9 +140,13 @@ function parseTimestampMs(value) {
   return Number.isFinite(ms) ? ms : null;
 }
 
-function parsePositiveMs(value, fallback) {
+function parseNonNegativeMs(value, fallback) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
   const ms = Number(value);
-  return Number.isFinite(ms) && ms > 0 ? ms : fallback;
+  return Number.isFinite(ms) && ms >= 0 ? ms : fallback;
 }
 
 function hasEvent(state, eventId) {
@@ -232,13 +237,39 @@ function shouldRecoverStaleAutoDispatchRuntime(toolName, runtimeState, staleMs) 
   return Date.now() - updatedAtMs >= staleMs;
 }
 
-function hasLiveAutoDispatchOwner(runtimeState, isProcessAliveImpl) {
+function hasLiveAutoDispatchOwner(runtimeState, {
+  isProcessAlive: isProcessAliveImpl,
+  getProcessStartedAtMs: getProcessStartedAtMsImpl
+}) {
   if (runtimeState?.status !== 'running' || runtimeState?.source !== 'auto-dispatch') {
     return false;
   }
 
   const ownerPid = normalizePid(runtimeState.ownerPid);
-  return Boolean(ownerPid && isProcessAliveImpl(ownerPid));
+  if (!ownerPid || !isProcessAliveImpl(ownerPid)) {
+    return false;
+  }
+
+  const ownerStartedAtMs = parseTimestampMs(runtimeState.ownerStartedAt);
+  if (ownerStartedAtMs === null) {
+    return true;
+  }
+
+  const observedStartedAtMs = getProcessStartedAtMsImpl(ownerPid);
+  if (observedStartedAtMs === null) {
+    return true;
+  }
+
+  return Math.abs(observedStartedAtMs - ownerStartedAtMs) <= PROCESS_START_TIME_TOLERANCE_MS;
+}
+
+function getCurrentProcessStartedAtIso() {
+  return new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString();
+}
+
+function hasActionableEventAfter(state, eventId) {
+  const baseline = Number(eventId || 0);
+  return normalizeQueueState(state).actionable.some((item) => Number(item?.eventId || 0) > baseline);
 }
 
 function buildAutoDispatchPrompt(toolName, items, participantId) {
@@ -287,7 +318,8 @@ export async function maybeAutoDispatchRealtimeQueue({
   saveCursorState = saveCursorStateDefault,
   loadRuntimeState = loadRuntimeStateDefault,
   saveRuntimeState = saveRuntimeStateDefault,
-  isProcessAlive: isProcessAliveImpl = isProcessAlive
+  isProcessAlive: isProcessAliveImpl = isProcessAlive,
+  getProcessStartedAtMs: getProcessStartedAtMsImpl = getProcessStartedAtMs
 } = {}) {
   if (toolName !== 'codex' && toolName !== 'claude-code' && toolName !== 'xiaok-code') {
     return { dispatched: false, reason: 'unsupported-tool' };
@@ -299,17 +331,20 @@ export async function maybeAutoDispatchRealtimeQueue({
     return { dispatched: false, reason: 'missing-session' };
   }
 
-  const staleAutoDispatchMs = parsePositiveMs(
+  const staleAutoDispatchMs = parseNonNegativeMs(
     env.INTENT_BROKER_CLAUDE_AUTO_DISPATCH_STALE_MS,
     DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS
   );
-  const autoDispatchTimeoutMs = parsePositiveMs(
+  const autoDispatchTimeoutMs = parseNonNegativeMs(
     env.INTENT_BROKER_AUTO_DISPATCH_TIMEOUT_MS,
     DEFAULT_AUTO_DISPATCH_TIMEOUT_MS
   );
   const runtimeState = loadRuntimeState(runtimeStatePath);
   if (runtimeState.status !== 'idle') {
-    if (hasLiveAutoDispatchOwner(runtimeState, isProcessAliveImpl)) {
+    if (hasLiveAutoDispatchOwner(runtimeState, {
+      isProcessAlive: isProcessAliveImpl,
+      getProcessStartedAtMs: getProcessStartedAtMsImpl
+    })) {
       return { dispatched: false, reason: 'busy-owner-alive' };
     }
 
@@ -323,6 +358,7 @@ export async function maybeAutoDispatchRealtimeQueue({
       turnId: null,
       source: 'auto-dispatch-recovered',
       ownerPid: null,
+      ownerStartedAt: null,
       taskId: null,
       threadId: null,
       updatedAt: new Date().toISOString()
@@ -363,6 +399,7 @@ export async function maybeAutoDispatchRealtimeQueue({
     turnId: null,
     source: 'auto-dispatch',
     ownerPid: process.pid,
+    ownerStartedAt: getCurrentProcessStartedAtIso(),
     taskId: activeContext?.taskId || null,
     threadId: activeContext?.threadId || null,
     updatedAt: new Date().toISOString()
@@ -407,6 +444,7 @@ export async function maybeAutoDispatchRealtimeQueue({
   const command = toolName === 'xiaok-code'
     ? (env.INTENT_BROKER_XIAOK_COMMAND || 'xiaok')
     : (env.INTENT_BROKER_CLAUDE_COMMAND || 'claude');
+  let completedExec = false;
 
   try {
     const { stdout } = await execFileImpl(
@@ -424,6 +462,7 @@ export async function maybeAutoDispatchRealtimeQueue({
         killSignal: 'SIGTERM'
       }
     );
+    completedExec = true;
 
     const replySummary = normalizeAutoDispatchReply(stdout);
     if (replySummary && recentContext?.fromParticipantId) {
@@ -461,6 +500,7 @@ export async function maybeAutoDispatchRealtimeQueue({
       turnId: null,
       source: 'auto-dispatch-complete',
       ownerPid: null,
+      ownerStartedAt: null,
       taskId: null,
       threadId: null,
       updatedAt: new Date().toISOString()
@@ -469,6 +509,33 @@ export async function maybeAutoDispatchRealtimeQueue({
       config,
       buildAutomaticWorkState('idle')
     ).catch(() => null);
+
+    if (completedExec && hasActionableEventAfter(loadRealtimeQueueStateImpl(queueStatePath), lastSeenEventId)) {
+      await maybeAutoDispatchRealtimeQueue({
+        toolName,
+        config,
+        sessionId,
+        cwd,
+        env,
+        queueStatePath,
+        cursorStatePath,
+        runtimeStatePath,
+        spawnImpl,
+        execFileImpl,
+        ackInbox,
+        sendProgress,
+        updateWorkState,
+        markPendingReplyMirror,
+        loadRealtimeQueueState: loadRealtimeQueueStateImpl,
+        saveRealtimeQueueState: saveRealtimeQueueStateImpl,
+        loadCursorState,
+        saveCursorState,
+        loadRuntimeState,
+        saveRuntimeState,
+        isProcessAlive: isProcessAliveImpl,
+        getProcessStartedAtMs: getProcessStartedAtMsImpl
+      }).catch(() => null);
+    }
   }
 
 }

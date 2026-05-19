@@ -21,6 +21,7 @@ export function createRuntimeState() {
     turnId: null,
     source: null,
     ownerPid: null,
+    ownerStartedAt: null,
     taskId: null,
     threadId: null,
     alias: null,
@@ -44,6 +45,9 @@ function normalizeRuntimeState(state) {
     source,
     ownerPid: status === 'running' && source === 'auto-dispatch'
       ? normalizeOptionalPid(state?.ownerPid)
+      : null,
+    ownerStartedAt: status === 'running' && source === 'auto-dispatch'
+      ? normalizeOptionalString(state?.ownerStartedAt)
       : null,
     taskId: normalizeOptionalString(state?.taskId),
     threadId: normalizeOptionalString(state?.threadId),
