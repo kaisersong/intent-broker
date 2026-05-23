@@ -28,6 +28,7 @@ Intent Broker 是 xiaok Desktop 与 KSwarm 使用的协作协议层：
 - xiaok agent 通过 broker hooks 注册在线状态、alias、项目上下文和 work-state。
 - KSwarm 通过 broker 协议发送 `assign_po`、`request_task`、`review_submission`、`cancel_run` 和恢复类 intent。
 - Runtime 恢复依赖 broker inbox 投递和持久化事件重放，因此 PO 制定计划或 worker 执行被中断后，可以恢复或重试，而不是消失在某个本地终端里。
+- Broker 投递失败不等于任务完成。目标 agent 不可用时，broker 只记录投递失败，让 KSwarm 恢复或改派，不能合成一个成功的任务结果。
 - Codex hook 安装使用稳定的 `[features].hooks` 开关；旧的 `[features].codex_hooks` 配置会由 `npm run codex:install` 迁移。
 
 ---
@@ -463,6 +464,8 @@ npm run verify:collaboration
 ---
 
 ## 版本日志
+
+**v0.3.7** — KSwarm 投递合同加固：broker 任务投递失败不再生成合成任务完成结果，保留 Xiaok Desktop Swarm 项目的恢复和改派语义。
 
 **v0.3.6** — Codex hook 安装器改用 `[features].hooks`，不再写入已废弃的 `[features].codex_hooks`；安装时会迁移旧配置，并可通过 `npm run codex:install` 刷新本地受管 hooks。
 

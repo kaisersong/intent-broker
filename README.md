@@ -28,6 +28,7 @@ Intent Broker is the coordination layer used by xiaok Desktop and KSwarm:
 - xiaok agents register presence, aliases, project context, and work-state through broker hooks.
 - KSwarm sends `assign_po`, `request_task`, `review_submission`, `cancel_run`, and recovery intents through the broker protocol.
 - Runtime recovery depends on broker inbox delivery plus durable event replay, so interrupted PO planning and worker execution can be resumed or retried instead of disappearing into a local terminal.
+- Broker delivery failure is not task completion. If a target agent is unavailable, the broker records delivery failure and lets KSwarm recover or reroute; it must not synthesize a successful task result.
 - Codex hook installation uses the stable `[features].hooks` switch; legacy `[features].codex_hooks` configs are migrated by `npm run codex:install`.
 
 ---
@@ -463,6 +464,8 @@ See:
 ---
 
 ## Version History
+
+**v0.3.7** — KSwarm delivery contract hardening: broker task delivery failure no longer creates synthetic task completion, preserving project recovery semantics for Xiaok Desktop Swarm runs.
 
 **v0.3.6** — Codex hook installer now uses `[features].hooks` instead of deprecated `[features].codex_hooks`, migrates existing configs, and refreshes managed local hooks with `npm run codex:install`.
 

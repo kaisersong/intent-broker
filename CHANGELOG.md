@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.7] - 2026-05-23
+
+### Fixed
+
+- Preserve KSwarm recovery semantics by ensuring broker delivery failure does not synthesize a completed task result
+
 ## [0.3.5] - 2026-05-08
 
 ### Added
