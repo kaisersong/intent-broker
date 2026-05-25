@@ -74,8 +74,15 @@ test('deriveSessionBridgeConfig derives participant id from claude code session 
   assert.deepEqual(config.capabilities, ['broker.auto_dispatch']);
 });
 
-test('deriveSessionBridgeConfig falls back to tool name when no thread id exists', () => {
-  const config = deriveTestConfig({
+test('deriveSessionBridgeConfig falls back to deterministic id derived from cwd and tool when no thread id exists', () => {
+  const first = deriveTestConfig({
+    toolName: 'claude-code',
+    env: {
+      PROJECT_NAME: 'manual-project'
+    },
+    cwd: '/Users/song/projects/intent-broker'
+  });
+  const second = deriveTestConfig({
     toolName: 'claude-code',
     env: {
       PROJECT_NAME: 'manual-project'
@@ -83,9 +90,22 @@ test('deriveSessionBridgeConfig falls back to tool name when no thread id exists
     cwd: '/Users/song/projects/intent-broker'
   });
 
+  assert.match(first.participantId, /^claude-code-session-[a-f0-9]{8}$/);
+  assert.equal(first.participantId, second.participantId);
+  assert.equal(first.alias, 'claude');
+  assert.deepEqual(first.context, { projectName: 'manual-project' });
+});
+
+test('deriveSessionBridgeConfig falls back to random id only when no stable signal is available', () => {
+  const config = deriveSessionBridgeConfig({
+    toolName: 'claude-code',
+    env: {},
+    cwd: '',
+    sessionCwd: null,
+    resolveCurrentTTYImpl: () => null
+  });
+
   assert.match(config.participantId, /^claude-code-session-[a-z0-9]+-[a-z0-9]{4}$/);
-  assert.equal(config.alias, 'claude');
-  assert.deepEqual(config.context, { projectName: 'manual-project' });
 });
 
 test('deriveSessionBridgeConfig prefers explicit alias override', () => {

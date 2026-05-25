@@ -1,5 +1,6 @@
 import { closeSync, openSync, readSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -384,12 +385,26 @@ export function deriveSessionBridgeConfig({
   const projectName = deriveProjectName({ env, cwd, sessionCwd });
   const inboxMode = env.INTENT_BROKER_INBOX_MODE || 'pull';
 
+  const metadata = deriveTerminalMetadata({ env, cwd, sessionCwd, resolveCurrentTTYImpl });
+
   let participantId = explicitParticipantId;
   if (!participantId && threadId) {
     participantId = `${toolName}-session-${threadId.slice(0, 8)}`;
   }
   if (!participantId) {
-    // Generate unique session ID using timestamp when no threadId available
+    const hasStableContext =
+      (typeof metadata.terminalTTY === 'string' && metadata.terminalTTY.length > 0) ||
+      (typeof metadata.projectPath === 'string' && metadata.projectPath.length > 0);
+    if (hasStableContext) {
+      const stableSignal = [metadata.terminalTTY, metadata.projectPath, toolName]
+        .filter((value) => typeof value === 'string' && value.length > 0)
+        .join('\n');
+      const digest = createHash('sha256').update(stableSignal).digest('hex').slice(0, 8);
+      participantId = `${toolName}-session-${digest}`;
+    }
+  }
+  if (!participantId) {
+    // Last-resort: no thread id, no tty, no cwd — fall back to a per-process random id.
     const timestamp = Date.now().toString(36);
     const random = Math.random().toString(36).slice(2, 6);
     participantId = `${toolName}-session-${timestamp}-${random}`;
@@ -403,6 +418,6 @@ export function deriveSessionBridgeConfig({
     roles: ['coder'],
     capabilities: deriveCapabilities({ toolName }),
     context: projectName ? { projectName } : {},
-    metadata: deriveTerminalMetadata({ env, cwd, sessionCwd, resolveCurrentTTYImpl })
+    metadata
   };
 }
