@@ -5,13 +5,29 @@
  */
 
 import { WebSocket } from 'ws';
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { basename, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const ADAPTER_ID = 'adapter.yunzhijia';
+const DEFAULT_YZJ_ENDPOINT = 'https://yunzhijia.com';
 const CHANNEL_FORWARD_KINDS = new Set([
   'ask_clarification',
   'request_approval',
   'request_task',
   'report_progress'
+]);
+const IMAGE_EXTENSIONS = new Set(['.apng', '.avif', '.bmp', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp']);
+const MIME_TYPES = new Map([
+  ['.gif', 'image/gif'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.pdf', 'application/pdf'],
+  ['.png', 'image/png'],
+  ['.svg', 'image/svg+xml'],
+  ['.txt', 'text/plain'],
+  ['.webp', 'image/webp']
 ]);
 
 export function deriveWebSocketUrl(sendMsgUrl) {
@@ -40,18 +56,161 @@ function deriveMessageContextIds({ msgId, yzjUserId }) {
   };
 }
 
+function normalizeEndpoint(endpoint) {
+  return String(endpoint || DEFAULT_YZJ_ENDPOINT).replace(/\/+$/, '');
+}
+
+function normalizeMediaSource(source) {
+  let normalized = String(source || '').trim();
+  if ((normalized.startsWith('<') && normalized.endsWith('>')) ||
+      (normalized.startsWith('"') && normalized.endsWith('"')) ||
+      (normalized.startsWith("'") && normalized.endsWith("'"))) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized;
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function sourcePathname(source) {
+  try {
+    if (isHttpUrl(source)) {
+      return new URL(source).pathname;
+    }
+    if (String(source).startsWith('file://')) {
+      return fileURLToPath(source);
+    }
+  } catch {
+    return source;
+  }
+  return source;
+}
+
+function classifyMediaKind(source) {
+  const ext = extname(sourcePathname(source)).toLowerCase();
+  return IMAGE_EXTENSIONS.has(ext) ? 'image' : 'file';
+}
+
+function fileTypeForMedia(media) {
+  return media.kind === 'image' ? 'img' : 'file';
+}
+
+function mimeTypeForFileName(fileName) {
+  return MIME_TYPES.get(extname(fileName).toLowerCase()) || 'application/octet-stream';
+}
+
+function fileNameFromMediaSource(source) {
+  const pathname = sourcePathname(source);
+  const name = basename(pathname).trim();
+  if (name && name !== '/' && name !== '.') {
+    try {
+      return decodeURIComponent(name);
+    } catch {
+      return name;
+    }
+  }
+  return `media-${Date.now()}`;
+}
+
+function formatMediaReference(media) {
+  return [media.caption, media.source].filter(Boolean).join('\n');
+}
+
+function composeLegacyMediaFallback(text, media) {
+  return [
+    String(text || '').trim(),
+    ...media.map(formatMediaReference)
+  ].filter(Boolean).join('\n');
+}
+
+async function readJsonResponse(response) {
+  const responseText = await response.text().catch(() => '');
+  let json = {};
+  if (responseText) {
+    try {
+      json = JSON.parse(responseText);
+    } catch {
+      json = {};
+    }
+  }
+  return { json, responseText };
+}
+
+export function extractYunzhijiaMedia(input) {
+  const text = String(input || '');
+  const media = [];
+  const lines = [];
+
+  for (const line of text.split(/\r?\n/)) {
+    const mediaMatch = line.trim().match(/^MEDIA:\s*(.+)$/i);
+    if (!mediaMatch) {
+      const cleanedLine = line
+        .replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_match, caption, source) => {
+          const normalizedSource = normalizeMediaSource(source);
+          if (normalizedSource) {
+            media.push({
+              source: normalizedSource,
+              caption: String(caption || '').trim(),
+              kind: classifyMediaKind(normalizedSource)
+            });
+          }
+          return '';
+        })
+        .replace(/[ \t]+$/g, '');
+      lines.push(cleanedLine);
+      continue;
+    }
+
+    const normalizedSource = normalizeMediaSource(mediaMatch[1]);
+    if (normalizedSource) {
+      media.push({
+        source: normalizedSource,
+        caption: '',
+        kind: classifyMediaKind(normalizedSource)
+      });
+    }
+  }
+
+  return {
+    text: lines.join('\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim(),
+    media
+  };
+}
+
 export class YunzhijiaAdapter {
   constructor({
     brokerUrl = process.env.BROKER_URL || 'http://127.0.0.1:4318',
     sendUrl = process.env.YZJ_SEND_URL,
+    appId = process.env.YZJ_APP_ID,
+    appSecret = process.env.YZJ_APP_SECRET,
+    endpoint = process.env.YZJ_ENDPOINT || DEFAULT_YZJ_ENDPOINT,
+    defaultGroupId = process.env.YZJ_GROUP_ID || process.env.YZJ_DEFAULT_GROUP_ID || null,
     defaultProjectName = process.env.YZJ_DEFAULT_PROJECT || null,
-    reconnectDelayMs = 5000
+    reconnectDelayMs = 5000,
+    fetchImpl = globalThis.fetch
   } = {}) {
     this.brokerUrl = brokerUrl;
     this.sendUrl = sendUrl;
+    this.appId = appId;
+    this.appSecret = appSecret;
+    this.endpoint = normalizeEndpoint(endpoint);
+    this.defaultGroupId = defaultGroupId;
     this.defaultProjectName = defaultProjectName;
     this.reconnectDelayMs = reconnectDelayMs;
+    this.fetch = fetchImpl;
+    this.accessTokenCache = null;
     this.userMapping = new Map(); // yzjUserId -> participantId
+    this.userContexts = new Map(); // yzjUserId -> { groupId, robotId }
     this.participantLabels = new Map(); // participantId -> alias/label
     this.userWebSockets = new Map(); // participantId -> WebSocket
     this.brokerWs = null;
@@ -65,7 +224,9 @@ export class YunzhijiaAdapter {
 
   async start() {
     console.log('🚀 Starting Yunzhijia Adapter...');
-    if (!this.sendUrl) throw new Error('YZJ_SEND_URL not configured');
+    if (!this.sendUrl && !this.isAppApiEnabled()) {
+      throw new Error('YZJ_SEND_URL or YZJ_APP_ID/YZJ_APP_SECRET not configured');
+    }
     this.stopped = false;
 
     await this.registerToBroker();
@@ -77,7 +238,7 @@ export class YunzhijiaAdapter {
   }
 
   async registerToBroker() {
-    const res = await fetch(`${this.brokerUrl}/participants/register`, {
+    const res = await this.fetch(`${this.brokerUrl}/participants/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -93,7 +254,7 @@ export class YunzhijiaAdapter {
 
   async syncAwayMode() {
     try {
-      const res = await fetch(`${this.brokerUrl}/away`);
+      const res = await this.fetch(`${this.brokerUrl}/away`);
       if (res.ok) {
         const json = await res.json();
         this.awayMode = Boolean(json.away);
@@ -107,7 +268,7 @@ export class YunzhijiaAdapter {
   async setAwayMode(value) {
     const method = value ? 'POST' : 'DELETE';
     try {
-      const res = await fetch(`${this.brokerUrl}/away`, { method });
+      const res = await this.fetch(`${this.brokerUrl}/away`, { method });
       if (res.ok) {
         this.awayMode = value;
       }
@@ -154,7 +315,7 @@ export class YunzhijiaAdapter {
       return;
     }
 
-    const wsUrl = deriveWebSocketUrl(this.sendUrl);
+    const wsUrl = await this.deriveYunzhijiaWebSocketUrl();
     console.log(`Connecting to Yunzhijia: ${wsUrl}`);
 
     this.yzjWs = new WebSocket(wsUrl);
@@ -182,6 +343,24 @@ export class YunzhijiaAdapter {
       console.log('Yunzhijia WebSocket closed, reconnecting...');
       this.scheduleYunzhijiaReconnect();
     });
+  }
+
+  isAppApiEnabled() {
+    return Boolean(this.appId && this.appSecret);
+  }
+
+  async deriveYunzhijiaWebSocketUrl() {
+    if (!this.isAppApiEnabled()) {
+      if (!this.sendUrl) {
+        throw new Error('YZJ_SEND_URL not configured');
+      }
+      return deriveWebSocketUrl(this.sendUrl);
+    }
+
+    const accessToken = await this.getAccessToken();
+    const endpointUrl = new URL(this.endpoint);
+    const protocol = endpointUrl.protocol === 'http:' ? 'ws:' : 'wss:';
+    return `${protocol}//${endpointUrl.host}/xuntong/websocket?accessToken=${encodeURIComponent(accessToken)}`;
   }
 
   clearBrokerReconnectTimer() {
@@ -276,11 +455,14 @@ export class YunzhijiaAdapter {
     const text = msg.content || msg.text?.content;
     const robotId = msg.robotId;
     const msgId = msg.msgId;
+    const groupId = msg.groupId || msg.groupid || msg.chatId || msg.chatid || null;
 
     if (!yzjUserId || !text) {
       console.log('Skipping message: missing userId or text', { yzjUserId, text });
       return;
     }
+
+    this.userContexts.set(yzjUserId, { groupId, robotId });
 
     let participantId = this.userMapping.get(yzjUserId);
     if (!participantId) {
@@ -301,7 +483,7 @@ export class YunzhijiaAdapter {
 
     const messageContext = deriveMessageContextIds({ msgId, yzjUserId });
 
-    const res = await fetch(`${this.brokerUrl}/intents`, {
+    const res = await this.fetch(`${this.brokerUrl}/intents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -313,7 +495,7 @@ export class YunzhijiaAdapter {
         to: routing.to,
         payload: {
           body: { summary: routing.summary },
-          metadata: { robotId, msgId, yzjUserId }
+          metadata: { robotId, msgId, yzjUserId, groupId }
         }
       })
     });
@@ -393,7 +575,7 @@ export class YunzhijiaAdapter {
 
   async renameParticipantAlias(currentAlias, nextAlias, { yzjUserId, msgId } = {}) {
     const query = encodeURIComponent(currentAlias);
-    const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
+    const resolved = await this.fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
     const participant = resolved.participants?.[0];
 
     if (!participant) {
@@ -401,7 +583,7 @@ export class YunzhijiaAdapter {
       return true;
     }
 
-    const renamed = await fetch(`${this.brokerUrl}/participants/${participant.participantId}/alias`, {
+    const renamed = await this.fetch(`${this.brokerUrl}/participants/${participant.participantId}/alias`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ alias: nextAlias })
@@ -479,7 +661,7 @@ export class YunzhijiaAdapter {
     const mentions = this.parseMentions(text);
 
     if (mentions.hasAll) {
-      const participants = await fetch(`${this.brokerUrl}/participants`).then((res) => res.json());
+      const participants = await this.fetch(`${this.brokerUrl}/participants`).then((res) => res.json());
       const recipients = participants.participants
         .filter((participant) => participant.kind === 'agent')
         .map((participant) => participant.participantId);
@@ -502,7 +684,7 @@ export class YunzhijiaAdapter {
     }
 
     const query = encodeURIComponent(mentions.aliases.join(','));
-    const resolved = await fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
+    const resolved = await this.fetch(`${this.brokerUrl}/participants/resolve?aliases=${query}`).then((res) => res.json());
 
     if (!resolved.participants?.length) {
       if (resolved.missingAliases?.length) {
@@ -531,9 +713,9 @@ export class YunzhijiaAdapter {
     const participantsSuffix = projectName ? `?projectName=${encodeURIComponent(projectName)}` : '';
     const workStateSuffix = projectName ? `?projectName=${encodeURIComponent(projectName)}` : '';
     const [{ participants }, { participants: presenceItems }, { items: workStates }] = await Promise.all([
-      fetch(`${this.brokerUrl}/participants${participantsSuffix}`).then((res) => res.json()),
-      fetch(`${this.brokerUrl}/presence`).then((res) => res.json()),
-      fetch(`${this.brokerUrl}/work-state${workStateSuffix}`).then((res) => res.json())
+      this.fetch(`${this.brokerUrl}/participants${participantsSuffix}`).then((res) => res.json()),
+      this.fetch(`${this.brokerUrl}/presence`).then((res) => res.json()),
+      this.fetch(`${this.brokerUrl}/work-state${workStateSuffix}`).then((res) => res.json())
     ]);
 
     const agentParticipants = participants.filter((participant) => participant.kind === 'agent');
@@ -589,7 +771,7 @@ export class YunzhijiaAdapter {
       return;
     }
 
-    const { participants: presenceItems = [] } = await fetch(`${this.brokerUrl}/presence`).then((res) => res.json());
+    const { participants: presenceItems = [] } = await this.fetch(`${this.brokerUrl}/presence`).then((res) => res.json());
     const presenceById = new Map(presenceItems.map((item) => [item.participantId, item]));
     const autoDispatchDelivered = [];
     const receiveOnlyDelivered = [];
@@ -665,7 +847,7 @@ export class YunzhijiaAdapter {
   }
 
   async registerUser(participantId) {
-    await fetch(`${this.brokerUrl}/participants/register`, {
+    await this.fetch(`${this.brokerUrl}/participants/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -803,7 +985,7 @@ export class YunzhijiaAdapter {
     }
 
     try {
-      const { participants = [] } = await fetch(`${this.brokerUrl}/participants`).then((res) => res.json());
+      const { participants = [] } = await this.fetch(`${this.brokerUrl}/participants`).then((res) => res.json());
       for (const participant of participants) {
         this.participantLabels.set(
           participant.participantId,
@@ -855,29 +1037,259 @@ export class YunzhijiaAdapter {
   }
 
   async sendToYunzhijia(yzjUserId, message, replyMsgId) {
-    const payload = {
-      msgtype: 2,
-      content: message,
-      notifyParams: [{
-        type: 'openIds',
-        values: [yzjUserId]
-      }]
-    };
-
-    this.attachReplyMetadata(payload, message, replyMsgId);
-    await this.postYunzhijiaPayload(payload);
+    await this.deliverYunzhijiaMessage({
+      yzjUserId,
+      message,
+      replyMsgId,
+      channel: false
+    });
     console.log(`✓ Sent message to Yunzhijia user ${yzjUserId}`);
   }
 
   async sendToChannel(message, replyMsgId) {
+    await this.deliverYunzhijiaMessage({
+      message,
+      replyMsgId,
+      channel: true
+    });
+    console.log('✓ Sent message to Yunzhijia channel');
+  }
+
+  async deliverYunzhijiaMessage({ yzjUserId = null, message, replyMsgId = null, channel = false }) {
+    const { text, media } = extractYunzhijiaMedia(message);
+    const legacyMessage = composeLegacyMediaFallback(text, media) || message;
+
+    if (!this.isAppApiEnabled()) {
+      await this.sendLegacyText({
+        yzjUserId,
+        channel,
+        message: legacyMessage,
+        replyMsgId
+      });
+      return;
+    }
+
+    const target = this.buildAppMessageTarget({ yzjUserId, channel });
+    if (!target) {
+      if (this.sendUrl) {
+        await this.sendLegacyText({
+          yzjUserId,
+          channel,
+          message: legacyMessage,
+          replyMsgId
+        });
+        return;
+      }
+      throw new Error('Yunzhijia App API delivery needs toOpenId or YZJ_GROUP_ID');
+    }
+
+    if (text) {
+      await this.postAppTextMessage({
+        target,
+        content: text,
+        replyMsgId
+      });
+    }
+
+    for (const item of media) {
+      try {
+        const upload = await this.uploadMedia(item);
+        await this.postAppMediaMessage({
+          target,
+          media: item,
+          upload,
+          replyMsgId
+        });
+      } catch (error) {
+        console.error('Failed to send Yunzhijia media natively, falling back to text:', error);
+        await this.postAppTextMessage({
+          target,
+          content: formatMediaReference(item),
+          replyMsgId
+        });
+      }
+    }
+
+    if (!text && media.length === 0 && message) {
+      await this.postAppTextMessage({
+        target,
+        content: message,
+        replyMsgId
+      });
+    }
+  }
+
+  buildAppMessageTarget({ yzjUserId = null, channel = false } = {}) {
+    if (channel) {
+      return this.defaultGroupId ? { groupId: this.defaultGroupId } : null;
+    }
+
+    if (!yzjUserId) {
+      return null;
+    }
+
+    const context = this.userContexts.get(yzjUserId);
+    if (context?.groupId) {
+      return { groupId: context.groupId };
+    }
+
+    return { toOpenId: yzjUserId };
+  }
+
+  async sendLegacyText({ yzjUserId = null, channel = false, message, replyMsgId = null }) {
     const payload = {
       msgtype: 2,
       content: message
     };
 
+    if (!channel && yzjUserId) {
+      payload.notifyParams = [{
+        type: 'openIds',
+        values: [yzjUserId]
+      }];
+    }
+
     this.attachReplyMetadata(payload, message, replyMsgId);
     await this.postYunzhijiaPayload(payload);
-    console.log('✓ Sent message to Yunzhijia channel');
+  }
+
+  async getAccessToken() {
+    if (this.accessTokenCache && this.accessTokenCache.expiresAt > Date.now()) {
+      return this.accessTokenCache.token;
+    }
+
+    const response = await this.fetch(`${this.endpoint}/api/oauth2_v12/auth/getAppAccessToken`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        appId: this.appId,
+        secret: this.appSecret,
+        timestamp: Date.now()
+      })
+    });
+    const { json, responseText } = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(`Yunzhijia access token failed: ${response.status} ${response.statusText} ${responseText}`);
+    }
+
+    const token = json?.data?.accessToken || json?.accessToken || json?.data?.access_token || json?.access_token;
+    if (!token) {
+      throw new Error(`Yunzhijia access token response missing token: ${responseText}`);
+    }
+
+    const expireSeconds = Number(json?.data?.expireIn || json?.expireIn || json?.data?.expires_in || json?.expires_in || 3600);
+    this.accessTokenCache = {
+      token,
+      expiresAt: Date.now() + Math.max(0, expireSeconds * 1000 - 60_000)
+    };
+    return token;
+  }
+
+  async uploadMedia(media) {
+    const token = await this.getAccessToken();
+    const fileName = fileNameFromMediaSource(media.source);
+    let blob;
+
+    if (isHttpUrl(media.source)) {
+      const mediaResponse = await this.fetch(media.source);
+      if (!mediaResponse.ok) {
+        const mediaText = await mediaResponse.text().catch(() => '');
+        throw new Error(`Yunzhijia media fetch failed: ${mediaResponse.status} ${mediaResponse.statusText} ${mediaText}`);
+      }
+      blob = new Blob([await mediaResponse.arrayBuffer()], {
+        type: mediaResponse.headers.get('content-type') || mimeTypeForFileName(fileName)
+      });
+    } else {
+      const filePath = media.source.startsWith('file://') ? fileURLToPath(media.source) : media.source;
+      const bytes = await readFile(filePath);
+      blob = new Blob([bytes], { type: mimeTypeForFileName(fileName) });
+    }
+
+    const form = new FormData();
+    form.append('file', blob, fileName);
+
+    const response = await this.fetch(`${this.endpoint}/gateway/docrest/doc/file/uploadfileOpen`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`
+      },
+      body: form
+    });
+    const { json, responseText } = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(`Yunzhijia media upload failed: ${response.status} ${response.statusText} ${responseText}`);
+    }
+
+    const fileId = json?.data?.fileId || json?.data?.id || json?.fileId || json?.id;
+    if (!fileId) {
+      throw new Error(`Yunzhijia media upload response missing fileId: ${responseText}`);
+    }
+
+    return {
+      fileId,
+      fileName,
+      fileType: fileTypeForMedia(media)
+    };
+  }
+
+  async postAppTextMessage({ target, content, replyMsgId = null }) {
+    const payload = this.buildAppMessagePayload({
+      target,
+      replyMsgId,
+      message: {
+        msgType: 2,
+        content
+      }
+    });
+    await this.postAppMessage(payload);
+  }
+
+  async postAppMediaMessage({ target, media, upload, replyMsgId = null }) {
+    const payload = this.buildAppMessagePayload({
+      target,
+      replyMsgId,
+      message: {
+        msgType: 23,
+        param: {
+          fileId: upload.fileId,
+          fileName: upload.fileName,
+          fileType: upload.fileType
+        }
+      }
+    });
+    if (media.caption) {
+      payload.content = media.caption;
+    }
+    await this.postAppMessage(payload);
+  }
+
+  buildAppMessagePayload({ target, message, replyMsgId = null }) {
+    const payload = {
+      ...message,
+      clientMsgId: `xiaok-${Date.now()}-${randomUUID()}`,
+      ...target
+    };
+    if (replyMsgId) {
+      payload.replyMsgId = replyMsgId;
+    }
+    return payload;
+  }
+
+  async postAppMessage(payload) {
+    const token = await this.getAccessToken();
+    const response = await this.fetch(`${this.endpoint}/gateway/xtinterface/message/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const { responseText } = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(`Yunzhijia App API send failed: ${response.status} ${response.statusText} ${responseText}`);
+    }
+    console.log(`Yunzhijia App API send response: ${response.status}${responseText ? ` ${responseText.slice(0, 200)}` : ''}`);
   }
 
   attachReplyMetadata(payload, message, replyMsgId) {
@@ -895,7 +1307,11 @@ export class YunzhijiaAdapter {
   }
 
   async postYunzhijiaPayload(payload) {
-    const response = await fetch(this.sendUrl, {
+    if (!this.sendUrl) {
+      throw new Error('YZJ_SEND_URL not configured');
+    }
+
+    const response = await this.fetch(this.sendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)

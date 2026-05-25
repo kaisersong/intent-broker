@@ -6,6 +6,7 @@
 
 - 通过 WebSocket 接收云之家消息（无需配置回调地址）
 - 通过 HTTP POST 发送消息到云之家
+- 支持 App API 模式发送文本、图片和文件
 - 自动转换消息格式
 - 自动管理用户映射
 - 支持 `@alias`、`@a @b`、`@all` 精确路由
@@ -37,11 +38,16 @@ npm install
 然后设置：
 
 - `YZJ_SEND_URL` - 云之家机器人 Webhook URL
+- `YZJ_APP_ID` / `YZJ_APP_SECRET` - 云之家 App API 凭据；配置后优先使用 App API 发送消息
+- `YZJ_ENDPOINT` - 云之家 API endpoint，默认 `https://yunzhijia.com`
+- `YZJ_GROUP_ID` - away/channel 模式使用 App API 发送到固定群时的群 ID
 
 注意：
 
 - `YZJ_SEND_URL` 建议通过环境变量提供，不要把真实 token 直接提交进配置文件
+- `YZJ_APP_SECRET` 同样必须通过环境变量或本地配置提供，不要提交真实密钥
 - URL 中包含 `&` 时，要保留 shell 引号
+- 未配置 App API 时，图片和文件会降级为可点击的文本链接；不会依赖外部 `yzj` 或 `yzj-cli`
 
 ## 获取云之家 Webhook URL
 
@@ -104,7 +110,14 @@ Adapter 通过 WebSocket 连接到 `wss://www.yunzhijia.com/xuntong/websocket?yz
 Agents → Broker → WebSocket → Adapter → HTTP POST → 云之家
 ```
 
-Adapter 通过 HTTP POST 到云之家 Webhook URL 发送消息。
+Adapter 默认通过 HTTP POST 到云之家 Webhook URL 发送文本消息。
+
+如果配置了 `YZJ_APP_ID` 和 `YZJ_APP_SECRET`，Adapter 会先获取 App access token，然后使用：
+
+- `/gateway/xtinterface/message/send` 发送文本和媒体消息
+- `/gateway/docrest/doc/file/uploadfileOpen` 上传图片或文件
+
+图片和文件使用 `msgType=23` 发送；图片文件类型为 `img`，其他文件类型为 `file`。上传或 App API 发送失败时，Adapter 会把媒体引用降级为文本发送，避免消息被静默丢弃。
 
 ## 用户映射
 
@@ -119,6 +132,22 @@ Adapter 会自动转换消息格式：
 - `ask_clarification` → 【需要回答】...
 - `report_progress` → 【进度】...
 - `participant_alias_updated` → 【别名更新】...
+
+Agents 可以在出站消息里加入媒体引用：
+
+```text
+报告已生成
+MEDIA:/absolute/path/report.pdf
+MEDIA:https://example.com/chart.png
+```
+
+也支持 Markdown 图片语法：
+
+```markdown
+请看趋势图 ![趋势图](https://example.com/trend.png)
+```
+
+配置 App API 时，上述引用会作为原生图片或文件发送；仅配置旧 webhook 时，会降级为普通文本链接。
 
 ## 消息通道命令
 
