@@ -7,12 +7,15 @@ const CONNECTIVITY_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EHOSTUN
 const CURL_COULD_NOT_CONNECT_EXIT_CODE = 7;
 
 export class BrokerUnavailableError extends Error {
-  constructor(url, { cause } = {}) {
+  constructor(url, { cause, reason = 'unavailable', fetchCause = null, curlCause = null } = {}) {
     const brokerUrl = new URL(url).origin;
     super(`intent_broker_unavailable:${brokerUrl}`, cause ? { cause } : undefined);
     this.name = 'BrokerUnavailableError';
     this.code = 'INTENT_BROKER_UNAVAILABLE';
     this.brokerUrl = brokerUrl;
+    this.reason = reason;
+    this.fetchCause = fetchCause;
+    this.curlCause = curlCause;
   }
 }
 
@@ -50,12 +53,12 @@ function shouldWrapCurlConnectivityError(error, url) {
   return isLoopbackUrl(url) && error?.code === CURL_COULD_NOT_CONNECT_EXIT_CODE;
 }
 
-function asBrokerUnavailableError(url, cause) {
+function asBrokerUnavailableError(url, cause, details = {}) {
   if (cause instanceof BrokerUnavailableError) {
     return cause;
   }
 
-  return new BrokerUnavailableError(url, { cause });
+  return new BrokerUnavailableError(url, { cause, ...details });
 }
 
 export function isBrokerUnavailableError(error) {
@@ -96,14 +99,23 @@ export async function requestJson(
         return await curlJson(url, options, execFileImpl);
       } catch (curlError) {
         if (shouldWrapCurlConnectivityError(curlError, url)) {
-          throw asBrokerUnavailableError(url, curlError);
+          throw asBrokerUnavailableError(url, curlError, {
+            reason: 'loopback_access_blocked_or_unavailable',
+            fetchCause: error,
+            curlCause: curlError
+          });
         }
         throw curlError;
       }
     }
 
     if (shouldWrapFetchConnectivityError(error, url)) {
-      throw asBrokerUnavailableError(url, error);
+      throw asBrokerUnavailableError(url, error, {
+        reason: error?.cause?.code === 'EPERM'
+          ? 'loopback_access_blocked'
+          : 'unavailable',
+        fetchCause: error
+      });
     }
 
     throw error;

@@ -42,6 +42,9 @@ function serializeError(error) {
 
 function persistHeartbeat(overrides = {}) {
   const guarded = overrides.status && overrides.status !== 'starting';
+  const canClaimHeartbeat = !overrides.status
+    || overrides.status === 'starting'
+    || overrides.status === 'running';
   const nextState = {
     ...heartbeatState,
     ...overrides,
@@ -50,7 +53,13 @@ function persistHeartbeat(overrides = {}) {
   const saved = saveBrokerHeartbeat(
     runtimePaths.heartbeat,
     nextState,
-    guarded ? { onlyIfOwnedByPid: process.pid } : {}
+    guarded || canClaimHeartbeat
+      ? {
+          onlyIfOwnedByPid: process.pid,
+          allowIfMissing: canClaimHeartbeat,
+          allowIfTerminal: canClaimHeartbeat
+        }
+      : {}
   );
   if (saved) {
     Object.assign(heartbeatState, nextState);

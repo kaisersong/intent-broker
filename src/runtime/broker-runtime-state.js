@@ -1,6 +1,17 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+const TERMINAL_HEARTBEAT_STATUSES = new Set([
+  'stopped',
+  'crashed',
+  'failed',
+  'failed-to-start'
+]);
+
+export function isTerminalBrokerHeartbeatStatus(status) {
+  return TERMINAL_HEARTBEAT_STATUSES.has(String(status || ''));
+}
+
 export function resolveBrokerRuntimePaths({
   cwd = process.cwd(),
   env = process.env
@@ -22,10 +33,22 @@ export function loadBrokerHeartbeat(heartbeatPath) {
   }
 }
 
-export function saveBrokerHeartbeat(heartbeatPath, state, { onlyIfOwnedByPid = null } = {}) {
+export function saveBrokerHeartbeat(
+  heartbeatPath,
+  state,
+  {
+    onlyIfOwnedByPid = null,
+    allowIfMissing = false,
+    allowIfTerminal = false
+  } = {}
+) {
   if (onlyIfOwnedByPid !== null) {
     const current = loadBrokerHeartbeat(heartbeatPath);
-    if (current?.pid !== onlyIfOwnedByPid) {
+    const canClaimMissing = !current && allowIfMissing;
+    const canClaimTerminal = current
+      && allowIfTerminal
+      && isTerminalBrokerHeartbeatStatus(current.status);
+    if (current?.pid !== onlyIfOwnedByPid && !canClaimMissing && !canClaimTerminal) {
       return false;
     }
   }

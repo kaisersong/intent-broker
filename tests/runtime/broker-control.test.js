@@ -9,6 +9,8 @@ import {
     isBrokerCommand,
     restartBroker,
     startBroker,
+    statusBroker,
+    summarizeHeartbeat,
     stopBroker
 } from '../../scripts/broker-control.js';
 
@@ -43,6 +45,50 @@ test('findBrokerProcesses returns only broker listener processes on the target p
   assert.deepEqual(processes, [
     { pid: 47069, command: 'node --experimental-sqlite src/cli.js' }
   ]);
+});
+
+test('summarizeHeartbeat marks terminal heartbeat for a non-listening pid as stale', () => {
+  assert.deepEqual(
+    summarizeHeartbeat(
+      { pid: 47173, status: 'stopped' },
+      [{ pid: 15693, command: 'node --experimental-sqlite src/cli.js' }]
+    ),
+    {
+      state: 'stale',
+      matchesRunningProcess: false,
+      reason: 'terminal_heartbeat_for_pid_47173'
+    }
+  );
+});
+
+test('statusBroker reports running_with_stale_heartbeat when port listener and heartbeat disagree', () => {
+  const status = statusBroker({
+    repoRoot: '/Users/song/projects/intent-broker',
+    runCommand: ({ command, args }) => {
+      if (command === 'lsof') {
+        assert.deepEqual(args, ['-nP', '-iTCP:4318', '-sTCP:LISTEN', '-t']);
+        return '15693\n';
+      }
+      if (command === 'ps') {
+        assert.equal(args[1], '15693');
+        return '/opt/homebrew/bin/node --experimental-sqlite src/cli.js';
+      }
+      throw new Error(`unexpected command: ${command}`);
+    },
+    loadHeartbeatState: () => ({
+      pid: 47173,
+      status: 'stopped',
+      updatedAt: '2026-05-26T01:31:42.646Z'
+    })
+  });
+
+  assert.equal(status.running, true);
+  assert.equal(status.status, 'running_with_stale_heartbeat');
+  assert.deepEqual(status.heartbeatSummary, {
+    state: 'stale',
+    matchesRunningProcess: false,
+    reason: 'terminal_heartbeat_for_pid_47173'
+  });
 });
 
 test('stopBroker sends SIGTERM first and escalates to SIGKILL only if needed', async () => {

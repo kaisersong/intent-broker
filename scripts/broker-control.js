@@ -6,7 +6,8 @@ import path from 'node:path';
 
 import {
   loadBrokerHeartbeat,
-  resolveBrokerRuntimePaths
+  resolveBrokerRuntimePaths,
+  isTerminalBrokerHeartbeatStatus
 } from '../src/runtime/broker-runtime-state.js';
 
 export function isBrokerCommand(command = '') {
@@ -168,6 +169,48 @@ async function defaultHealthCheck({ port }) {
   }
 }
 
+export function summarizeHeartbeat(heartbeat, processes = []) {
+  if (!heartbeat) {
+    return {
+      state: 'missing',
+      matchesRunningProcess: false,
+      reason: 'heartbeat_missing'
+    };
+  }
+
+  const runningPids = new Set(processes.map((item) => item.pid));
+  const matchesRunningProcess = runningPids.has(heartbeat.pid);
+  if (matchesRunningProcess && heartbeat.status === 'running') {
+    return {
+      state: 'fresh',
+      matchesRunningProcess: true,
+      reason: null
+    };
+  }
+
+  if (matchesRunningProcess) {
+    return {
+      state: 'mismatch',
+      matchesRunningProcess: true,
+      reason: `heartbeat_status_${heartbeat.status || 'unknown'}`
+    };
+  }
+
+  if (isTerminalBrokerHeartbeatStatus(heartbeat.status)) {
+    return {
+      state: 'stale',
+      matchesRunningProcess: false,
+      reason: `terminal_heartbeat_for_pid_${heartbeat.pid || 'unknown'}`
+    };
+  }
+
+  return {
+    state: 'stale',
+    matchesRunningProcess: false,
+    reason: `heartbeat_pid_${heartbeat.pid || 'unknown'}_not_listening`
+  };
+}
+
 export function startBroker({
   repoRoot = process.cwd(),
   nodePath = process.execPath,
@@ -278,11 +321,17 @@ export function statusBroker({
 } = {}) {
   const processes = findBrokerProcesses({ port, runCommand });
   const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
+  const heartbeat = loadHeartbeatState(runtimePaths.heartbeat);
+  const heartbeatSummary = summarizeHeartbeat(heartbeat, processes);
   return {
     running: processes.length > 0,
+    status: processes.length > 0
+      ? (heartbeatSummary.state === 'stale' ? 'running_with_stale_heartbeat' : 'running')
+      : 'stopped',
     port,
     processes,
-    heartbeat: loadHeartbeatState(runtimePaths.heartbeat),
+    heartbeat,
+    heartbeatSummary,
     logPaths: {
       stdout: runtimePaths.stdout,
       stderr: runtimePaths.stderr
