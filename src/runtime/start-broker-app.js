@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { createBrokerService } from '../broker/service.js';
 import { createServer } from '../http/server.js';
 import { loadIntentBrokerConfig } from '../config/load-config.js';
@@ -8,6 +9,7 @@ import { createCodexResumeDiscoveryRuntime as createCodexResumeDiscoveryRuntimeD
 import { createManagedChannelsRuntime } from './managed-channels.js';
 import { createChannelHealthRegistry } from './channel-health.js';
 import { refreshPersistedAgentSessions as refreshPersistedAgentSessionsDefault } from './persisted-agent-sessions.js';
+import { createRelayAdapter } from '../relay/relay-adapter.js';
 
 function asBrokerParticipantRegistration(config) {
   return {
@@ -88,6 +90,8 @@ export async function startBrokerApp({
     logger
   });
 
+  let relay = null;
+
   try {
     await channels.startAll();
     await codexResumeDiscovery.start();
@@ -96,6 +100,20 @@ export async function startBrokerApp({
     await server.close();
     broker.close?.();
     throw error;
+  }
+
+  if (config.relay?.enabled && config.relay?.url && config.relay?.roomSecret) {
+    const brokerId = config.relay.brokerId || randomUUID();
+    relay = createRelayAdapter({
+      brokerService: broker,
+      relayConfig: { ...config.relay, brokerVersion: '0.3.7' },
+      brokerId,
+      logger,
+    });
+    relay.start().catch((err) => {
+      logger.warn?.(`[relay-adapter] start failed: ${err.message}`);
+    });
+    logger.log(`intent-broker relay: connecting to ${config.relay.url}`);
   }
 
   const persistedSessionRefreshTimer = persistedSessionRefreshIntervalMs > 0
@@ -135,6 +153,7 @@ export async function startBrokerApp({
       if (persistedSessionRefreshTimer) {
         clearInterval(persistedSessionRefreshTimer);
       }
+      await relay?.stop();
       await codexResumeDiscovery.stop?.();
       await channels.stopAll();
       broker.close?.();

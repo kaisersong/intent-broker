@@ -4,6 +4,13 @@ import {
   saveBrokerHeartbeat
 } from './runtime/broker-runtime-state.js';
 
+// Handle relay subcommand before broker startup
+if (process.argv[2] === 'relay') {
+  const { runRelayCli } = await import('./relay/relay-cli.js');
+  await runRelayCli(process.argv.slice(3));
+  process.exit(0);
+}
+
 let shuttingDown = false;
 let app = null;
 let heartbeatTimer = null;
