@@ -34,7 +34,7 @@ test('defaultInstallPaths targets codex config, state root, and unified command 
   assert.equal(paths.hooksConfigPath, path.join('/Users/song', '.codex', 'hooks.json'));
   assert.equal(paths.skillLinkPath, path.join('/Users/song', '.codex', 'skills', 'intent-broker'));
   assert.equal(paths.stateRoot, path.join('/Users/song', '.intent-broker', 'codex'));
-  assert.equal(paths.commandShimPath, path.join('/Users/song', '.local', 'bin', 'intent-broker'));
+  assert.equal(paths.commandShimPath, path.join('/Users/song', '.local', 'bin', process.platform === 'win32' ? 'intent-broker.cmd' : 'intent-broker'));
   assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
@@ -264,7 +264,7 @@ test('ensureCodexInstall writes missing managed files and becomes stable on reru
     assert.match(configText, /\[features\]\nhooks = true/);
     assert.doesNotMatch(configText, /codex_hooks = true/);
     assert.match(readFileSync(paths.hooksConfigPath, 'utf8'), /hook stop/);
-    assert.match(readFileSync(paths.commandShimPath, 'utf8'), /bin\/intent-broker\.js/);
+    assert.match(readFileSync(paths.commandShimPath, 'utf8').replace(/\\/g, '/'), /bin\/intent-broker\.js/);
     assert.equal(lstatSync(paths.skillLinkPath).isSymbolicLink(), true);
 
     const second = ensureCodexInstall({ homeDir, repoRoot });

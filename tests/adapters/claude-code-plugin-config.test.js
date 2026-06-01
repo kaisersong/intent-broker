@@ -30,7 +30,7 @@ test('defaultInstallPaths targets project .claude settings and claude state root
 
   assert.equal(paths.settingsPath, path.join('/Users/song/projects/intent-broker', '.claude', 'settings.json'));
   assert.equal(paths.stateRoot, path.join('/Users/song', '.intent-broker', 'claude-code'));
-  assert.equal(paths.commandShimPath, path.join('/Users/song', '.local', 'bin', 'intent-broker'));
+  assert.equal(paths.commandShimPath, path.join('/Users/song', '.local', 'bin', process.platform === 'win32' ? 'intent-broker.cmd' : 'intent-broker'));
   assert.equal(paths.unifiedCliPath, path.join('/Users/song/projects/intent-broker', 'bin', 'intent-broker.js'));
 });
 
@@ -275,8 +275,10 @@ test('ensureClaudeCodeInstall writes missing managed files and becomes stable on
 
     const paths = defaultInstallPaths({ cwd, repoRoot, homeDir });
     assert.match(readFileSync(paths.settingsPath, 'utf8'), /hook stop/);
-    assert.match(readFileSync(paths.settingsPath, 'utf8'), new RegExp(`${repoRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/adapters\\/claude-code-plugin\\/bin\\/claude-code-broker\\.js`));
-    assert.match(readFileSync(paths.commandShimPath, 'utf8'), /bin\/intent-broker\.js/);
+    const settings = JSON.parse(readFileSync(paths.settingsPath, 'utf8'));
+    const sessionStartCommand = settings.hooks.SessionStart[0].hooks[0].command.replace(/\\/g, '/');
+    assert.match(sessionStartCommand, new RegExp(`${repoRoot.replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/adapters\\/claude-code-plugin\\/bin\\/claude-code-broker\\.js`));
+    assert.match(readFileSync(paths.commandShimPath, 'utf8').replace(/\\/g, '/'), /bin\/intent-broker\.js/);
 
     const second = ensureClaudeCodeInstall({ cwd, repoRoot, homeDir });
     assert.equal(second.changed, false);

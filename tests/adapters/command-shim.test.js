@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -11,31 +11,69 @@ import {
   isPathDirAvailable
 } from '../../adapters/hook-installer-core/command-shim.js';
 
-test('defaultCommandShimPath uses ~/.local/bin/intent-broker', () => {
+test('defaultCommandShimPath uses ~/.local/bin/intent-broker on POSIX', () => {
   assert.equal(
-    defaultCommandShimPath({ homeDir: '/Users/song' }),
+    defaultCommandShimPath({ homeDir: '/Users/song', platform: 'linux' }),
     path.join('/Users/song', '.local', 'bin', 'intent-broker')
   );
 });
 
-test('buildCommandShimContent wraps unified cli with node', () => {
+test('defaultCommandShimPath uses a .cmd shim on Windows', () => {
+  assert.equal(
+    defaultCommandShimPath({ homeDir: 'C:\\Users\\song', platform: 'win32' }),
+    path.join('C:\\Users\\song', '.local', 'bin', 'intent-broker.cmd')
+  );
+});
+
+test('buildCommandShimContent wraps unified cli with node on POSIX', () => {
   const content = buildCommandShimContent({
     cliPath: '/Users/song/projects/intent-broker/bin/intent-broker.js',
-    nodePath: '/usr/local/bin/node'
+    nodePath: '/usr/local/bin/node',
+    platform: 'linux'
   });
 
   assert.match(content, /^#!\/bin\/sh/);
   assert.match(content, /exec "\/usr\/local\/bin\/node" "\/Users\/song\/projects\/intent-broker\/bin\/intent-broker\.js" "\$@"/);
 });
 
-test('ensureCommandShim writes executable shim file', () => {
+test('buildCommandShimContent wraps unified cli with node on Windows', () => {
+  const content = buildCommandShimContent({
+    cliPath: 'D:\\projects\\intent-broker\\bin\\intent-broker.js',
+    nodePath: 'C:\\Program Files\\nodejs\\node.exe',
+    platform: 'win32'
+  });
+
+  assert.match(content, /^@echo off\r?\n/);
+  assert.match(content, /"C:\\Program Files\\nodejs\\node\.exe" "D:\\projects\\intent-broker\\bin\\intent-broker\.js" %\*/);
+});
+
+test('ensureCommandShim writes executable POSIX shim file', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'intent-broker-shim-'));
   const shimPath = path.join(dir, '.local', 'bin', 'intent-broker');
 
   try {
-    ensureCommandShim(shimPath, '#!/bin/sh\necho ok\n');
+    ensureCommandShim(shimPath, '#!/bin/sh\necho ok\n', { platform: 'linux' });
     assert.match(readFileSync(shimPath, 'utf8'), /echo ok/);
-    assert.equal(statSync(shimPath).mode & 0o777, 0o755);
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(shimPath).mode & 0o777, 0o755);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ensureCommandShim writes Windows .cmd shim and removes old POSIX shim', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'intent-broker-shim-'));
+  const shimPath = path.join(dir, '.local', 'bin', 'intent-broker.cmd');
+  const legacyShimPath = path.join(dir, '.local', 'bin', 'intent-broker');
+
+  try {
+    mkdirSync(path.dirname(legacyShimPath), { recursive: true });
+    writeFileSync(legacyShimPath, '#!/bin/sh\nexec "/usr/local/bin/node" "/repo/bin/intent-broker.js" "$@"\n');
+    ensureCommandShim(shimPath, '@echo off\r\necho ok\r\n', { platform: 'win32' });
+
+    assert.match(readFileSync(shimPath, 'utf8'), /echo ok/);
+    assert.equal(existsSync(legacyShimPath), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
