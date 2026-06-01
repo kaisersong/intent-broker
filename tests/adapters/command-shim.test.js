@@ -16,6 +16,10 @@ test('defaultCommandShimPath uses ~/.local/bin/intent-broker on POSIX', () => {
     defaultCommandShimPath({ homeDir: '/Users/song', platform: 'linux' }),
     path.join('/Users/song', '.local', 'bin', 'intent-broker')
   );
+  assert.equal(
+    defaultCommandShimPath({ homeDir: '/Users/song', platform: 'darwin' }),
+    path.join('/Users/song', '.local', 'bin', 'intent-broker')
+  );
 });
 
 test('defaultCommandShimPath uses a .cmd shim on Windows', () => {
@@ -29,7 +33,7 @@ test('buildCommandShimContent wraps unified cli with node on POSIX', () => {
   const content = buildCommandShimContent({
     cliPath: '/Users/song/projects/intent-broker/bin/intent-broker.js',
     nodePath: '/usr/local/bin/node',
-    platform: 'linux'
+    platform: 'darwin'
   });
 
   assert.match(content, /^#!\/bin\/sh/);

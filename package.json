@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-sqlite --experimental-test-isolation=none --test 'tests/**/*.test.js'",
+    "test": "node scripts/run-tests.js",
     "start": "node --experimental-sqlite src/cli.js",
     "broker:status": "node scripts/broker-control.js status",
     "broker:stop": "node scripts/broker-control.js stop",

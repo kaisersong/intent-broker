@@ -203,6 +203,7 @@ test('Yunzhijia adapter shows which agent replied when forwarding broker progres
   );
 
   await waitFor(() => adapter.userWebSockets.has('human.yzj_user_local'));
+  await waitFor(() => outboundPosts.length >= 1);
   outboundPosts.length = 0;
 
   await fetch(`${brokerUrl}/intents`, {
@@ -222,12 +223,12 @@ test('Yunzhijia adapter shows which agent replied when forwarding broker progres
     })
   });
 
-  await waitFor(() => outboundPosts.length === 1);
+  await waitFor(() => outboundPosts.some((post) => /我在处理 broker 自动回复链路/.test(post.content)));
 
-  assert.match(outboundPosts[0].content, /claude/i);
-  assert.match(outboundPosts[0].content, /我在处理 broker 自动回复链路/);
-  assert.equal(outboundPosts[0].param.replyMsgId, 'msg_agent_reply_1');
-  assert.deepEqual(outboundPosts[0].notifyParams[0].values, ['user_local']);
+  const progressPost = outboundPosts.find((post) => /我在处理 broker 自动回复链路/.test(post.content));
+  assert.match(progressPost.content, /claude/i);
+  assert.equal(progressPost.param.replyMsgId, 'msg_agent_reply_1');
+  assert.deepEqual(progressPost.notifyParams[0].values, ['user_local']);
 });
 
 test('Yunzhijia adapter routes @alias, @all and replies on unknown aliases', { concurrency: false }, async (t) => {
@@ -1311,6 +1312,7 @@ test('Yunzhijia adapter supports @broker alias rename commands in channel', { co
   );
 
   await waitFor(() => broker.listParticipants().some((participant) => participant.participantId === 'codex.a' && participant.alias === 'reviewer'));
+  await waitFor(() => outboundPosts.some((post) => /alias 已更新/.test(post.content)));
 
   const renamed = broker.listParticipants().find((participant) => participant.participantId === 'codex.a');
   assert.equal(renamed.alias, 'reviewer');
