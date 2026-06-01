@@ -358,7 +358,8 @@ export function startBroker({
   isProcessAlive = defaultIsProcessAlive,
   loadHeartbeatState = loadBrokerHeartbeat,
   saveHeartbeatState = saveBrokerHeartbeat,
-  now = () => new Date()
+  now = () => new Date(),
+  platform = process.platform
 } = {}) {
   const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
   mkdirSync(path.dirname(runtimePaths.stdout), { recursive: true });
@@ -382,6 +383,7 @@ export function startBroker({
         cwd: repoRoot,
         detached: true,
         stdio: ['ignore', stdoutFd, stderrFd],
+        windowsHide: platform === 'win32',
         env: {
           ...env,
           INTENT_BROKER_HEARTBEAT_PATH: runtimePaths.heartbeat

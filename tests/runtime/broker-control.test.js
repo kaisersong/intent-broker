@@ -249,6 +249,7 @@ test('restartBroker stops an existing broker and starts a new detached process',
   assert.deepEqual(spawned[0].args, ['--experimental-sqlite', 'src/cli.js']);
   assert.equal(spawned[0].options.cwd, '/Users/song/projects/intent-broker');
   assert.equal(spawned[0].options.detached, true);
+  assert.equal(spawned[0].options.windowsHide, false);
   assert.equal(result.started, true);
   assert.equal(result.ready, true);
   assert.equal(result.pid, 49000);
@@ -261,6 +262,7 @@ test('startBroker redirects broker output to log files and passes a heartbeat pa
   const result = startBroker({
     repoRoot,
     nodePath: '/opt/homebrew/bin/node',
+    platform: 'win32',
     spawnProcess: (command, args, options) => {
       spawned.push({ command, args, options });
       return {
@@ -272,6 +274,7 @@ test('startBroker redirects broker output to log files and passes a heartbeat pa
 
   assert.equal(spawned.length, 1);
   assert.equal(spawned[0].options.detached, true);
+  assert.equal(spawned[0].options.windowsHide, true);
   assert.ok(Array.isArray(spawned[0].options.stdio));
   assert.equal(spawned[0].options.stdio.length, 3);
   assert.equal(

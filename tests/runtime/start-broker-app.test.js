@@ -1,7 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { startBrokerApp } from '../../src/runtime/start-broker-app.js';
+import { resolveDefaultSocketPath, SOCKET_PATH, startBrokerApp } from '../../src/runtime/start-broker-app.js';
+
+test('resolveDefaultSocketPath disables the local socket by default on Windows', () => {
+  assert.equal(resolveDefaultSocketPath({ env: {}, platform: 'win32' }), null);
+  assert.equal(resolveDefaultSocketPath({ env: {}, platform: 'linux' }), SOCKET_PATH);
+  assert.equal(
+    resolveDefaultSocketPath({
+      env: { INTENT_BROKER_SOCKET_PATH: 'C:\\tmp\\intent-broker.sock' },
+      platform: 'win32'
+    }),
+    'C:\\tmp\\intent-broker.sock'
+  );
+  assert.equal(
+    resolveDefaultSocketPath({
+      env: { INTENT_BROKER_SOCKET_PATH: '' },
+      platform: 'linux'
+    }),
+    null
+  );
+});
 
 test('startBrokerApp syncs local agent bridges before managed channels start', async () => {
   const order = [];

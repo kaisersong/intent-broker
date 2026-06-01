@@ -1,16 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { runCollaborationSmoke } from '../../scripts/collaboration-smoke.js';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 test('collaboration smoke verification runs real Codex and Claude Code bridges and writes logs', { concurrency: false }, async () => {
   const logDir = mkdtempSync(join(tmpdir(), 'intent-broker-collab-smoke-'));
 
   const summary = await runCollaborationSmoke({
-    repoRoot: '/Users/song/projects/intent-broker',
+    repoRoot,
     logDir
   });
 

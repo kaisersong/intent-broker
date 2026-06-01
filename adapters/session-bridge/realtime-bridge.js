@@ -53,6 +53,8 @@ const DEFAULT_RETRY_MS = 2000;
 const DEFAULT_CLAUDE_MAX_BUFFER = 10 * 1024 * 1024;
 const DEFAULT_CLAUDE_AUTO_DISPATCH_STALE_MS = 30 * 1000;
 const DEFAULT_AUTO_DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_AUTO_DISPATCH_FAILURE_RETRY_MS = 60 * 1000;
+const DEFAULT_AUTO_DISPATCH_MAX_FAILURES = 3;
 const PROCESS_START_TIME_TOLERANCE_MS = 2000;
 const execFileDefault = promisify(execFileCallback);
 
@@ -147,6 +149,15 @@ function parseNonNegativeMs(value, fallback) {
 
   const ms = Number(value);
   return Number.isFinite(ms) && ms >= 0 ? ms : fallback;
+}
+
+function parsePositiveInteger(value, fallback) {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : fallback;
 }
 
 function hasEvent(state, eventId) {
@@ -263,6 +274,34 @@ function hasLiveAutoDispatchOwner(runtimeState, {
   return Math.abs(observedStartedAtMs - ownerStartedAtMs) <= PROCESS_START_TIME_TOLERANCE_MS;
 }
 
+function autoDispatchFailureCount(runtimeState) {
+  const count = Number(runtimeState?.autoDispatchFailureCount || 0);
+  return Number.isInteger(count) && count > 0 ? count : 0;
+}
+
+function hasAutoDispatchFailureExhausted(runtimeState, maxFailures) {
+  return runtimeState?.status === 'idle'
+    && runtimeState?.source === 'auto-dispatch-failed'
+    && autoDispatchFailureCount(runtimeState) >= maxFailures;
+}
+
+function isAutoDispatchFailureCoolingDown(runtimeState, retryMs) {
+  if (
+    runtimeState?.status !== 'idle'
+    || runtimeState?.source !== 'auto-dispatch-failed'
+    || retryMs <= 0
+  ) {
+    return false;
+  }
+
+  const updatedAtMs = parseTimestampMs(runtimeState.updatedAt);
+  if (updatedAtMs === null) {
+    return false;
+  }
+
+  return Date.now() - updatedAtMs < retryMs;
+}
+
 function getCurrentProcessStartedAtIso() {
   return new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString();
 }
@@ -295,6 +334,24 @@ function normalizeAutoDispatchReply(output) {
   }
 
   return text;
+}
+
+export function resolveAutoDispatchCommand(
+  command,
+  args,
+  {
+    platform = process.platform,
+    nodePath = process.execPath
+  } = {}
+) {
+  if (platform === 'win32' && /\.(?:cjs|mjs|js)$/i.test(String(command || ''))) {
+    return {
+      command: nodePath,
+      args: [command, ...args]
+    };
+  }
+
+  return { command, args };
 }
 
 export async function maybeAutoDispatchRealtimeQueue({
@@ -339,7 +396,27 @@ export async function maybeAutoDispatchRealtimeQueue({
     env.INTENT_BROKER_AUTO_DISPATCH_TIMEOUT_MS,
     DEFAULT_AUTO_DISPATCH_TIMEOUT_MS
   );
+  const autoDispatchFailureRetryMs = parseNonNegativeMs(
+    env.INTENT_BROKER_AUTO_DISPATCH_FAILURE_RETRY_MS,
+    DEFAULT_AUTO_DISPATCH_FAILURE_RETRY_MS
+  );
+  const autoDispatchMaxFailures = parsePositiveInteger(
+    env.INTENT_BROKER_AUTO_DISPATCH_MAX_FAILURES,
+    DEFAULT_AUTO_DISPATCH_MAX_FAILURES
+  );
   const runtimeState = loadRuntimeState(runtimeStatePath);
+  const priorFailureCount = runtimeState.source === 'auto-dispatch-failed'
+    ? autoDispatchFailureCount(runtimeState)
+    : 0;
+
+  if (hasAutoDispatchFailureExhausted(runtimeState, autoDispatchMaxFailures)) {
+    return { dispatched: false, reason: 'dispatch-failure-exhausted' };
+  }
+
+  if (isAutoDispatchFailureCoolingDown(runtimeState, autoDispatchFailureRetryMs)) {
+    return { dispatched: false, reason: 'dispatch-failure-cooldown' };
+  }
+
   if (runtimeState.status !== 'idle') {
     if (hasLiveAutoDispatchOwner(runtimeState, {
       isProcessAlive: isProcessAliveImpl,
@@ -445,11 +522,14 @@ export async function maybeAutoDispatchRealtimeQueue({
     ? (env.INTENT_BROKER_XIAOK_COMMAND || 'xiaok')
     : (env.INTENT_BROKER_CLAUDE_COMMAND || 'claude');
   let completedExec = false;
+  let dispatchErrorMessage = null;
 
   try {
+    const commandArgs = ['--resume', sessionId, '--print', prompt];
+    const resolvedCommand = resolveAutoDispatchCommand(command, commandArgs);
     const { stdout } = await execFileImpl(
-      command,
-      ['--resume', sessionId, '--print', prompt],
+      resolvedCommand.command,
+      resolvedCommand.args,
       {
         cwd,
         env: {
@@ -459,7 +539,8 @@ export async function maybeAutoDispatchRealtimeQueue({
         encoding: 'utf8',
         maxBuffer: DEFAULT_CLAUDE_MAX_BUFFER,
         timeout: autoDispatchTimeoutMs,
-        killSignal: 'SIGTERM'
+        killSignal: 'SIGTERM',
+        windowsHide: process.platform === 'win32'
       }
     );
     completedExec = true;
@@ -482,6 +563,7 @@ export async function maybeAutoDispatchRealtimeQueue({
       lastSeenEventId
     };
   } catch (error) {
+    dispatchErrorMessage = error instanceof Error ? error.message : String(error);
     saveRealtimeQueueStateImpl(
       queueStatePath,
       restoreRealtimeQueue(loadRealtimeQueueStateImpl(queueStatePath), drainedQueue.items)
@@ -491,18 +573,20 @@ export async function maybeAutoDispatchRealtimeQueue({
       dispatched: false,
       reason: 'dispatch-failed',
       lastSeenEventId,
-      error: error instanceof Error ? error.message : String(error)
+      error: dispatchErrorMessage
     };
   } finally {
     saveRuntimeState(runtimeStatePath, {
       status: 'idle',
       sessionId,
       turnId: null,
-      source: 'auto-dispatch-complete',
+      source: dispatchErrorMessage ? 'auto-dispatch-failed' : 'auto-dispatch-complete',
       ownerPid: null,
       ownerStartedAt: null,
       taskId: null,
       threadId: null,
+      autoDispatchFailureCount: dispatchErrorMessage ? priorFailureCount + 1 : 0,
+      autoDispatchLastError: dispatchErrorMessage,
       updatedAt: new Date().toISOString()
     });
     await updateWorkState(

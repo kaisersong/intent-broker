@@ -12,6 +12,7 @@ import {
   ensureRealtimeBridge,
   loadRealtimeQueueState,
   maybeAutoDispatchRealtimeQueue,
+  resolveAutoDispatchCommand,
   runRealtimeBridgeProcess,
   saveRealtimeQueueState
 } from '../../adapters/session-bridge/realtime-bridge.js';
@@ -82,6 +83,42 @@ test('drainRealtimeQueue returns items in event order and clears local buckets',
     informational: [],
     lastEventId: 10
   });
+});
+
+test('resolveAutoDispatchCommand runs JavaScript command files through node on Windows', () => {
+  assert.deepEqual(
+    resolveAutoDispatchCommand(
+      'C:\\tmp\\fake-claude.cjs',
+      ['--resume', 'session-1'],
+      { platform: 'win32', nodePath: 'C:\\node\\node.exe' }
+    ),
+    {
+      command: 'C:\\node\\node.exe',
+      args: ['C:\\tmp\\fake-claude.cjs', '--resume', 'session-1']
+    }
+  );
+  assert.deepEqual(
+    resolveAutoDispatchCommand(
+      'C:\\tmp\\claude.exe',
+      ['--resume', 'session-1'],
+      { platform: 'win32', nodePath: 'C:\\node\\node.exe' }
+    ),
+    {
+      command: 'C:\\tmp\\claude.exe',
+      args: ['--resume', 'session-1']
+    }
+  );
+  assert.deepEqual(
+    resolveAutoDispatchCommand(
+      '/tmp/fake-claude.cjs',
+      ['--resume', 'session-1'],
+      { platform: 'linux', nodePath: '/usr/bin/node' }
+    ),
+    {
+      command: '/tmp/fake-claude.cjs',
+      args: ['--resume', 'session-1']
+    }
+  );
 });
 
 test('maybeAutoDispatchRealtimeQueue resumes an idle codex session for actionable work', async () => {
@@ -259,6 +296,7 @@ test('maybeAutoDispatchRealtimeQueue resumes an idle claude code session for act
   assert.match(execCalls[0].args[3], /Intent Broker auto-continue/);
   assert.match(execCalls[0].args[3], /output only the reply summary/i);
   assert.equal(execCalls[0].options.env.INTENT_BROKER_SKIP_INBOX_SYNC, '1');
+  assert.equal(execCalls[0].options.windowsHide, process.platform === 'win32');
   assert.deepEqual(acked, [{ participantId: 'claude-code-session-019d448e', eventId: 88 }]);
   assert.equal(savedCursor[0].state.lastSeenEventId, 88);
   assert.equal(savedRuntime[0].state.status, 'running');
@@ -737,6 +775,9 @@ test('maybeAutoDispatchRealtimeQueue requeues claude code work when auto-dispatc
   });
   assert.equal(savedRuntime[0].state.status, 'running');
   assert.equal(savedRuntime.at(-1).state.status, 'idle');
+  assert.equal(savedRuntime.at(-1).state.source, 'auto-dispatch-failed');
+  assert.equal(savedRuntime.at(-1).state.autoDispatchFailureCount, 1);
+  assert.match(savedRuntime.at(-1).state.autoDispatchLastError, /claude_print_failed/);
   assert.deepEqual(workStates, [
     {
       participantId: 'claude-code-session-fail-1',
@@ -757,6 +798,107 @@ test('maybeAutoDispatchRealtimeQueue requeues claude code work when auto-dispatc
       }
     }
   ]);
+});
+
+test('maybeAutoDispatchRealtimeQueue does not relaunch claude code during failure cooldown', async () => {
+  const execCalls = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-fail-cooldown' },
+    sessionId: 'failing-session-cooldown',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_AUTO_DISPATCH_FAILURE_RETRY_MS: '60000'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({
+      status: 'idle',
+      sessionId: 'failing-session-cooldown',
+      source: 'auto-dispatch-failed',
+      autoDispatchFailureCount: 1,
+      updatedAt: new Date().toISOString()
+    }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return { stdout: 'SHOULD_NOT_RUN\n', stderr: '' };
+    },
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 101,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          taskId: 'task-fail-cooldown',
+          threadId: 'thread-fail-cooldown',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '不要马上重复弹 Claude' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 101
+    })
+  });
+
+  assert.equal(result.dispatched, false);
+  assert.equal(result.reason, 'dispatch-failure-cooldown');
+  assert.deepEqual(execCalls, []);
+});
+
+test('maybeAutoDispatchRealtimeQueue stops claude code relaunch after repeated auto-dispatch failures', async () => {
+  const execCalls = [];
+
+  const result = await maybeAutoDispatchRealtimeQueue({
+    toolName: 'claude-code',
+    config: { participantId: 'claude-code-session-fail-exhausted' },
+    sessionId: 'failing-session-exhausted',
+    cwd: '/Users/song/projects/intent-broker',
+    env: {
+      INTENT_BROKER_AUTO_DISPATCH_MAX_FAILURES: '2',
+      INTENT_BROKER_AUTO_DISPATCH_FAILURE_RETRY_MS: '0'
+    },
+    queueStatePath: '/tmp/queue.json',
+    cursorStatePath: '/tmp/cursor.json',
+    runtimeStatePath: '/tmp/runtime.json',
+    loadRuntimeState: () => ({
+      status: 'idle',
+      sessionId: 'failing-session-exhausted',
+      source: 'auto-dispatch-failed',
+      autoDispatchFailureCount: 2,
+      updatedAt: '2000-01-01T00:00:00.000Z'
+    }),
+    loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+    execFileImpl: async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      return { stdout: 'SHOULD_NOT_RUN\n', stderr: '' };
+    },
+    loadRealtimeQueueState: () => ({
+      actionable: [
+        {
+          eventId: 102,
+          kind: 'ask_clarification',
+          fromParticipantId: 'human.song',
+          taskId: 'task-fail-exhausted',
+          threadId: 'thread-fail-exhausted',
+          payload: {
+            delivery: { semantic: 'actionable', source: 'default' },
+            body: { summary: '超过失败上限后不要再弹' }
+          }
+        }
+      ],
+      informational: [],
+      lastEventId: 102
+    })
+  });
+
+  assert.equal(result.dispatched, false);
+  assert.equal(result.reason, 'dispatch-failure-exhausted');
+  assert.deepEqual(execCalls, []);
 });
 
 test('maybeAutoDispatchRealtimeQueue passes a timeout to claude code auto-dispatch', async () => {

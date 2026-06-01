@@ -15,6 +15,17 @@ import { createRelayAdapter } from '../relay/relay-adapter.js';
 
 export const SOCKET_PATH = join(homedir(), '.intent-broker', 'broker.sock');
 
+export function resolveDefaultSocketPath({
+  env = process.env,
+  platform = process.platform
+} = {}) {
+  if (Object.hasOwn(env, 'INTENT_BROKER_SOCKET_PATH')) {
+    return env.INTENT_BROKER_SOCKET_PATH || null;
+  }
+
+  return platform === 'win32' ? null : SOCKET_PATH;
+}
+
 function asBrokerParticipantRegistration(config) {
   return {
     participantId: config.participantId,
@@ -42,7 +53,7 @@ export async function startBrokerApp({
   persistedSessionRefreshIntervalMs = Number(
     env.INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS || 5000
   ),
-  socketPath = SOCKET_PATH
+  socketPath = resolveDefaultSocketPath({ env })
 } = {}) {
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);

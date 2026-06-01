@@ -38,3 +38,19 @@ test('runtime state clears owner identity outside running auto-dispatch', () => 
   assert.equal(loadRuntimeState(statePath).ownerPid, null);
   assert.equal(loadRuntimeState(statePath).ownerStartedAt, null);
 });
+
+test('runtime state preserves auto-dispatch failure metadata while idle', () => {
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-runtime-'));
+  const statePath = path.join(homeDir, 'runtime.json');
+
+  saveRuntimeState(statePath, {
+    status: 'idle',
+    source: 'auto-dispatch-failed',
+    autoDispatchFailureCount: 2,
+    autoDispatchLastError: 'claude_print_failed'
+  });
+
+  const state = loadRuntimeState(statePath);
+  assert.equal(state.autoDispatchFailureCount, 2);
+  assert.equal(state.autoDispatchLastError, 'claude_print_failed');
+});

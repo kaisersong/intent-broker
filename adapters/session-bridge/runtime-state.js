@@ -14,6 +14,11 @@ function normalizeOptionalPid(value) {
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 
+function normalizeNonNegativeInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : 0;
+}
+
 export function createRuntimeState() {
   return {
     status: 'idle',
@@ -30,6 +35,8 @@ export function createRuntimeState() {
     sessionHint: null,
     terminalTTY: null,
     terminalSessionID: null,
+    autoDispatchFailureCount: 0,
+    autoDispatchLastError: null,
     updatedAt: null
   };
 }
@@ -57,6 +64,12 @@ function normalizeRuntimeState(state) {
     sessionHint: normalizeOptionalString(state?.sessionHint),
     terminalTTY: normalizeOptionalString(state?.terminalTTY),
     terminalSessionID: normalizeOptionalString(state?.terminalSessionID),
+    autoDispatchFailureCount: source === 'auto-dispatch-failed'
+      ? normalizeNonNegativeInteger(state?.autoDispatchFailureCount)
+      : 0,
+    autoDispatchLastError: source === 'auto-dispatch-failed'
+      ? normalizeOptionalString(state?.autoDispatchLastError)
+      : null,
     updatedAt: normalizeOptionalString(state?.updatedAt)
   };
 }

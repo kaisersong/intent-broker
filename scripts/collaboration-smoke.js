@@ -72,7 +72,7 @@ try {
 invocations.push({
   args,
   sessionId: args[1] || null,
-  prompt: args[3] || ''
+  prompt: args.includes('--print') ? args.slice(args.indexOf('--print') + 1).join(' ') : ''
 });
 
 fs.writeFileSync(logPath, JSON.stringify(invocations, null, 2));
@@ -83,6 +83,13 @@ process.stdout.write('Smoke auto reply from Claude: verified collaboration smoke
   return {
     commandPath,
     invocationLogPath
+  };
+}
+
+function isolatedHomeEnv(homeDir) {
+  return {
+    HOME: homeDir,
+    USERPROFILE: homeDir
   };
 }
 
@@ -178,6 +185,7 @@ function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
   });
   const stdoutChunks = [];
   const stderrChunks = [];
+  let closed = false;
   const child = spawn(process.execPath, ['--experimental-sqlite', 'src/cli.js'], {
     cwd: repoRoot,
     env: {
@@ -188,7 +196,7 @@ function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
       INTENT_BROKER_LOCAL_CONFIG: localConfigPath,
       INTENT_BROKER_DISABLE_CODEX_DISCOVERY: '1',
       INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS: '0',
-      HOME: homeDir
+      ...isolatedHomeEnv(homeDir)
     }
   });
 
@@ -202,13 +210,30 @@ function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
 
   child.stdout.on('data', flushLogs);
   child.stderr.on('data', flushLogs);
-  child.on('close', flushLogs);
+  child.on('close', () => {
+    closed = true;
+    flushLogs();
+  });
   child.on('error', flushLogs);
 
   return {
     child,
-    flushLogs
+    flushLogs,
+    isClosed: () => closed
   };
+}
+
+async function stopBrokerProcess(broker) {
+  if (broker.isClosed()) {
+    return;
+  }
+
+  await new Promise((resolveClose) => {
+    broker.child.once('close', resolveClose);
+    if (!broker.child.kill('SIGTERM')) {
+      resolveClose();
+    }
+  });
 }
 
 async function requestJson(url, options = {}) {
@@ -285,7 +310,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     const baseEnv = {
       BROKER_URL: brokerUrl,
       PROJECT_NAME: 'intent-broker',
-      HOME: homeDir,
+      ...isolatedHomeEnv(homeDir),
       INTENT_BROKER_CLAUDE_COMMAND: fakeClaude.commandPath,
       INTENT_BROKER_SMOKE_CLAUDE_LOG: fakeClaude.invocationLogPath
     };
@@ -339,7 +364,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
 
         return null;
       },
-      { timeoutMs: 5000, intervalMs: 100 }
+      { timeoutMs: 10000, intervalMs: 100 }
     );
     writeJsonLog(resolvedLogDir, 'broker.presence.realtime.json', realtimePresence);
 
@@ -422,8 +447,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     writeLog(resolvedLogDir, 'analysis.md', buildAnalysis(summary));
     return summary;
   } finally {
-    broker.child.kill('SIGTERM');
-    await new Promise((resolveClose) => broker.child.once('close', resolveClose));
+    await stopBrokerProcess(broker);
     broker.flushLogs();
   }
 }
