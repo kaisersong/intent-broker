@@ -12,6 +12,6 @@
   },
   "relay": {
     "enabled": true,
-    "url": "wss://intent-broker-relay.kaisersongsk.workers.dev/ws"
+    "url": "wss://relay.kaihub.space/ws"
   }
 }

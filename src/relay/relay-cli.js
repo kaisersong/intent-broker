@@ -1,9 +1,9 @@
 import { loadCredentials, saveCredentials, deleteCredentials, isTokenExpired, getJwtPayload } from './credential-store.js';
 
-const GITHUB_CLIENT_ID = process.env.RELAY_GITHUB_CLIENT_ID || 'PLACEHOLDER_GITHUB_CLIENT_ID';
+const GITHUB_CLIENT_ID = process.env.RELAY_GITHUB_CLIENT_ID || 'Ov23liTyGMaL8ZKE8WTF';
 const GOOGLE_CLIENT_ID = process.env.RELAY_GOOGLE_CLIENT_ID || 'PLACEHOLDER_GOOGLE_CLIENT_ID';
 
-const RELAY_AUTH_URL = process.env.RELAY_AUTH_URL || 'https://relay.intent-broker.dev';
+const RELAY_AUTH_URL = process.env.RELAY_AUTH_URL || 'https://relay.kaihub.space';
 
 async function deviceFlowGitHub() {
   const res = await fetch('https://github.com/login/device/code', {
