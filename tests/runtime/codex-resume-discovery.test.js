@@ -8,70 +8,72 @@ import {
 } from '../../src/runtime/codex-resume-discovery.js';
 
 test('discoverCodexResumeSessions prefers the real codex binary and ignores exec auto-dispatch helpers', async () => {
-  const originalPlatform = process.platform;
-  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  const sessions = await discoverCodexResumeSessions({
+    platform: 'darwin',
+    execFileImpl: async () => ({
+      stdout: [
+        '101 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
+        '102 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
+        '201 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex exec --json --full-auto resume 019d4c08-f640-7423-8ab8-b4f3d96715ec "auto prompt"',
+        '301 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d48da-9b3f-7f00-b9a2-1abf0d20c001'
+      ].join('\n')
+    })
+  });
 
-  try {
-    const sessions = await discoverCodexResumeSessions({
-      execFileImpl: async () => ({
-        stdout: [
-          '101 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
-          '102 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d4c08-f640-7423-8ab8-b4f3d96715ec',
-          '201 node /Users/song/.nvm/versions/node/v22.9.0/bin/codex exec --json --full-auto resume 019d4c08-f640-7423-8ab8-b4f3d96715ec "auto prompt"',
-          '301 /Users/song/.nvm/versions/node/v22.9.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex --no-alt-screen resume 019d48da-9b3f-7f00-b9a2-1abf0d20c001'
-        ].join('\n')
-      })
-    });
-
-    assert.deepEqual(sessions, [
-      {
-        pid: 102,
-        sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
-      },
-      {
-        pid: 301,
-        sessionId: '019d48da-9b3f-7f00-b9a2-1abf0d20c001'
-      }
-    ]);
-  } finally {
-    Object.defineProperty(process, 'platform', { value: originalPlatform });
-  }
+  assert.deepEqual(sessions, [
+    {
+      pid: 102,
+      sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
+    },
+    {
+      pid: 301,
+      sessionId: '019d48da-9b3f-7f00-b9a2-1abf0d20c001'
+    }
+  ]);
 });
 
 test('discoverCodexResumeSessions parses Windows process JSON and normalizes codex paths', async () => {
-  const originalPlatform = process.platform;
-
-  Object.defineProperty(process, 'platform', {
-    value: 'win32'
+  const sessions = await discoverCodexResumeSessions({
+    platform: 'win32',
+    execFileImpl: async () => ({
+      stdout: JSON.stringify([
+        {
+          ProcessId: 4100,
+          CommandLine: '"C:\\Users\\song\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js" resume 019d4c08-f640-7423-8ab8-b4f3d96715ec'
+        },
+        {
+          ProcessId: 4200,
+          CommandLine: 'C:\\Users\\song\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe resume 019d4c08-f640-7423-8ab8-b4f3d96715ec'
+        }
+      ])
+    })
   });
 
-  try {
-    const sessions = await discoverCodexResumeSessions({
-      execFileImpl: async () => ({
-        stdout: JSON.stringify([
-          {
-            ProcessId: 4100,
-            CommandLine: '"C:\\Users\\song\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js" resume 019d4c08-f640-7423-8ab8-b4f3d96715ec'
-          },
-          {
-            ProcessId: 4200,
-            CommandLine: 'C:\\Users\\song\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe resume 019d4c08-f640-7423-8ab8-b4f3d96715ec'
-          }
-        ])
-      })
-    });
+  assert.deepEqual(sessions, [
+    {
+      pid: 4200,
+      sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
+    }
+  ]);
+});
 
-    assert.deepEqual(sessions, [
-      {
-        pid: 4200,
-        sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec'
-      }
-    ]);
-  } finally {
-    Object.defineProperty(process, 'platform', {
-      value: originalPlatform
-    });
-  }
+test('discoverCodexResumeSessions hides the Windows PowerShell process query', async () => {
+  const calls = [];
+
+  const sessions = await discoverCodexResumeSessions({
+    platform: 'win32',
+    execFileImpl: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return { stdout: '[]' };
+    }
+  });
+
+  assert.deepEqual(sessions, []);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'powershell');
+  assert.ok(calls[0].args.includes('-NoProfile'));
+  assert.ok(calls[0].args.includes('-NonInteractive'));
+  assert.equal(calls[0].options.windowsHide, true);
 });
 
 test('attachDiscoveredCodexSession starts broker sidecars for a resumed codex process', async () => {

@@ -12,15 +12,16 @@ import {
 } from '../../src/runtime/broker-runtime-state.js';
 
 test('resolveBrokerRuntimePaths returns stable broker log and heartbeat paths', () => {
+  const cwd = path.join(path.sep, 'Users', 'song', 'projects', 'intent-broker');
   const paths = resolveBrokerRuntimePaths({
-    cwd: '/Users/song/projects/intent-broker',
+    cwd,
     env: {}
   });
 
   assert.deepEqual(paths, {
-    stdout: '/Users/song/projects/intent-broker/.tmp/broker.stdout.log',
-    stderr: '/Users/song/projects/intent-broker/.tmp/broker.stderr.log',
-    heartbeat: '/Users/song/projects/intent-broker/.tmp/broker.heartbeat.json'
+    stdout: path.join(cwd, '.tmp', 'broker.stdout.log'),
+    stderr: path.join(cwd, '.tmp', 'broker.stderr.log'),
+    heartbeat: path.join(cwd, '.tmp', 'broker.heartbeat.json')
   });
 });
 

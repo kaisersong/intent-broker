@@ -3,10 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { closeSync, mkdirSync, openSync } from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   loadBrokerHeartbeat,
   resolveBrokerRuntimePaths,
+  saveBrokerHeartbeat,
   isTerminalBrokerHeartbeatStatus
 } from '../src/runtime/broker-runtime-state.js';
 
@@ -14,9 +16,9 @@ export function isBrokerCommand(command = '') {
   return String(command).includes('src/cli.js');
 }
 
-function defaultRunCommand({ command, args }) {
+function defaultRunCommand({ command, args, options = {} }) {
   try {
-    return execFileSync(command, args, { encoding: 'utf8' });
+    return execFileSync(command, args, { encoding: 'utf8', ...options });
   } catch (error) {
     if (typeof error?.stdout === 'string') {
       return error.stdout;
@@ -32,10 +34,81 @@ function parsePidList(output = '') {
     .filter((value) => Number.isInteger(value) && value > 0);
 }
 
+function parseWindowsNetstatPids(output = '', port = 4318) {
+  const targetSuffix = `:${port}`;
+  return uniqueNumbers(
+    String(output)
+      .split(/\r?\n/)
+      .flatMap((line) => {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 5 || parts[0] !== 'TCP' || parts[3] !== 'LISTENING') {
+          return [];
+        }
+        if (!parts[1]?.endsWith(targetSuffix)) {
+          return [];
+        }
+        const pid = Number(parts[4]);
+        return Number.isInteger(pid) && pid > 0 ? [pid] : [];
+      })
+  );
+}
+
+function uniqueNumbers(values = []) {
+  return [...new Set(values.filter((value) => Number.isInteger(value) && value > 0))];
+}
+
+function parseWindowsProcessJson(output = '') {
+  if (!String(output || '').trim()) {
+    return [];
+  }
+  const parsed = JSON.parse(output);
+  const items = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+  return items
+    .map((item) => ({
+      pid: Number(item?.ProcessId),
+      command: typeof item?.CommandLine === 'string' ? item.CommandLine : ''
+    }))
+    .filter((item) => Number.isInteger(item.pid) && item.pid > 0 && item.command);
+}
+
 export function findBrokerProcesses({
   port = 4318,
-  runCommand = defaultRunCommand
+  runCommand = defaultRunCommand,
+  platform = process.platform
 } = {}) {
+  if (platform === 'win32') {
+    const pids = parseWindowsNetstatPids(
+      runCommand({
+        command: 'netstat',
+        args: ['-ano', '-p', 'tcp']
+      }),
+      port
+    );
+
+    if (!pids.length) {
+      return [];
+    }
+
+    const pidList = pids.join(',');
+    const command = [
+      '$ErrorActionPreference = "Stop";',
+      `$pids = @(${pidList});`,
+      'Get-CimInstance Win32_Process |',
+      'Where-Object { $pids -contains $_.ProcessId } |',
+      'Select-Object ProcessId,CommandLine |',
+      'ConvertTo-Json -Compress'
+    ].join(' ');
+
+    return parseWindowsProcessJson(runCommand({
+      command: 'powershell',
+      args: ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command],
+      options: {
+        encoding: 'utf8',
+        windowsHide: true
+      }
+    })).filter((item) => isBrokerCommand(item.command));
+  }
+
   const pids = parsePidList(
     runCommand({
       command: 'lsof',
@@ -57,6 +130,13 @@ export function findBrokerProcesses({
 
     return [{ pid, command }];
   });
+}
+
+export function isBrokerControlEntrypoint({
+  moduleUrl = import.meta.url,
+  argv1 = process.argv[1]
+} = {}) {
+  return Boolean(argv1) && moduleUrl === pathToFileURL(path.resolve(argv1)).href;
 }
 
 function defaultKillProcess(pid, signal) {
@@ -97,16 +177,22 @@ async function waitUntilExited(pids, {
 }
 
 export async function stopBroker({
+  repoRoot = process.cwd(),
   port = 4318,
+  env = process.env,
   termWaitMs = 3000,
   killWaitMs = 1000,
   intervalMs = 100,
   runCommand = defaultRunCommand,
   killProcess = defaultKillProcess,
   isProcessAlive = defaultIsProcessAlive,
-  sleep = defaultSleep
+  sleep = defaultSleep,
+  platform = process.platform,
+  loadHeartbeatState = loadBrokerHeartbeat,
+  saveHeartbeatState = saveBrokerHeartbeat,
+  now = () => new Date()
 } = {}) {
-  const processes = findBrokerProcesses({ port, runCommand });
+  const processes = findBrokerProcesses({ port, runCommand, platform });
   const pids = processes.map((item) => item.pid);
 
   if (!pids.length) {
@@ -143,9 +229,33 @@ export async function stopBroker({
     });
   }
 
+  const stopped = remaining.length === 0;
+  if (stopped) {
+    const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
+    const heartbeat = loadHeartbeatState(runtimePaths.heartbeat);
+    if (
+      heartbeat?.pid
+      && pids.includes(heartbeat.pid)
+      && !isTerminalBrokerHeartbeatStatus(heartbeat.status)
+    ) {
+      const stoppedAt = now().toISOString();
+      saveHeartbeatState(
+        runtimePaths.heartbeat,
+        {
+          ...heartbeat,
+          status: 'stopped',
+          signal: forceKilled ? 'SIGKILL' : 'SIGTERM',
+          exitAt: stoppedAt,
+          updatedAt: stoppedAt
+        },
+        { onlyIfOwnedByPid: heartbeat.pid }
+      );
+    }
+  }
+
   return {
     found: true,
-    stopped: remaining.length === 0,
+    stopped,
     forceKilled,
     pids
   };
@@ -153,6 +263,35 @@ export async function stopBroker({
 
 function defaultSpawnProcess(command, args, options) {
   return spawn(command, args, options);
+}
+
+function markStaleHeartbeatStopped({
+  heartbeatPath,
+  loadHeartbeatState,
+  saveHeartbeatState,
+  isProcessAlive,
+  now
+}) {
+  const heartbeat = loadHeartbeatState(heartbeatPath);
+  if (
+    !heartbeat?.pid
+    || isTerminalBrokerHeartbeatStatus(heartbeat.status)
+    || isProcessAlive(heartbeat.pid)
+  ) {
+    return false;
+  }
+
+  const stoppedAt = now().toISOString();
+  return saveHeartbeatState(
+    heartbeatPath,
+    {
+      ...heartbeat,
+      status: 'stopped',
+      exitAt: stoppedAt,
+      updatedAt: stoppedAt
+    },
+    { onlyIfOwnedByPid: heartbeat.pid }
+  );
 }
 
 async function defaultHealthCheck({ port }) {
@@ -215,10 +354,22 @@ export function startBroker({
   repoRoot = process.cwd(),
   nodePath = process.execPath,
   env = process.env,
-  spawnProcess = defaultSpawnProcess
+  spawnProcess = defaultSpawnProcess,
+  isProcessAlive = defaultIsProcessAlive,
+  loadHeartbeatState = loadBrokerHeartbeat,
+  saveHeartbeatState = saveBrokerHeartbeat,
+  now = () => new Date()
 } = {}) {
   const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
   mkdirSync(path.dirname(runtimePaths.stdout), { recursive: true });
+  markStaleHeartbeatStopped({
+    heartbeatPath: runtimePaths.heartbeat,
+    loadHeartbeatState,
+    saveHeartbeatState,
+    isProcessAlive,
+    now
+  });
+
   const stdoutFd = openSync(runtimePaths.stdout, 'a');
   const stderrFd = openSync(runtimePaths.stderr, 'a');
 
@@ -317,9 +468,10 @@ export function statusBroker({
   port = 4318,
   env = process.env,
   runCommand = defaultRunCommand,
-  loadHeartbeatState = loadBrokerHeartbeat
+  loadHeartbeatState = loadBrokerHeartbeat,
+  platform = process.platform
 } = {}) {
-  const processes = findBrokerProcesses({ port, runCommand });
+  const processes = findBrokerProcesses({ port, runCommand, platform });
   const runtimePaths = resolveBrokerRuntimePaths({ cwd: repoRoot, env });
   const heartbeat = loadHeartbeatState(runtimePaths.heartbeat);
   const heartbeatSummary = summarizeHeartbeat(heartbeat, processes);
@@ -365,6 +517,6 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(process.argv[1], 'file:').href) {
+if (isBrokerControlEntrypoint()) {
   await main();
 }

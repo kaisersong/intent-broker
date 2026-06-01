@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
     findBrokerProcesses,
+    isBrokerControlEntrypoint,
     isBrokerCommand,
     restartBroker,
     startBroker,
@@ -13,6 +14,19 @@ import {
     summarizeHeartbeat,
     stopBroker
 } from '../../scripts/broker-control.js';
+
+test('isBrokerControlEntrypoint handles Windows-style argv paths', () => {
+  const moduleUrl = new URL('../../scripts/broker-control.js', import.meta.url).href;
+
+  assert.equal(isBrokerControlEntrypoint({
+    moduleUrl,
+    argv1: path.join(process.cwd(), 'scripts', 'broker-control.js')
+  }), true);
+  assert.equal(isBrokerControlEntrypoint({
+    moduleUrl,
+    argv1: path.join(process.cwd(), 'scripts', 'other.js')
+  }), false);
+});
 
 test('isBrokerCommand matches the broker main process only', () => {
   assert.equal(isBrokerCommand('node --experimental-sqlite src/cli.js'), true);
@@ -29,6 +43,7 @@ test('findBrokerProcesses returns only broker listener processes on the target p
 
   const processes = findBrokerProcesses({
     port: 4318,
+    platform: 'darwin',
     runCommand: ({ command, args }) => {
       if (command === 'lsof') {
         assert.deepEqual(args, ['-nP', '-iTCP:4318', '-sTCP:LISTEN', '-t']);
@@ -45,6 +60,42 @@ test('findBrokerProcesses returns only broker listener processes on the target p
   assert.deepEqual(processes, [
     { pid: 47069, command: 'node --experimental-sqlite src/cli.js' }
   ]);
+});
+
+test('findBrokerProcesses uses hidden PowerShell process lookup on Windows', () => {
+  const calls = [];
+
+  const processes = findBrokerProcesses({
+    port: 4318,
+    platform: 'win32',
+    runCommand: ({ command, args, options }) => {
+      calls.push({ command, args, options });
+      if (command === 'netstat') {
+        return [
+          '  TCP    127.0.0.1:4318    0.0.0.0:0    LISTENING    47069',
+          '  TCP    127.0.0.1:4319    0.0.0.0:0    LISTENING    47070'
+        ].join('\n');
+      }
+      if (command === 'powershell') {
+        assert.ok(args.includes('-NoProfile'));
+        assert.ok(args.includes('-NonInteractive'));
+        assert.ok(args.includes('-WindowStyle'));
+        assert.ok(args.includes('Hidden'));
+        assert.equal(options.windowsHide, true);
+        return JSON.stringify([
+          { ProcessId: 47069, CommandLine: 'node --experimental-sqlite src/cli.js' },
+          { ProcessId: 47070, CommandLine: 'node adapters/codex-plugin/bin/codex-broker.js keepalive' }
+        ]);
+      }
+      throw new Error(`unexpected command: ${command}`);
+    }
+  });
+
+  assert.deepEqual(processes, [
+    { pid: 47069, command: 'node --experimental-sqlite src/cli.js' }
+  ]);
+  assert.equal(calls[0].command, 'netstat');
+  assert.equal(calls[1].command, 'powershell');
 });
 
 test('summarizeHeartbeat marks terminal heartbeat for a non-listening pid as stale', () => {
@@ -64,6 +115,7 @@ test('summarizeHeartbeat marks terminal heartbeat for a non-listening pid as sta
 test('statusBroker reports running_with_stale_heartbeat when port listener and heartbeat disagree', () => {
   const status = statusBroker({
     repoRoot: '/Users/song/projects/intent-broker',
+    platform: 'darwin',
     runCommand: ({ command, args }) => {
       if (command === 'lsof') {
         assert.deepEqual(args, ['-nP', '-iTCP:4318', '-sTCP:LISTEN', '-t']);
@@ -93,10 +145,13 @@ test('statusBroker reports running_with_stale_heartbeat when port listener and h
 
 test('stopBroker sends SIGTERM first and escalates to SIGKILL only if needed', async () => {
   const killed = [];
+  const savedHeartbeats = [];
   let forceKilled = false;
 
   const result = await stopBroker({
+    repoRoot: '/Users/song/projects/intent-broker',
     port: 4318,
+    platform: 'darwin',
     termWaitMs: 10,
     killWaitMs: 10,
     intervalMs: 1,
@@ -116,7 +171,18 @@ test('stopBroker sends SIGTERM first and escalates to SIGKILL only if needed', a
       }
     },
     isProcessAlive: () => !forceKilled,
-    sleep: async () => {}
+    sleep: async () => {},
+    loadHeartbeatState: () => ({
+      pid: 47069,
+      status: 'running',
+      startedAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:01.000Z'
+    }),
+    saveHeartbeatState: (heartbeatPath, state, options) => {
+      savedHeartbeats.push({ heartbeatPath, state, options });
+      return true;
+    },
+    now: () => new Date('2026-06-01T00:00:02.000Z')
   });
 
   assert.deepEqual(killed, [
@@ -125,6 +191,12 @@ test('stopBroker sends SIGTERM first and escalates to SIGKILL only if needed', a
   ]);
   assert.equal(result.stopped, true);
   assert.equal(result.forceKilled, true);
+  assert.equal(savedHeartbeats.length, 1);
+  assert.ok(savedHeartbeats[0].heartbeatPath.endsWith(path.join('.tmp', 'broker.heartbeat.json')));
+  assert.deepEqual(savedHeartbeats[0].options, { onlyIfOwnedByPid: 47069 });
+  assert.equal(savedHeartbeats[0].state.status, 'stopped');
+  assert.equal(savedHeartbeats[0].state.signal, 'SIGKILL');
+  assert.equal(savedHeartbeats[0].state.exitAt, '2026-06-01T00:00:02.000Z');
 });
 
 test('restartBroker stops an existing broker and starts a new detached process', async () => {
@@ -134,6 +206,7 @@ test('restartBroker stops an existing broker and starts a new detached process',
 
   const result = await restartBroker({
     repoRoot: '/Users/song/projects/intent-broker',
+    platform: 'darwin',
     port: 4318,
     termWaitMs: 1,
     startWaitMs: 10,
@@ -217,6 +290,39 @@ test('startBroker redirects broker output to log files and passes a heartbeat pa
   statSync(result.logPaths.stderr);
 });
 
+test('startBroker marks a dead running heartbeat stopped before spawning', () => {
+  const repoRoot = mkdtempSync(path.join(tmpdir(), 'intent-broker-start-'));
+  const savedHeartbeats = [];
+
+  const result = startBroker({
+    repoRoot,
+    nodePath: '/opt/homebrew/bin/node',
+    isProcessAlive: (pid) => pid !== 47069,
+    loadHeartbeatState: () => ({
+      pid: 47069,
+      status: 'running',
+      startedAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:01.000Z'
+    }),
+    saveHeartbeatState: (heartbeatPath, state, options) => {
+      savedHeartbeats.push({ heartbeatPath, state, options });
+      return true;
+    },
+    now: () => new Date('2026-06-01T00:00:02.000Z'),
+    spawnProcess: () => ({
+      pid: 49000,
+      unref() {}
+    })
+  });
+
+  assert.equal(result.pid, 49000);
+  assert.equal(savedHeartbeats.length, 1);
+  assert.ok(savedHeartbeats[0].heartbeatPath.endsWith(path.join('.tmp', 'broker.heartbeat.json')));
+  assert.deepEqual(savedHeartbeats[0].options, { onlyIfOwnedByPid: 47069 });
+  assert.equal(savedHeartbeats[0].state.status, 'stopped');
+  assert.equal(savedHeartbeats[0].state.exitAt, '2026-06-01T00:00:02.000Z');
+});
+
 test('restartBroker waits for broker health and a running heartbeat before reporting ready', async () => {
   const repoRoot = mkdtempSync(path.join(tmpdir(), 'intent-broker-restart-'));
   const heartbeatPath = path.join(repoRoot, '.tmp', 'broker.heartbeat.json');
@@ -225,6 +331,7 @@ test('restartBroker waits for broker health and a running heartbeat before repor
 
   const result = await restartBroker({
     repoRoot,
+    platform: 'darwin',
     port: 4318,
     termWaitMs: 1,
     startWaitMs: 10,

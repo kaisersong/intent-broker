@@ -118,19 +118,24 @@ function shouldResetStaleAutoDispatchRuntime(runtimeState, mirrorState) {
 }
 
 export async function discoverCodexResumeSessions({
-  execFileImpl = execFileDefault
+  execFileImpl = execFileDefault,
+  platform = process.platform
 } = {}) {
-  const processEntries = process.platform === 'win32'
+  const processEntries = platform === 'win32'
     ? parseWindowsProcessList((await execFileImpl(
       'powershell',
       [
         '-NoProfile',
+        '-NonInteractive',
+        '-WindowStyle',
+        'Hidden',
         '-Command',
         'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
       ],
       {
         encoding: 'utf8',
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 10 * 1024 * 1024,
+        windowsHide: true
       }
     )).stdout)
     : String((await execFileImpl('ps', ['-axo', 'pid=,command='], {
