@@ -23,6 +23,10 @@ function mergeConfig(baseConfig = {}, overrideConfig = {}) {
     channels: {
       ...(baseConfig.channels || {}),
       ...(overrideConfig.channels || {})
+    },
+    relay: {
+      ...(baseConfig.relay || {}),
+      ...(overrideConfig.relay || {})
     }
   };
 }
@@ -57,6 +61,7 @@ export function loadIntentBrokerConfig({
 
   const server = fileConfig.server || {};
   const channels = fileConfig.channels || {};
+  const relay = fileConfig.relay || undefined;
 
   return {
     configPath: resolvedConfigPath,
@@ -68,6 +73,7 @@ export function loadIntentBrokerConfig({
     },
     channels: {
       ...(channels.yunzhijia ? { yunzhijia: resolveYunzhijiaConfig(channels.yunzhijia, env) } : {})
-    }
+    },
+    ...(relay ? { relay: { ...relay, enabled: Boolean(relay.enabled) } } : {})
   };
 }

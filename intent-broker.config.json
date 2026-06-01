@@ -9,5 +9,9 @@
       "enabled": false,
       "sendUrlEnv": "YZJ_SEND_URL"
     }
+  },
+  "relay": {
+    "enabled": true,
+    "url": "wss://intent-broker-relay.kaisersongsk.workers.dev/ws"
   }
 }

@@ -36,6 +36,11 @@ test('loadIntentBrokerConfig merges file config and resolves yunzhijia env refer
         sendUrlEnv: 'YZJ_SEND_URL',
         defaultProjectName: 'hexdeck'
       }
+    },
+    relay: {
+      enabled: true,
+      url: 'wss://relay.example.test',
+      roomSecret: '0123456789abcdef0123456789abcdef'
     }
   }, null, 2));
 
@@ -56,6 +61,11 @@ test('loadIntentBrokerConfig merges file config and resolves yunzhijia env refer
     config.channels.yunzhijia.sendUrl,
     'https://www.yunzhijia.com/gateway/robot/webhook/send?yzjtype=0&yzjtoken=testtoken'
   );
+  assert.deepEqual(config.relay, {
+    enabled: true,
+    url: 'wss://relay.example.test',
+    roomSecret: '0123456789abcdef0123456789abcdef'
+  });
 }));
 
 test('loadIntentBrokerConfig applies local override file on top of shared config', () => withTempDir((cwd) => {
