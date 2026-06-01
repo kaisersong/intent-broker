@@ -58,6 +58,7 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     env: {},
     logger,
     persistedSessionRefreshIntervalMs: 0,
+    socketPath: null,
     loadConfig: () => ({
       server: { dbPath: '.tmp/test.db', host: '127.0.0.1', port: 4318 },
       channels: {},

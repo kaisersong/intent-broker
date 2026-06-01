@@ -64,7 +64,8 @@ test('loadIntentBrokerConfig merges file config and resolves yunzhijia env refer
   assert.deepEqual(config.relay, {
     enabled: true,
     url: 'wss://relay.example.test',
-    roomSecret: '0123456789abcdef0123456789abcdef'
+    roomSecret: '0123456789abcdef0123456789abcdef',
+    nodeId: null
   });
 }));
 

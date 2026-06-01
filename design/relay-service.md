@@ -986,6 +986,17 @@ Mitigation:
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### 13.5 Room = Trust Domain
+
+All peers in the same relay room share a single trust domain:
+
+- **All events are broadcast to all peers.** There is no per-peer filtering at the relay layer. A directed message (`to: { mode: 'direct', participantId: 'X' }`) is routed locally by the receiving broker, but the relay broadcasts the envelope to every peer in the room.
+- **Implication:** Any peer with the room secret can observe all cross-machine traffic. Do not place untrusted parties in the same room.
+- **nodeId uniqueness is per-room.** The relay enforces that no two connections in the same room can claim the same `X-Node-Id`. This prevents alias collisions and impersonation within the trust domain.
+- **Rotation = eviction.** Changing the room secret creates a new roomId, effectively a new trust domain. Old peers are locked out immediately.
+
+This is an explicit tradeoff: simplicity and low latency (no per-peer encryption, no ACLs) in exchange for requiring that all room members are trusted collaborators. If per-message confidentiality is needed between specific peers, use separate rooms.
+
 ### 13.4 What We Explicitly Do NOT Protect Against
 
 | Non-goal | Reason |

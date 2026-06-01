@@ -37,9 +37,47 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
   const MAX_BUFFER_SIZE = relayConfig.bufferMaxSize || 1000;
   const seenIntentIds = new Set();
   const SEEN_WINDOW_SIZE = 5000;
+  const localNodeId = relayConfig.nodeId || null;
+  const remoteNodes = new Map();
 
   function log(level, msg, data) {
     logger[level]?.(`[relay-adapter] ${msg}`, data || '');
+  }
+
+  function registerRemoteParticipant(payload, originBrokerId) {
+    const remoteNodeId = remoteNodes.get(originBrokerId);
+    if (!remoteNodeId) return;
+
+    const participantId = payload.participantId;
+    const remoteAlias = payload.alias;
+    if (!participantId || !remoteAlias) return;
+
+    if (payload.status === 'offline') {
+      try {
+        brokerService.updatePresence(participantId, 'offline', {
+          fromRelay: true,
+          originBrokerId,
+          reason: 'remote-offline'
+        });
+      } catch (_) { /* participant may not be registered yet */ }
+      return;
+    }
+
+    const prefixedAlias = `${remoteNodeId}:${remoteAlias}`;
+    try {
+      brokerService.registerParticipant({
+        participantId,
+        kind: payload.participantKind || 'agent',
+        roles: [],
+        capabilities: [],
+        alias: prefixedAlias,
+        context: payload.projectName ? { projectName: payload.projectName } : {},
+        metadata: { fromRelay: true, originBrokerId, nodeId: remoteNodeId },
+        inboxMode: 'relay'
+      });
+    } catch (err) {
+      log('warn', `failed to register remote participant ${participantId}: ${err.message}`);
+    }
   }
 
   function getReconnectDelay() {
@@ -115,6 +153,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
         payloadJson: event.payload,
         originBrokerId: brokerId,
         originEventId: event.eventId,
+        nodeId: localNodeId,
       });
 
       if (state === 'CONNECTED' && ws?.readyState === WebSocket.OPEN) {
@@ -166,6 +205,18 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
         break;
       case RELAY_MESSAGE_TYPES.PEER_LEFT:
         log('info', `peer left (${msg.peerCount} total)`);
+        if (msg.peerId) {
+          for (const p of brokerService.listParticipants()) {
+            if (p.metadata?.originBrokerId === msg.peerId) {
+              try {
+                brokerService.updatePresence(p.participantId, 'offline', {
+                  fromRelay: true, originBrokerId: msg.peerId, reason: 'peer-left'
+                });
+              } catch (_) {}
+            }
+          }
+          remoteNodes.delete(msg.peerId);
+        }
         break;
       case RELAY_MESSAGE_TYPES.VERSION_NOTICE:
         log('info', `new broker version available: ${msg.latest}`);
@@ -214,12 +265,28 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
     if (seenIntentIds.size > SEEN_WINDOW_SIZE) {
       const iter = seenIntentIds.values();
       for (let i = 0; i < 1000; i++) iter.next();
-      // trim old entries - rebuild set
       const arr = [...seenIntentIds];
       seenIntentIds.clear();
       for (const id of arr.slice(-SEEN_WINDOW_SIZE + 1000)) {
         seenIntentIds.add(id);
       }
+    }
+
+    if (payload.nodeId && payload.originBrokerId) {
+      const previousNodeId = remoteNodes.get(payload.originBrokerId);
+      if (previousNodeId && previousNodeId !== payload.nodeId) {
+        for (const p of brokerService.listParticipants()) {
+          if (p.metadata?.originBrokerId === payload.originBrokerId && p.metadata?.nodeId === previousNodeId) {
+            try {
+              brokerService.updatePresence(p.participantId, 'offline', {
+                fromRelay: true, originBrokerId: payload.originBrokerId, reason: 'node-id-changed'
+              });
+            } catch (_) {}
+          }
+        }
+        log('info', `remote broker ${payload.originBrokerId} changed nodeId: ${previousNodeId} → ${payload.nodeId}`);
+      }
+      remoteNodes.set(payload.originBrokerId, payload.nodeId);
     }
 
     brokerService.sendIntent({
@@ -235,6 +302,10 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
         originBrokerId: payload.originBrokerId,
       },
     });
+
+    if (payload.kind === 'participant_presence_updated' && payload.payloadJson) {
+      registerRemoteParticipant(payload.payloadJson, payload.originBrokerId);
+    }
   }
 
   function handleDraining(msg) {
@@ -257,6 +328,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
         payloadJson: event.payload,
         originBrokerId: brokerId,
         originEventId: event.eventId,
+        nodeId: localNodeId,
       });
     }
     if (ws?.readyState === WebSocket.OPEN) {
@@ -298,6 +370,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
           'X-Broker-Id': brokerId,
           'X-Broker-Version': relayConfig.brokerVersion || '0.0.0',
           'X-Protocol-Version': String(PROTOCOL_VERSION),
+          ...(localNodeId ? { 'X-Node-Id': localNodeId } : {}),
         },
       });
     } catch (err) {
@@ -306,6 +379,24 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
       scheduleReconnect();
       return;
     }
+
+    ws.on('upgrade', () => {});
+
+    ws.on('unexpected-response', (_req, res) => {
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode === 409) {
+          log('error', `nodeId "${localNodeId}" is already in use in this room. Change relay.nodeId and restart.`);
+          stopped = true;
+          stopPolling();
+          return;
+        }
+        log('warn', `relay rejected connection: HTTP ${res.statusCode} ${body}`);
+        state = 'DISCONNECTED';
+        scheduleReconnect();
+      });
+    });
 
     ws.on('open', () => {
       log('info', 'WebSocket connected, waiting for hello');
@@ -339,6 +430,13 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
       if (relayConfig.roomSecret.length < 32) {
         log('error', 'roomSecret must be at least 32 characters');
         return;
+      }
+      if (localNodeId && !/^[a-z0-9]{2,4}$/.test(localNodeId)) {
+        log('error', 'relay.nodeId must be 2-4 lowercase letters/digits');
+        return;
+      }
+      if (!localNodeId) {
+        log('warn', 'relay.nodeId not set, cross-node @node:alias addressing disabled');
       }
 
       const lastEvent = brokerService.replayEvents({ after: 0, limit: 1 });

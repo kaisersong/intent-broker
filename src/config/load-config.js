@@ -74,6 +74,6 @@ export function loadIntentBrokerConfig({
     channels: {
       ...(channels.yunzhijia ? { yunzhijia: resolveYunzhijiaConfig(channels.yunzhijia, env) } : {})
     },
-    ...(relay ? { relay: { ...relay, enabled: Boolean(relay.enabled) } } : {})
+    ...(relay ? { relay: { ...relay, enabled: Boolean(relay.enabled), nodeId: relay.nodeId || null } } : {})
   };
 }

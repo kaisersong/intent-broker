@@ -1,10 +1,15 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import http from 'node:http';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
 const CONNECTIVITY_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ETIMEDOUT', 'EPERM']);
 const CURL_COULD_NOT_CONNECT_EXIT_CODE = 7;
+const BROKER_SOCKET_PATH = join(homedir(), '.intent-broker', 'broker.sock');
 
 export class BrokerUnavailableError extends Error {
   constructor(url, { cause, reason = 'unavailable', fetchCause = null, curlCause = null } = {}) {
@@ -85,6 +90,33 @@ async function curlJson(url, options = {}, execFileImpl = execFile) {
   return JSON.parse(stdout);
 }
 
+function socketJson(url, options = {}, socketPath = BROKER_SOCKET_PATH) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const req = http.request({
+      socketPath,
+      path: parsed.pathname + parsed.search,
+      method: options.method || 'GET',
+      headers: options.headers || {}
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.on('error', reject);
+    if (options.body) {
+      req.write(options.body);
+    }
+    req.end();
+  });
+}
+
 export async function requestJson(
   url,
   options = {},
@@ -95,6 +127,11 @@ export async function requestJson(
     return response.json();
   } catch (error) {
     if (shouldFallbackToCurl(error, url)) {
+      if (existsSync(BROKER_SOCKET_PATH)) {
+        try {
+          return await socketJson(url, options);
+        } catch (_) { /* fall through to curl */ }
+      }
       try {
         return await curlJson(url, options, execFileImpl);
       } catch (curlError) {
@@ -110,6 +147,11 @@ export async function requestJson(
     }
 
     if (shouldWrapFetchConnectivityError(error, url)) {
+      if (existsSync(BROKER_SOCKET_PATH)) {
+        try {
+          return await socketJson(url, options);
+        } catch (_) { /* fall through to unavailable */ }
+      }
       throw asBrokerUnavailableError(url, error, {
         reason: error?.cause?.code === 'EPERM'
           ? 'loopback_access_blocked'

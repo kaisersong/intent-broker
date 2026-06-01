@@ -1,5 +1,7 @@
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdirSync, unlinkSync, existsSync } from 'node:fs';
+import net from 'node:net';
+import { dirname, resolve, join } from 'node:path';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createBrokerService } from '../broker/service.js';
 import { createServer } from '../http/server.js';
@@ -10,6 +12,8 @@ import { createManagedChannelsRuntime } from './managed-channels.js';
 import { createChannelHealthRegistry } from './channel-health.js';
 import { refreshPersistedAgentSessions as refreshPersistedAgentSessionsDefault } from './persisted-agent-sessions.js';
 import { createRelayAdapter } from '../relay/relay-adapter.js';
+
+export const SOCKET_PATH = join(homedir(), '.intent-broker', 'broker.sock');
 
 function asBrokerParticipantRegistration(config) {
   return {
@@ -37,7 +41,8 @@ export async function startBrokerApp({
   refreshPersistedAgentSessions = refreshPersistedAgentSessionsDefault,
   persistedSessionRefreshIntervalMs = Number(
     env.INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS || 5000
-  )
+  ),
+  socketPath = SOCKET_PATH
 } = {}) {
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
@@ -68,6 +73,18 @@ export async function startBrokerApp({
 
   await server.listen(config.server.port, config.server.host);
   broker.attachWebSocket(server.raw());
+
+  let socketServer = null;
+  if (socketPath) {
+    mkdirSync(dirname(socketPath), { recursive: true });
+    if (existsSync(socketPath)) {
+      unlinkSync(socketPath);
+    }
+    socketServer = net.createServer((conn) => {
+      server.raw().emit('connection', conn);
+    });
+    await new Promise((res) => socketServer.listen(socketPath, res));
+  }
 
   const brokerUrl = `http://${config.server.host}:${server.address().port}`;
   const registerParticipantLocally = async (participantConfig) =>
@@ -135,6 +152,9 @@ export async function startBrokerApp({
 
   logger.log(`intent-broker listening on ${brokerUrl}`);
   logger.log(`intent-broker WebSocket: ws://${config.server.host}:${server.address().port}/ws`);
+  if (socketPath) {
+    logger.log(`intent-broker socket: ${socketPath}`);
+  }
   logger.log(`intent-broker db: ${dbPath}`);
   logger.log(`intent-broker config: ${config.configPath}`);
   logger.log(`intent-broker local config: ${config.localConfigPath}`);
@@ -157,6 +177,12 @@ export async function startBrokerApp({
       await codexResumeDiscovery.stop?.();
       await channels.stopAll();
       broker.close?.();
+      if (socketServer) {
+        await new Promise((res) => socketServer.close(res));
+        if (socketPath && existsSync(socketPath)) {
+          unlinkSync(socketPath);
+        }
+      }
       await server.close();
     }
   };

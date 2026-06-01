@@ -272,6 +272,10 @@ export function createBrokerService({
       return false;
     }
 
+    if (participant.metadata?.fromRelay && metadata?.fromRelay) {
+      return true;
+    }
+
     return metadata?.reason === 'timeout' || metadata?.reason === 'parent-exit';
   }
 
@@ -504,8 +508,10 @@ export function createBrokerService({
 
   return {
     registerParticipant(participant) {
+      const isFromRelay = participant.metadata?.fromRelay === true;
       const existing = participants.get(participant.participantId);
-      const preferredAlias = existing?.alias || participant.alias;
+      const rawAlias = existing?.alias || participant.alias;
+      const preferredAlias = isFromRelay ? rawAlias : String(rawAlias || '').replace(/:/g, '');
       const normalizedAlias = assignUniqueAlias(
         participant.participantId,
         deriveAliasBase({
@@ -579,8 +585,9 @@ export function createBrokerService({
         throw new Error(`participant_not_found:${participantId}`);
       }
 
+      const sanitizedAlias = String(requestedAlias || '').replace(/:/g, '');
       const previousAlias = participant.alias;
-      const nextAlias = assignUniqueAlias(participantId, requestedAlias, previousAlias);
+      const nextAlias = assignUniqueAlias(participantId, sanitizedAlias, previousAlias);
       participant.alias = nextAlias;
       participant.metadata = alignGhosttySessionHint(participant.metadata, nextAlias);
 

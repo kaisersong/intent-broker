@@ -12,6 +12,7 @@
   },
   "relay": {
     "enabled": true,
-    "url": "wss://relay.kaihub.space/ws"
+    "url": "wss://relay.kaihub.space/ws",
+    "nodeId": "mb"
   }
 }

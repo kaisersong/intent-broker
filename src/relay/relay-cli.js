@@ -1,4 +1,6 @@
 import { loadCredentials, saveCredentials, deleteCredentials, isTokenExpired, getJwtPayload } from './credential-store.js';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const GITHUB_CLIENT_ID = process.env.RELAY_GITHUB_CLIENT_ID || 'Ov23liTyGMaL8ZKE8WTF';
 const GOOGLE_CLIENT_ID = process.env.RELAY_GOOGLE_CLIENT_ID || 'PLACEHOLDER_GOOGLE_CLIENT_ID';
@@ -172,6 +174,29 @@ export async function relayStatus() {
   console.log(`Issued: ${credentials.issuedAt || 'unknown'}`);
 }
 
+function setNodeId(nodeId) {
+  if (!nodeId) {
+    console.error('Usage: intent-broker relay set-node-id <id>');
+    console.error('  id: 2-4 lowercase letters/digits (e.g. mb, win, sv1)');
+    process.exit(1);
+  }
+  if (!/^[a-z0-9]{2,4}$/.test(nodeId)) {
+    console.error('Error: nodeId must be 2-4 lowercase letters/digits');
+    process.exit(1);
+  }
+
+  const localConfigPath = resolve(process.cwd(), 'intent-broker.local.json');
+  let config = {};
+  try {
+    config = JSON.parse(readFileSync(localConfigPath, 'utf8'));
+  } catch { /* new file */ }
+
+  config.relay = { ...(config.relay || {}), nodeId };
+  writeFileSync(localConfigPath, JSON.stringify(config, null, 2) + '\n');
+  console.log(`✓ nodeId set to "${nodeId}" in ${localConfigPath}`);
+  console.log('  Restart the broker for the change to take effect.');
+}
+
 export async function runRelayCli(args) {
   const command = args[0];
 
@@ -191,13 +216,17 @@ export async function runRelayCli(args) {
     case 'status':
       await relayStatus();
       break;
+    case 'set-node-id':
+      setNodeId(args[1]);
+      break;
     default:
-      console.log('Usage: intent-broker relay <login|logout|status>');
+      console.log('Usage: intent-broker relay <login|logout|status|set-node-id>');
       console.log('');
       console.log('Commands:');
       console.log('  login [github|google]  Authenticate with relay service');
       console.log('  logout                 Remove stored credentials');
       console.log('  status                 Show current auth status');
+      console.log('  set-node-id <id>       Set this broker\'s short node identifier (2-4 chars)');
       process.exit(command ? 1 : 0);
   }
 }
