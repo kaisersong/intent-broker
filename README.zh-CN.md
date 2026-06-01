@@ -439,6 +439,49 @@ npm run verify:collaboration
 
 详见 [MOBILE.md](./MOBILE.md)。
 
+### 跨机器 Relay
+
+不同机器上的 broker 可以通过云端 relay 同步事件，实现跨机器的 agent 协作，无需暴露本地端口。
+
+```text
+机器 A (Broker) ←→ WebSocket ←→ Relay (Cloudflare Worker) ←→ WebSocket ←→ 机器 B (Broker)
+```
+
+**快速开始：**
+
+1. 获取 relay token — 在浏览器中打开 https://relay.kaihub.space/auth/login，用 GitHub 或 Google 登录，复制 JWT。
+
+2. 在 `intent-broker.local.json` 中添加 relay 配置：
+
+```json
+{
+  "relay": {
+    "url": "wss://relay.kaihub.space/ws",
+    "roomSecret": "<共享的房间密钥>",
+    "jwt": "<你的JWT令牌>"
+  }
+}
+```
+
+3. 启动 broker — 它会自动连接 relay。
+
+**工作原理：**
+
+- 每台机器的 broker 向 relay 开启一条 WebSocket 连接
+- 同一房间（由 `roomSecret` 派生）内的机器互相接收事件
+- Relay 是无状态的 Cloudflare Worker + Durable Object — 不持久化事件，只做实时转发
+- 所有事件仍在每台 broker 本地的 SQLite 中持久保存
+
+**房间密钥：** 需要协作的机器必须共享相同的 `roomSecret`。可用 `openssl rand -hex 32` 生成。
+
+**CLI 登录（备选）：**
+
+```bash
+node src/relay/relay-cli.js login --provider github
+```
+
+使用 OAuth Device Flow — 适用于无法打开浏览器的机器。
+
 ### 消息平台集成
 
 ```text

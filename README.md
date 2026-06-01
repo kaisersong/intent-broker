@@ -439,6 +439,49 @@ Mobile devices can connect as `kind: "mobile"` participants, with WebSocket real
 
 See [MOBILE.md](./MOBILE.md).
 
+### Cross-Machine Relay
+
+Brokers on different machines can sync events through a cloud relay, enabling cross-machine agent collaboration without exposing local ports.
+
+```text
+Machine A (Broker) ←→ WebSocket ←→ Relay (Cloudflare Worker) ←→ WebSocket ←→ Machine B (Broker)
+```
+
+**Quick start:**
+
+1. Get a relay token — open https://relay.kaihub.space/auth/login in a browser, sign in with GitHub or Google, and copy the JWT.
+
+2. Add relay config to `intent-broker.local.json`:
+
+```json
+{
+  "relay": {
+    "url": "wss://relay.kaihub.space/ws",
+    "roomSecret": "<shared-room-secret>",
+    "jwt": "<your-jwt-token>"
+  }
+}
+```
+
+3. Start the broker — it connects to the relay automatically.
+
+**How it works:**
+
+- Each machine's broker opens a WebSocket to the relay
+- Machines in the same room (derived from `roomSecret`) receive each other's events
+- The relay is a stateless Cloudflare Worker + Durable Object — no event persistence, just real-time forwarding
+- All events are still persisted locally on each broker's SQLite
+
+**Room secret:** All machines that should collaborate must share the same `roomSecret`. Generate one with `openssl rand -hex 32`.
+
+**CLI login (alternative):**
+
+```bash
+node src/relay/relay-cli.js login --provider github
+```
+
+This uses the OAuth Device Flow — useful when you can't open a browser on the machine.
+
 ### Platform Integration
 
 ```text
