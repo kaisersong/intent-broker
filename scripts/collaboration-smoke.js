@@ -194,6 +194,7 @@ function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
       INTENT_BROKER_DB: dbPath,
       INTENT_BROKER_CONFIG: configPath,
       INTENT_BROKER_LOCAL_CONFIG: localConfigPath,
+      INTENT_BROKER_SOCKET_PATH: '',
       INTENT_BROKER_DISABLE_CODEX_DISCOVERY: '1',
       INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS: '0',
       ...isolatedHomeEnv(homeDir)
