@@ -148,14 +148,20 @@ async function main() {
     case 'inbox':
       await runInboxCommand(config, { toolName: parsed.toolName });
       break;
-    case 'who':
-      await runWhoCommand(config, { listParticipants, listWorkStates });
+    case 'who': {
+      const projectIdx = parsed.args.indexOf('--project');
+      const projectName = projectIdx >= 0 ? parsed.args[projectIdx + 1] : undefined;
+      await runWhoCommand(config, {
+        listParticipants,
+        listWorkStates,
+        ...(projectName ? { projectName } : {})
+      });
       break;
+    }
     case 'reply':
       await runReplyCommand(config, parsed.args, {
         toolName: parsed.toolName,
-        resolveParticipantAliases,
-        sendProgress
+        resolveParticipantAliases
       });
       break;
     case 'poll':

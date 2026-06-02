@@ -8,6 +8,7 @@ import {
   registerParticipant,
   resolveParticipantAliases,
   sendAsk as sendAskIntent,
+  sendReply as sendReplyIntent,
   updateWorkState,
   sendProgress as sendProgressIntent,
   sendTask as sendTaskIntent
@@ -21,19 +22,17 @@ import { runCliMain } from './cli-errors.js';
 
 function usage() {
   console.log(`Usage:
-  node adapters/session-bridge/cli.js register [toolName]
-  node adapters/session-bridge/cli.js poll [toolName] [after]
-  node adapters/session-bridge/cli.js ack [toolName] <eventId>
-  node adapters/session-bridge/cli.js inbox [toolName]
-  node adapters/session-bridge/cli.js who [toolName]
-  node adapters/session-bridge/cli.js reply [toolName] [@alias] <summary>
-  node adapters/session-bridge/cli.js task [toolName] <toParticipantId> <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js ask [toolName] <toParticipantId> <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js note [toolName] <toParticipantId> <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js progress [toolName] <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js send-task [toolName] <toParticipantId> <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js send-progress [toolName] <taskId> <threadId> <summary>
-  node adapters/session-bridge/cli.js set-work-state [toolName] <status> [taskId] [threadId] [summary]`);
+  intent-broker register [toolName]
+  intent-broker poll [toolName] [after]
+  intent-broker ack [toolName] <eventId>
+  intent-broker inbox [toolName]
+  intent-broker who [toolName] [--project <name>]
+  intent-broker reply [toolName] [@alias] <summary>
+  intent-broker task [toolName] <recipient> <taskId> <threadId> <summary>
+  intent-broker ask [toolName] <recipient> <taskId> <threadId> <summary>
+  intent-broker note [toolName] <recipient> <taskId> <threadId> <summary>
+  intent-broker progress [toolName] <taskId> <threadId> <summary>
+  intent-broker set-work-state [toolName] <status> [taskId] [threadId] [summary]`);
 }
 
 async function register(config) {
@@ -158,17 +157,21 @@ async function main() {
     case 'inbox':
       await runInboxCommand(config, { toolName: toolNameArg });
       break;
-    case 'who':
+    case 'who': {
+      const projectIdx = args.indexOf('--project');
+      const projectArg = projectIdx >= 0 ? args[projectIdx + 1] : undefined;
       await runWhoCommand(config, {
+        ...(projectArg ? { projectName: projectArg } : {}),
         listParticipants,
         listWorkStates
       });
       break;
+    }
     case 'reply':
       await runReplyCommand(config, args, {
         toolName: toolNameArg,
         resolveParticipantAliases,
-        sendProgress: sendProgressIntent
+        sendReply: sendReplyIntent
       });
       break;
     case 'task':

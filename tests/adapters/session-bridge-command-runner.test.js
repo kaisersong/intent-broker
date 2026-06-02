@@ -79,7 +79,7 @@ test('runReplyCommand reuses recent context and sends targeted progress reply', 
           }
         }
       }),
-      sendProgress: async (config, payload) => {
+      sendReply: async (config, payload) => {
         sent.push({ participantId: config.participantId, payload });
         return { eventId: 91, recipients: ['claude.session'] };
       },
@@ -129,7 +129,7 @@ test('runReplyCommand can resolve explicit alias override', async () => {
         participants: [{ participantId: 'claude.reviewer', alias: 'reviewer' }],
         missingAliases: []
       }),
-      sendProgress: async (_config, payload) => {
+      sendReply: async (_config, payload) => {
         sent.push(payload);
         return { eventId: 92, recipients: ['claude.reviewer'] };
       },

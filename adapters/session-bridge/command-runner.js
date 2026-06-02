@@ -7,7 +7,8 @@ import {
   listWorkStates as listWorkStatesDefault,
   pollInbox as pollInboxDefault,
   resolveParticipantAliases as resolveParticipantAliasesDefault,
-  sendProgress as sendProgressDefault
+  sendProgress as sendProgressDefault,
+  sendReply as sendReplyDefault
 } from './api.js';
 import { highestEventId } from './codex-hooks.js';
 import { pickRecentContext } from './recent-context.js';
@@ -78,6 +79,9 @@ function formatWho(participants = [], workStates = [], { selfParticipantId, proj
     const selfLabel = participant.participantId === selfParticipantId ? ' (you)' : '';
     const workState = byParticipantId.get(participant.participantId);
     const parts = [`- ${alias}${selfLabel}`, `[${participant.participantId}]`];
+    if (participant.logicalParticipantId) {
+      parts.push(`logical=${participant.logicalParticipantId}`);
+    }
     if (workState?.status) {
       parts.push(workState.status);
     }
@@ -95,6 +99,9 @@ function formatWho(participants = [], workStates = [], { selfParticipantId, proj
 
   if (participants.length === 0) {
     lines.push('- none');
+    if (projectName) {
+      lines.push(`Tip: try \`intent-broker who --project <other>\` to see participants in other projects.`);
+    }
   }
 
   return lines.join('\n');
@@ -187,7 +194,7 @@ export async function runReplyCommand(
     clearPendingReplyMirror = clearPendingReplyMirrorDefault,
     loadCursorState = loadCursorStateDefault,
     resolveParticipantAliases = resolveParticipantAliasesDefault,
-    sendProgress = sendProgressDefault,
+    sendReply = sendReplyDefault,
     out = console.log
   } = {}
 ) {
@@ -221,7 +228,7 @@ export async function runReplyCommand(
     resolvedAlias = participant.alias || targetAlias;
   }
 
-  const result = await sendProgress(config, {
+  const result = await sendReply(config, {
     intentId: `${config.participantId}-reply-${Date.now()}`,
     taskId: recentContext.taskId,
     threadId: recentContext.threadId,

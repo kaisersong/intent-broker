@@ -23,6 +23,10 @@ function toReducerEvent(event) {
   };
 }
 
+// Default delivery.semantic hint when a caller does not set one explicitly.
+// This is metadata only — the broker does not gate inbox membership on it.
+// reply_message is intentionally absent: its handling (interrupt vs not) is an
+// orchestration/consumer concern, and callers set semantic explicitly when needed.
 const ACTIONABLE_INTENT_KINDS = new Set([
   'request_task',
   'ask_clarification',
@@ -74,6 +78,7 @@ export function createBrokerService({
 }) {
   const participants = new Map();
   const aliases = new Map();
+  const logicalParticipants = new Map();
   const workStates = new Map();
   const store = createEventStore({ dbPath });
   const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs });
@@ -82,9 +87,53 @@ export function createBrokerService({
   });
   let awayMode = false;
 
+  // Resolve a single target token into recipient sessionIds.
+  // Explicit namespaces remove ambiguity:
+  //   session:<id>  -> exact participant only
+  //   logical:<id>  -> fan-out to all sessions under a logical id (explicit broadcast)
+  //   alias:<name> / @name -> alias lookup only
+  // Bare tokens resolve exact sessionId, then alias. Bare tokens never implicitly
+  // fan-out via logical id: broadcast must be explicit. This is the broker's only
+  // job here — turn a token into addresses and report how it resolved. It does not
+  // decide who *should* act; that is the orchestration layer's concern.
+  function resolveTargetToken(fromParticipantId, rawToken) {
+    const token = String(rawToken || '').trim();
+    const matched = token.match(/^(session|logical|alias):(.+)$/i);
+    const scheme = matched ? matched[1].toLowerCase() : (token.startsWith('@') ? 'alias' : null);
+    const value = matched ? matched[2].trim() : token.replace(/^@/, '');
+    const drop = (ids) => ids.filter((id) => id && id !== fromParticipantId);
+
+    if (scheme === 'session') {
+      return { kind: 'session', recipients: drop(participants.has(value) ? [value] : []), token };
+    }
+    if (scheme === 'logical') {
+      const set = logicalParticipants.get(value);
+      return { kind: 'logical', recipients: drop(set ? [...set] : []), token };
+    }
+    if (scheme === 'alias') {
+      const byAlias = aliases.get(aliasKey(value));
+      return { kind: 'alias', recipients: drop(byAlias ? [byAlias] : []), token };
+    }
+
+    if (participants.has(value)) {
+      return { kind: 'session', recipients: drop([value]), token };
+    }
+    const byAlias = aliases.get(aliasKey(value));
+    if (byAlias) {
+      return { kind: 'alias', recipients: drop([byAlias]), token };
+    }
+    return { kind: 'unresolved', recipients: drop([value]), token };
+  }
+
+  function resolveParticipantTargets(fromParticipantId, tokens = []) {
+    const resolutions = tokens.map((token) => resolveTargetToken(fromParticipantId, token));
+    const recipients = unique(resolutions.flatMap((entry) => entry.recipients));
+    return { recipients, resolutions };
+  }
+
   function resolveRecipients(fromParticipantId, to = { mode: 'broadcast' }) {
     if (to.mode === 'participant') {
-      return unique((to.participants || []).filter((participantId) => participantId !== fromParticipantId));
+      return resolveParticipantTargets(fromParticipantId, to.participants || []).recipients;
     }
 
     if (to.mode === 'role') {
@@ -286,6 +335,13 @@ export function createBrokerService({
     }
 
     releaseAlias(participant.alias, participantId);
+    if (participant.logicalParticipantId) {
+      const sessions = logicalParticipants.get(participant.logicalParticipantId);
+      if (sessions) {
+        sessions.delete(participantId);
+        if (sessions.size === 0) logicalParticipants.delete(participant.logicalParticipantId);
+      }
+    }
     participants.delete(participantId);
     workStates.delete(participantId);
     return true;
@@ -353,7 +409,12 @@ export function createBrokerService({
 
   function sendIntentInternal(input) {
     const intentId = input.intentId || `${input.fromParticipantId}-${input.kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const recipients = resolveRecipients(input.fromParticipantId, input.to);
+    const participantResolution = input.to?.mode === 'participant'
+      ? resolveParticipantTargets(input.fromParticipantId, input.to.participants || [])
+      : null;
+    const recipients = participantResolution
+      ? participantResolution.recipients
+      : resolveRecipients(input.fromParticipantId, input.to);
     const sender = participants.get(input.fromParticipantId);
     const delivery = {
       semantic: input.payload?.delivery?.semantic ?? deriveDeliverySemantic({
@@ -398,7 +459,8 @@ export function createBrokerService({
       recipients,
       onlineRecipients,
       offlineRecipients,
-      deliveredCount: onlineRecipients.length
+      deliveredCount: onlineRecipients.length,
+      ...(participantResolution ? { resolutions: participantResolution.resolutions } : {})
     };
   }
 
@@ -540,6 +602,16 @@ export function createBrokerService({
         )
       };
       participants.set(normalized.participantId, normalized);
+
+      const logicalId = participant.logicalParticipantId || null;
+      if (logicalId) {
+        normalized.logicalParticipantId = logicalId;
+        if (!logicalParticipants.has(logicalId)) {
+          logicalParticipants.set(logicalId, new Set());
+        }
+        logicalParticipants.get(logicalId).add(normalized.participantId);
+      }
+
       setPresence(normalized.participantId, 'online', {
         source: 'registration',
         kind: normalized.kind,
@@ -642,12 +714,15 @@ export function createBrokerService({
     sendIntent(input) {
       return sendIntentInternal(input);
     },
-    readInbox(participantId, options) {
-      const inbox = store.readInbox(participantId, options);
-      return {
-        ...inbox,
-        items: inbox.items.map(enrichEvent)
-      };
+    readInbox(participantId, options = {}) {
+      const { semantic = null, kind = null, ...storeOptions } = options;
+      const inbox = store.readInbox(participantId, storeOptions);
+      const kinds = kind == null ? null : new Set(Array.isArray(kind) ? kind : [kind]);
+      const items = inbox.items
+        .filter((event) => (kinds ? kinds.has(event.kind) : true))
+        .filter((event) => (semantic ? event.payload?.delivery?.semantic === semantic : true))
+        .map(enrichEvent);
+      return { ...inbox, items };
     },
     readMobileInbox(participantId, options) {
       const inbox = store.readInbox(participantId, options);

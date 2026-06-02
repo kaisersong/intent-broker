@@ -5,6 +5,7 @@ export const INTENT_KINDS = [
   'ask_clarification',
   'answer_clarification',
   'report_progress',
+  'reply_message',
   'submit_result',
   'request_approval',
   'respond_approval',

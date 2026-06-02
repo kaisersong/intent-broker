@@ -284,6 +284,65 @@ test('registerParticipant assigns globally unique aliases and resolves collision
   );
 });
 
+test('resolveRecipients honors explicit namespaces and only fans out on logical: tokens', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+
+  broker.registerParticipant({
+    participantId: 'codex.session-1',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    alias: 'codex',
+    logicalParticipantId: 'codex'
+  });
+  broker.registerParticipant({
+    participantId: 'codex.session-2',
+    kind: 'agent',
+    roles: ['coder'],
+    capabilities: [],
+    logicalParticipantId: 'codex'
+  });
+  broker.registerParticipant({
+    participantId: 'human.song',
+    kind: 'human',
+    roles: ['approver'],
+    capabilities: []
+  });
+
+  // Bare token resolves via alias to a single session (no implicit logical fan-out)
+  const bare = broker.sendIntent({
+    intentId: 'bare-1',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    to: { mode: 'participant', participants: ['codex'] },
+    payload: { body: { summary: 'bare' } }
+  });
+  assert.deepEqual(bare.recipients, ['codex.session-1']);
+  assert.equal(bare.resolutions[0].kind, 'alias');
+
+  // Explicit logical: token fans out to all sessions of the logical id
+  const fanout = broker.sendIntent({
+    intentId: 'fanout-1',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    to: { mode: 'participant', participants: ['logical:codex'] },
+    payload: { body: { summary: 'fanout' } }
+  });
+  assert.deepEqual(fanout.recipients.sort(), ['codex.session-1', 'codex.session-2']);
+  assert.equal(fanout.resolutions[0].kind, 'logical');
+
+  // session: token targets exactly one participant
+  const exact = broker.sendIntent({
+    intentId: 'exact-1',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    to: { mode: 'participant', participants: ['session:codex.session-2'] },
+    payload: { body: { summary: 'exact' } }
+  });
+  assert.deepEqual(exact.recipients, ['codex.session-2']);
+  assert.equal(exact.resolutions[0].kind, 'session');
+});
+
 test('updateParticipantAlias reassigns alias and broadcasts a broker event to other participants', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
 
@@ -532,18 +591,26 @@ test('sendIntent annotates delivery semantics based on sender kind and intent ki
 
   const inbox = broker.readInbox('agent.b', { after: 0 }).items;
 
+  // All intents are reliably delivered to inbox; semantic is passthrough metadata
   assert.equal(
     inbox.find((item) => item.intentId === 'progress-1').payload.delivery.semantic,
     'informational'
   );
   assert.equal(
-    inbox.find((item) => item.intentId === 'progress-1').payload.delivery.source,
-    'default'
-  );
-  assert.equal(
     inbox.find((item) => item.intentId === 'task-1').payload.delivery.semantic,
     'actionable'
   );
+
+  // Consumers filter at read time; broker does not adjudicate inbox membership
+  const actionableOnly = broker.readInbox('agent.b', { after: 0, semantic: 'actionable' }).items;
+  assert.equal(actionableOnly.find((item) => item.intentId === 'progress-1'), undefined);
+  assert.equal(actionableOnly.find((item) => item.intentId === 'task-1').kind, 'request_task');
+
+  // Progress event is still in the event stream for replay/thread-view
+  const thread = broker.getThreadView('thread-1');
+  const progressEvent = thread.events.find((item) => item.intentId === 'progress-1');
+  assert.equal(progressEvent.payload.delivery.semantic, 'informational');
+  assert.equal(progressEvent.payload.delivery.source, 'default');
 });
 
 test('readInbox enriches events with sender alias and project context', () => {

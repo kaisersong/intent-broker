@@ -127,6 +127,22 @@ function deriveAlias({ toolName, env }) {
   return aliasMap[toolName] || toolName.replace(/-code$/, '');
 }
 
+function deriveLogicalParticipantId({ toolName, env }) {
+  if (env.LOGICAL_PARTICIPANT_ID) {
+    return env.LOGICAL_PARTICIPANT_ID;
+  }
+
+  const familyMap = {
+    codex: 'codex',
+    'claude-code': 'claude',
+    opencode: 'opencode',
+    'xiaok-code': 'xiaok',
+    qodercli: 'qoder'
+  };
+
+  return familyMap[toolName] || toolName.replace(/-code$/, '');
+}
+
 function deriveCapabilities({ toolName }) {
   if (toolName === 'codex' || toolName === 'claude-code' || toolName === 'xiaok-code' || toolName === 'qodercli') {
     return ['broker.auto_dispatch'];
@@ -414,6 +430,7 @@ export function deriveSessionBridgeConfig({
     brokerUrl,
     participantId,
     alias: deriveAlias({ toolName, env }),
+    logicalParticipantId: deriveLogicalParticipantId({ toolName, env }),
     inboxMode,
     roles: ['coder'],
     capabilities: deriveCapabilities({ toolName }),

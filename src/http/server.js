@@ -118,7 +118,15 @@ export function createServer({ broker, healthProvider = null } = {}) {
 
         const after = Number(requestUrl.searchParams.get('after') || '0');
         const limit = Number(requestUrl.searchParams.get('limit') || '50');
-        writeJson(res, 200, broker.readInbox(participantId, { after, limit }));
+        const semantic = requestUrl.searchParams.get('semantic') || null;
+        const kindParam = requestUrl.searchParams.get('kind');
+        const kind = kindParam ? kindParam.split(',').map((value) => value.trim()).filter(Boolean) : null;
+        writeJson(res, 200, broker.readInbox(participantId, {
+          after,
+          limit,
+          ...(semantic ? { semantic } : {}),
+          ...(kind && kind.length ? { kind } : {})
+        }));
         return;
       }
 

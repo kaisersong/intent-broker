@@ -5,7 +5,8 @@ function isActionableItem(item = {}) {
 
   return item?.kind === 'request_task'
     || item?.kind === 'ask_clarification'
-    || item?.kind === 'request_approval';
+    || item?.kind === 'request_approval'
+    || item?.kind === 'reply_message';
 }
 
 function normalizeContext(context) {

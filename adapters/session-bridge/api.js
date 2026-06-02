@@ -174,6 +174,7 @@ export async function registerParticipant(config, fetchImpl = fetch) {
       roles: config.roles,
       capabilities: config.capabilities,
       alias: config.alias,
+      ...(config.logicalParticipantId ? { logicalParticipantId: config.logicalParticipantId } : {}),
       context: config.context || {},
       metadata: config.metadata || {},
       inboxMode: config.inboxMode ?? 'pull'
@@ -374,6 +375,29 @@ export async function sendProgress(config, request, fetchImpl = fetch) {
         delivery: normalizeDelivery(request.delivery, {
           semantic: 'informational',
           source: 'default'
+        })
+      }
+    })
+  }, { fetchImpl });
+}
+
+export async function sendReply(config, request, fetchImpl = fetch) {
+  return requestJson(`${config.brokerUrl}/intents`, {
+    method: 'POST',
+    headers: jsonHeaders(),
+    body: JSON.stringify({
+      intentId: request.intentId,
+      kind: 'reply_message',
+      fromParticipantId: config.participantId,
+      taskId: request.taskId,
+      threadId: request.threadId,
+      to: { mode: 'participant', participants: [request.toParticipantId] },
+      payload: {
+        body: { summary: request.summary },
+        ...(request.metadata ? { metadata: request.metadata } : {}),
+        delivery: normalizeDelivery(request.delivery, {
+          semantic: 'actionable',
+          source: 'explicit'
         })
       }
     })
