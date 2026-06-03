@@ -128,6 +128,28 @@ To install manually:
 node adapters/qodercli-plugin/bin/qodercli-broker.js install
 ```
 
+### agy (antigravity-cli)
+
+Hooks use Codex format (`{"hooks": {...}}`). Install from source:
+
+```bash
+cd ~/projects/intent-broker
+node adapters/agy-plugin/bin/agy-broker.js install
+```
+
+Writes `~/.gemini/antigravity-cli/hooks.json` with PreToolUse/PostToolUse/Stop hooks.
+
+### OpenCode
+
+Plugin-based integration. Install from source:
+
+```bash
+cd ~/projects/intent-broker
+node adapters/opencode-plugin/bin/opencode-broker.js install
+```
+
+Writes `~/.config/opencode/plugins/intent-broker.js` and updates `config.json` to register it.
+
 ### Start Broker
 
 ```bash
@@ -210,6 +232,16 @@ fi
 # Qoder CLI
 if [ -d ~/.qoder/skills ]; then
   ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.qoder/skills/kai-project-governance
+fi
+
+# agy (antigravity-cli)
+if [ -d ~/.gemini/antigravity-cli ]; then
+  node ~/projects/intent-broker/adapters/agy-plugin/bin/agy-broker.js install
+fi
+
+# OpenCode
+if [ -d ~/.config/opencode ]; then
+  node ~/projects/intent-broker/adapters/opencode-plugin/bin/opencode-broker.js install
 fi
 ```
 
@@ -588,7 +620,8 @@ See:
 | Codex | `[features].hooks` + `~/.codex/hooks.json` + managed skill symlink |
 | Qoder CLI | `~/.qoder/settings.json` hooks |
 | xiaok-code | `~/.xiaok/plugins/intent-broker/` plugin |
-| OpenCode | TBD |
+| agy (antigravity-cli) | `~/.gemini/antigravity-cli/hooks.json` (Codex format) |
+| OpenCode | `~/.config/opencode/plugins/intent-broker.js` plugin |
 
 ---
 

@@ -13,7 +13,8 @@
     "verify:collaboration": "node scripts/run-collaboration-smoke.js",
     "codex:install": "node adapters/codex-plugin/bin/codex-broker.js install",
     "claude-code:install": "node adapters/claude-code-plugin/bin/claude-code-broker.js install",
-    "agy:install": "node adapters/agy-plugin/bin/agy-broker.js install"
+    "agy:install": "node adapters/agy-plugin/bin/agy-broker.js install",
+    "opencode:install": "node adapters/opencode-plugin/bin/opencode-broker.js install"
   },
   "dependencies": {
     "ws": "^8.20.0"
