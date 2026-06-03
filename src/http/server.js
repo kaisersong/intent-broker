@@ -79,6 +79,20 @@ export function createServer({ broker, healthProvider = null } = {}) {
         return;
       }
 
+      if (req.method === 'POST' && pathname.startsWith('/participants/') && pathname.endsWith('/roles')) {
+        const participantId = pathname.split('/')[2];
+        const body = await readJson(req);
+        writeJson(res, 200, broker.addParticipantRoles(participantId, body.roles || []));
+        return;
+      }
+
+      if (req.method === 'DELETE' && pathname.startsWith('/participants/') && pathname.endsWith('/roles')) {
+        const participantId = pathname.split('/')[2];
+        const body = await readJson(req);
+        writeJson(res, 200, broker.removeParticipantRoles(participantId, body.roles || []));
+        return;
+      }
+
       if (pathname.startsWith('/participants/') && pathname.endsWith('/work-state')) {
         const participantId = pathname.split('/')[2];
 

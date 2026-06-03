@@ -686,6 +686,28 @@ export function createBrokerService({
 
       return participant;
     },
+    addParticipantRoles(participantId, roles) {
+      const participant = participants.get(participantId);
+      if (!participant) {
+        throw new Error(`participant_not_found:${participantId}`);
+      }
+      const added = roles.filter((r) => !participant.roles.includes(r));
+      if (added.length) {
+        participant.roles = unique([...participant.roles, ...roles]);
+      }
+      return { participantId, roles: participant.roles, added };
+    },
+    removeParticipantRoles(participantId, roles) {
+      const participant = participants.get(participantId);
+      if (!participant) {
+        throw new Error(`participant_not_found:${participantId}`);
+      }
+      const removed = roles.filter((r) => participant.roles.includes(r));
+      if (removed.length) {
+        participant.roles = participant.roles.filter((r) => !roles.includes(r));
+      }
+      return { participantId, roles: participant.roles, removed };
+    },
     updateWorkState(participantId, state) {
       const normalized = normalizeWorkState(participantId, state);
       workStates.set(participantId, normalized);

@@ -45,7 +45,9 @@ function usage() {
   intent-broker review list
   intent-broker history [--days <n>]
   intent-broker away
-  intent-broker back`);
+  intent-broker back
+  intent-broker role add <role>
+  intent-broker role remove <role>`);
 }
 
 function inferToolName(env = process.env) {
@@ -215,6 +217,32 @@ async function main() {
       const res = await fetch(`${config.brokerUrl}/away`, { method: 'DELETE' });
       const json = await res.json();
       console.log(!json.away ? '已恢复正常模式。' : '操作失败');
+      break;
+    }
+    case 'role': {
+      const sub = parsed.args[0];
+      const roleValue = parsed.args[1];
+      if (!sub || !roleValue) {
+        console.log('Usage: intent-broker role add|remove <role> [--project <name>]');
+        break;
+      }
+      if (sub === 'add') {
+        const r = await fetch(`${config.brokerUrl}/participants/${config.participantId}/roles`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roles: [roleValue] })
+        });
+        console.log(JSON.stringify(await r.json(), null, 2));
+      } else if (sub === 'remove') {
+        const r = await fetch(`${config.brokerUrl}/participants/${config.participantId}/roles`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ roles: [roleValue] })
+        });
+        console.log(JSON.stringify(await r.json(), null, 2));
+      } else {
+        console.log('Usage: intent-broker role add|remove <role>');
+      }
       break;
     }
     default:

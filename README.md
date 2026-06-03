@@ -463,7 +463,40 @@ Humans in Yunzhijia can send:
 - `@claude @codex Debug this regression together`
 - `@all Sync current blockers`
 
-### 5. Recover via Replay After Restart
+### 5. Role Declaration
+
+Users may naturally say:
+- "I'm the PM" → add `governance-pm` role to current session
+- "I'm a reviewer for the broker project" → add `reviewer` role for current project
+- "I'm no longer PM" → remove the role
+
+**AI agent handling:**
+
+```bash
+# Add role
+intent-broker role add governance-pm
+# Or HTTP API:
+# POST /participants/:participantId/roles  {"roles": ["governance-pm"]}
+
+# Remove role
+intent-broker role remove governance-pm
+# Or HTTP API:
+# DELETE /participants/:participantId/roles  {"roles": ["governance-pm"]}
+
+# Query participants by role
+curl http://127.0.0.1:4318/participants?role=governance-pm
+```
+
+**Standard role definitions:**
+
+| Role | Description |
+|------|-------------|
+| `coder` | Default coding role (set at registration) |
+| `governance-pm` | Project governance PM, responsible for approvals and coordination |
+| `reviewer` | Code reviewer |
+| `approver` | Release/merge approver |
+
+### 6. Recover via Replay After Restart
 
 ```http
 GET /tasks/:taskId
@@ -486,8 +519,11 @@ GET /health
 ```http
 POST /participants/register
 GET /participants?projectName=intent-broker
+GET /participants?role=governance-pm
 GET /participants/resolve?aliases=codex,claude
 POST /participants/:participantId/alias
+POST /participants/:participantId/roles  {"roles": ["governance-pm"]}
+DELETE /participants/:participantId/roles  {"roles": ["governance-pm"]}
 ```
 
 ### Send Intent

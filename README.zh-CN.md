@@ -463,7 +463,40 @@ GET /work-state?projectName=intent-broker
 - `@claude @codex 一起排查`
 - `@all 同步一下当前阻塞`
 
-### 5. 重启后靠 replay 恢复
+### 5. 角色（Role）声明
+
+用户可能自然地说：
+- "我是 PM" → 给当前 session 添加 `governance-pm` role
+- "我是 broker 项目的 reviewer" → 给当前 session 在当前项目添加 `reviewer` role
+- "我不再是 PM 了" → 移除 role
+
+**AI agent 处理方式：**
+
+```bash
+# 添加 role
+intent-broker role add governance-pm
+# 或 HTTP API:
+# POST /participants/:participantId/roles  {"roles": ["governance-pm"]}
+
+# 移除 role
+intent-broker role remove governance-pm
+# 或 HTTP API:
+# DELETE /participants/:participantId/roles  {"roles": ["governance-pm"]}
+
+# 查询某个 role 的 participant
+curl http://127.0.0.1:4318/participants?role=governance-pm
+```
+
+**标准 role 定义：**
+
+| Role | 说明 |
+|------|------|
+| `coder` | 默认编码角色（注册时自带） |
+| `governance-pm` | 项目治理 PM，负责审批和协调 |
+| `reviewer` | 代码审查者 |
+| `approver` | 发布/合并审批者 |
+
+### 6. 重启后靠 replay 恢复
 
 ```http
 GET /tasks/:taskId
@@ -486,8 +519,11 @@ GET /health
 ```http
 POST /participants/register
 GET /participants?projectName=intent-broker
+GET /participants?role=governance-pm
 GET /participants/resolve?aliases=codex,claude
 POST /participants/:participantId/alias
+POST /participants/:participantId/roles  {"roles": ["governance-pm"]}
+DELETE /participants/:participantId/roles  {"roles": ["governance-pm"]}
 ```
 
 ### Send Intent
