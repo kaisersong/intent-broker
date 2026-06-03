@@ -26,5 +26,12 @@ export function initializeSchema(db) {
       cursor_event_id INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS participant_roles (
+      participant_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (participant_id, role)
+    );
   `);
 }

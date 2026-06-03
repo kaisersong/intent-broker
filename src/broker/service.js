@@ -582,10 +582,17 @@ export function createBrokerService({
         }),
         existing?.alias || null
       );
+      const incomingRoles = participant.roles || [];
+      const persistedRoles = store.getParticipantRoles(participant.participantId);
+      const newRoles = incomingRoles.filter((role) => !persistedRoles.includes(role));
+      if (newRoles.length) {
+        store.addParticipantRoles(participant.participantId, newRoles);
+      }
+      const mergedRoles = unique([...persistedRoles, ...incomingRoles]);
       const normalized = {
         participantId: participant.participantId,
         kind: participant.kind,
-        roles: participant.roles || [],
+        roles: mergedRoles,
         capabilities: participant.capabilities || [],
         alias: normalizedAlias,
         inboxMode: participant.inboxMode ?? existing?.inboxMode ?? null,
@@ -693,6 +700,7 @@ export function createBrokerService({
       }
       const added = roles.filter((r) => !participant.roles.includes(r));
       if (added.length) {
+        store.addParticipantRoles(participantId, added);
         participant.roles = unique([...participant.roles, ...roles]);
       }
       return { participantId, roles: participant.roles, added };
@@ -704,6 +712,7 @@ export function createBrokerService({
       }
       const removed = roles.filter((r) => participant.roles.includes(r));
       if (removed.length) {
+        store.removeParticipantRoles(participantId, removed);
         participant.roles = participant.roles.filter((r) => !roles.includes(r));
       }
       return { participantId, roles: participant.roles, removed };

@@ -39,6 +39,43 @@ test('broadcast request_task routes to participants matching role', () => {
   );
 });
 
+test('addParticipantRoles persists roles across broker restart', () => {
+  const dbPath = createTempDbPath();
+  const broker = createBrokerService({ dbPath });
+  broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] });
+  broker.addParticipantRoles('agent.a', ['governance-pm']);
+
+  const restarted = createBrokerService({ dbPath });
+  restarted.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] });
+
+  const found = restarted.listParticipants({ role: 'governance-pm' });
+  assert.deepEqual(found.map((p) => p.participantId), ['agent.a']);
+  assert.deepEqual(found[0].roles.sort(), ['coder', 'governance-pm']);
+});
+
+test('re-registering with default roles does not overwrite declared roles', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] });
+  broker.addParticipantRoles('agent.a', ['reviewer']);
+
+  const reregistered = broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: [], capabilities: [] });
+  assert.deepEqual(reregistered.roles.sort(), ['coder', 'reviewer']);
+});
+
+test('removed roles are not resurrected by later re-registration or restart', () => {
+  const dbPath = createTempDbPath();
+  const broker = createBrokerService({ dbPath });
+  broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder', 'reviewer'], capabilities: [] });
+  broker.removeParticipantRoles('agent.a', ['reviewer']);
+
+  const reregistered = broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] });
+  assert.deepEqual(reregistered.roles, ['coder']);
+
+  const restarted = createBrokerService({ dbPath });
+  restarted.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] });
+  assert.deepEqual(restarted.listParticipants({ role: 'reviewer' }), []);
+});
+
 test('broadcast request_task routes to all registered participants except sender', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
   broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });

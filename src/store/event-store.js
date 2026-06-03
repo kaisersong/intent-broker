@@ -127,6 +127,47 @@ export function createEventStore({ dbPath }) {
       }
 
       return db.prepare(sql).all(...params).map(mapEventRow);
+    },
+    getParticipantRoles(participantId) {
+      return db.prepare(`
+        SELECT role
+        FROM participant_roles
+        WHERE participant_id = ?
+        ORDER BY role ASC
+      `).all(participantId).map((row) => row.role);
+    },
+    addParticipantRoles(participantId, roles) {
+      const insert = db.prepare(`
+        INSERT OR IGNORE INTO participant_roles (participant_id, role)
+        VALUES (?, ?)
+      `);
+      for (const role of roles) {
+        insert.run(participantId, role);
+      }
+    },
+    removeParticipantRoles(participantId, roles) {
+      const remove = db.prepare(`
+        DELETE FROM participant_roles
+        WHERE participant_id = ? AND role = ?
+      `);
+      for (const role of roles) {
+        remove.run(participantId, role);
+      }
+    },
+    listAllParticipantRoles() {
+      const rows = db.prepare(`
+        SELECT participant_id, role
+        FROM participant_roles
+        ORDER BY participant_id ASC, role ASC
+      `).all();
+      const byParticipant = new Map();
+      for (const row of rows) {
+        if (!byParticipant.has(row.participant_id)) {
+          byParticipant.set(row.participant_id, []);
+        }
+        byParticipant.get(row.participant_id).push(row.role);
+      }
+      return byParticipant;
     }
   };
 }
