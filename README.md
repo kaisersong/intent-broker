@@ -164,6 +164,90 @@ npm run broker:status
 
 ---
 
+## Recommended Collaboration Governance
+
+When multiple agents work in parallel, you need conflict prevention and unauthorized operation protection. We recommend installing the `kai-project-governance` skill.
+
+### Why You Need It
+
+**Common problems:**
+- Two agents modify the same file simultaneously — later submission overwrites earlier one
+- Agent A works on Project X, Agent B mistakenly thinks it's idle and starts modifying the same area
+- Publish, commit, or destructive operations execute without confirmation
+
+**kai-project-governance's three-tier protection:**
+
+| Tier | Name | Trigger | Behavior | User perception |
+|---|---|---|---|---|
+| Tier 1 | LINT | File changes, git ops | Silent conflict detection, logs to broker | Zero perception (when no conflict) |
+| Tier 2 | NOTIFY | Agent explicit call | Notify channel or @all | Requires explicit call |
+| Tier 3 | GATE | Env var configured | Block unauthorized operations | Requires configuration |
+
+**Tier 1 (LINT) is enabled by default** — zero config, silent operation, no behavior changes.
+
+### Installation
+
+**Instructions for AI agents:**
+
+Check current agent type and execute the corresponding installation command:
+
+```bash
+# Claude Code
+if [ -d ~/.claude/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.claude/skills/kai-project-governance
+fi
+
+# Codex
+if [ -d ~/.codex/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.codex/skills/kai-project-governance
+fi
+
+# xiaok-code
+if [ -d ~/.xiaok/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.xiaok/skills/kai-project-governance
+fi
+
+# Qoder CLI
+if [ -d ~/.qoder/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.qoder/skills/kai-project-governance
+fi
+```
+
+**Verify installation:**
+
+```bash
+# Check symlink exists
+ls -l ~/.claude/skills/kai-project-governance  # Should point to intent-broker/adapters/kai-project-governance
+```
+
+### Disable and Uninstall
+
+If you don't need collaboration governance (e.g., single-person project), you can disable or uninstall:
+
+**Disable Tier 1 LINT:**
+```bash
+export KAI_PROJECT_GOVERNANCE_LINT=0
+```
+
+**Full uninstall:**
+```bash
+rm ~/.claude/skills/kai-project-governance
+rm ~/.codex/skills/kai-project-governance
+rm ~/.xiaok/skills/kai-project-governance
+rm ~/.qoder/skills/kai-project-governance
+```
+
+### Recommended Installation Scenarios
+
+| Scenario | Recommended | Reason |
+|---|---|---|
+| Multi-agent parallel development | ✅ Strongly recommended | Conflict detection prevents overwrites |
+| Single agent, single project | ⚠️ Optional | No conflict risk, but LINT is zero-perception |
+| Multi-project switching | ✅ Recommended | Independent detection per project |
+| Has own governance solution | ❌ Can uninstall | Avoid duplicate mechanisms |
+
+---
+
 ## Usage
 
 ### Commands

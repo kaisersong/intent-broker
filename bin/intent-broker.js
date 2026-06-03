@@ -170,9 +170,6 @@ async function main() {
     case 'ack':
       console.log(JSON.stringify(await ackInbox(config, parsed.args[0]), null, 2));
       break;
-    case 'task':
-      console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
-      break;
     case 'ask':
       console.log(JSON.stringify(await runAskCommand(config, parsed.args), null, 2));
       break;

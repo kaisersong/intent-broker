@@ -736,9 +736,15 @@ export function createBrokerService({
       return store.ackInbox(participantId, eventId);
     },
     respondApproval({ approvalId, taskId, fromParticipantId, decision, decisionMode = null, nativeDecision = null, completesTask = false }) {
-      // Get task assignees to route approval response
       const task = this.getTaskView(taskId);
       const assignees = task?.assignees || [];
+
+      // Find the original request_approval event to include its requester as a recipient
+      const originEvent = store.listEvents({ taskId, limit: null })
+        .find((e) => e.kind === 'request_approval' && e.payload?.approvalId === approvalId);
+      const requester = originEvent?.fromParticipantId ?? null;
+
+      const recipients = unique([...assignees, ...(requester && requester !== fromParticipantId ? [requester] : [])]);
 
       return sendIntentInternal({
         intentId: `approval-${approvalId}-${decision}-${Date.now()}`,
@@ -746,7 +752,7 @@ export function createBrokerService({
         fromParticipantId,
         taskId,
         threadId: null,
-        to: { mode: 'participant', participants: assignees },
+        to: { mode: 'participant', participants: recipients },
         payload: {
           approvalId,
           decision,

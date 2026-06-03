@@ -106,6 +106,81 @@ test('respondApproval updates approval view to approved', () => {
   assert.equal(broker.getApprovalView('app-1').status, 'approved');
 });
 
+test('respondApproval routes response to both assignees and the original requester', () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'human.song', kind: 'human', roles: ['approver'], capabilities: [] });
+  broker.registerParticipant({ participantId: 'agent.a', kind: 'agent', roles: ['coder'], capabilities: [] });
+  broker.registerParticipant({ participantId: 'agent.b', kind: 'agent', roles: ['coder'], capabilities: [] });
+
+  broker.sendIntent({
+    intentId: 'int-task-req',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    taskId: 'task-r',
+    threadId: 'thread-r',
+    to: { mode: 'participant', participants: ['agent.a'] },
+    payload: {}
+  });
+  broker.sendIntent({
+    intentId: 'int-approval-req',
+    kind: 'request_approval',
+    fromParticipantId: 'agent.a',
+    taskId: 'task-r',
+    threadId: 'thread-r',
+    to: { mode: 'participant', participants: ['human.song'] },
+    payload: { approvalId: 'app-r', approvalScope: 'submit_result' }
+  });
+
+  const result = broker.respondApproval({
+    approvalId: 'app-r',
+    taskId: 'task-r',
+    fromParticipantId: 'human.song',
+    decision: 'approved'
+  });
+
+  // agent.a is both assignee and requester, human.song is the responder — so only agent.a
+  assert.deepEqual(result.recipients.sort(), ['agent.a']);
+
+  // Scenario where requester is a third party, not an assignee
+  broker.sendIntent({
+    intentId: 'int-task-req2',
+    kind: 'request_task',
+    fromParticipantId: 'human.song',
+    taskId: 'task-r2',
+    threadId: 'thread-r2',
+    to: { mode: 'participant', participants: ['agent.a'] },
+    payload: {}
+  });
+  broker.sendIntent({
+    intentId: 'int-accept2',
+    kind: 'accept_task',
+    fromParticipantId: 'agent.a',
+    taskId: 'task-r2',
+    threadId: 'thread-r2',
+    to: { mode: 'broadcast' },
+    payload: { participantId: 'agent.a' }
+  });
+  broker.sendIntent({
+    intentId: 'int-approval-req2',
+    kind: 'request_approval',
+    fromParticipantId: 'agent.b',
+    taskId: 'task-r2',
+    threadId: 'thread-r2',
+    to: { mode: 'participant', participants: ['human.song'] },
+    payload: { approvalId: 'app-r2', approvalScope: 'submit_result' }
+  });
+
+  const result2 = broker.respondApproval({
+    approvalId: 'app-r2',
+    taskId: 'task-r2',
+    fromParticipantId: 'human.song',
+    decision: 'approved'
+  });
+
+  // agent.a (assignee) + agent.b (requester), excluding human.song (responder)
+  assert.deepEqual(result2.recipients.sort(), ['agent.a', 'agent.b']);
+});
+
 test('listProjectApprovals preserves native approval actions and broker response metadata', () => {
   const broker = createBrokerService({ dbPath: createTempDbPath() });
   broker.registerParticipant({

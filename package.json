@@ -12,7 +12,8 @@
     "broker:restart": "node scripts/broker-control.js restart",
     "verify:collaboration": "node scripts/run-collaboration-smoke.js",
     "codex:install": "node adapters/codex-plugin/bin/codex-broker.js install",
-    "claude-code:install": "node adapters/claude-code-plugin/bin/claude-code-broker.js install"
+    "claude-code:install": "node adapters/claude-code-plugin/bin/claude-code-broker.js install",
+    "agy:install": "node adapters/agy-plugin/bin/agy-broker.js install"
   },
   "dependencies": {
     "ws": "^8.20.0"

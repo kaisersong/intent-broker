@@ -164,6 +164,90 @@ npm run broker:status
 
 ---
 
+## 推荐的协作治理
+
+多 agent 并行工作时，需要防止冲突覆盖和未授权操作。推荐安装 `kai-project-governance` 技能。
+
+### 为什么需要
+
+**典型问题：**
+- 两个 agent 同时修改同一个文件，后提交的覆盖前提交的
+- Agent A 在项目 X 工作，Agent B 误以为项目空闲，开始修改同一区域
+- 发布、提交、破坏性操作未经确认就执行
+
+**kai-project-governance 的三层防护：**
+
+| 层级 | 名称 | 触发条件 | 行为 | 用户感知 |
+|---|---|---|---|---|
+| Tier 1 | LINT | 文件变更、git 操作 | 静默检测冲突，记录到 broker | 零感知（无冲突时） |
+| Tier 2 | NOTIFY | agent 主动调用 | 向 channel 或 @all 发通知 | 需显式调用 |
+| Tier 3 | GATE | 设了环境变量 | 强制阻断未授权操作 | 需配置启用 |
+
+**默认只启用 Tier 1（LINT）** — 零配置、静默工作、不改变任何行为。
+
+### 安装方式
+
+**给 AI agent 的指令：**
+
+检查当前 agent 类型，执行对应安装命令：
+
+```bash
+# Claude Code
+if [ -d ~/.claude/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.claude/skills/kai-project-governance
+fi
+
+# Codex
+if [ -d ~/.codex/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.codex/skills/kai-project-governance
+fi
+
+# xiaok-code
+if [ -d ~/.xiaok/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.xiaok/skills/kai-project-governance
+fi
+
+# Qoder CLI
+if [ -d ~/.qoder/skills ]; then
+  ln -sf ~/projects/intent-broker/adapters/kai-project-governance ~/.qoder/skills/kai-project-governance
+fi
+```
+
+**验证安装成功：**
+
+```bash
+# 检查 symlink 是否存在
+ls -l ~/.claude/skills/kai-project-governance  # 应指向 intent-broker/adapters/kai-project-governance
+```
+
+### 禁用和卸载
+
+如果不需要协作治理（比如单人项目），可以禁用或卸载：
+
+**禁用 Tier 1 LINT：**
+```bash
+export KAI_PROJECT_GOVERNANCE_LINT=0
+```
+
+**完全卸载：**
+```bash
+rm ~/.claude/skills/kai-project-governance
+rm ~/.codex/skills/kai-project-governance
+rm ~/.xiaok/skills/kai-project-governance
+rm ~/.qoder/skills/kai-project-governance
+```
+
+### 推荐安装场景
+
+| 场景 | 推荐 | 原因 |
+|---|---|---|
+| 多 agent 并行开发 | ✅ 强烈推荐 | 冲突检测防止覆盖 |
+| 单 agent 单项目 | ⚠️ 可选 | 无冲突风险，但 LINT 也是零感知 |
+| 多项目切换 | ✅ 推荐 | 每个项目独立检测 |
+| 有自己的 governance 方案 | ❌ 可卸载 | 避免重复机制 |
+
+---
+
 ## 使用方式
 
 ### 基本命令
