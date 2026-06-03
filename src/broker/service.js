@@ -619,13 +619,15 @@ export function createBrokerService({
       });
       return normalized;
     },
-    listParticipants({ projectName } = {}) {
+    listParticipants({ projectName, role } = {}) {
       return [...participants.values()].filter((participant) => {
-        if (!projectName) {
-          return true;
+        if (projectName && participant.context?.projectName !== projectName) {
+          return false;
         }
-
-        return participant.context?.projectName === projectName;
+        if (role && !participant.roles.includes(role)) {
+          return false;
+        }
+        return true;
       });
     },
     resolveParticipantsByAliases(aliasList = []) {

@@ -67,7 +67,8 @@ export function createServer({ broker, healthProvider = null } = {}) {
 
       if (req.method === 'GET' && pathname === '/participants') {
         const projectName = requestUrl.searchParams.get('projectName');
-        writeJson(res, 200, { participants: broker.listParticipants({ projectName }) });
+        const role = requestUrl.searchParams.get('role');
+        writeJson(res, 200, { participants: broker.listParticipants({ projectName, role }) });
         return;
       }
 
