@@ -298,6 +298,97 @@ test('session start hook prefers transcript session cwd over hook cwd for projec
   assert.deepEqual(calls, [{ projectName: 'intent-broker' }]);
 });
 
+test('session start hook advances cursor for informational presence prefix', async () => {
+  const saved = [];
+  const acked = [];
+
+  const result = await runSessionStartHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 10, recentContext: { taskId: 'task-old', threadId: 'thread-old' } }),
+      saveCursorState: (statePath, state) => saved.push({ statePath, state }),
+      saveRuntimeState: () => {},
+      registerParticipant: async () => ({ ok: true, alias: 'codex2' }),
+      updateWorkState: async () => ({ ok: true }),
+      pollInbox: async () => ({
+        items: [
+          {
+            eventId: 11,
+            kind: 'participant_presence_updated',
+            fromParticipantId: 'broker',
+            payload: { participantId: 'worker-1', body: { summary: '@Worker-Agent 已上线' } }
+          },
+          {
+            eventId: 12,
+            kind: 'participant_presence_updated',
+            fromParticipantId: 'broker',
+            payload: { participantId: 'worker-2', body: { summary: '@PO-Agent 已上线' } }
+          }
+        ]
+      }),
+      ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId })
+    }
+  );
+
+  assert.match(result.context, /2 presence updates/);
+  assert.equal(saved[0].state.lastSeenEventId, 12);
+  assert.deepEqual(saved[0].state.recentContext, { taskId: 'task-old', threadId: 'thread-old' });
+  assert.deepEqual(acked, [{ participantId: 'codex-session-019d448e', eventId: 12 }]);
+});
+
+test('session start hook does not advance past actionable inbox items', async () => {
+  const saved = [];
+  const acked = [];
+
+  await runSessionStartHook(
+    {
+      session_id: '019d448e-1234-5678-9999-aaaaaaaaaaaa'
+    },
+    {
+      env: {},
+      cwd: '/Users/song/projects/intent-broker',
+      loadCursorState: () => ({ lastSeenEventId: 10, recentContext: null }),
+      saveCursorState: (statePath, state) => saved.push({ statePath, state }),
+      saveRuntimeState: () => {},
+      registerParticipant: async () => ({ ok: true }),
+      updateWorkState: async () => ({ ok: true }),
+      pollInbox: async () => ({
+        items: [
+          {
+            eventId: 11,
+            kind: 'participant_presence_updated',
+            fromParticipantId: 'broker',
+            payload: { participantId: 'worker-1', body: { summary: '@Worker-Agent 已上线' } }
+          },
+          {
+            eventId: 12,
+            kind: 'request_task',
+            fromParticipantId: 'human.local',
+            fromAlias: 'song',
+            taskId: 'task-live',
+            threadId: 'thread-live',
+            payload: { body: { summary: '继续处理项目交付物' } }
+          },
+          {
+            eventId: 13,
+            kind: 'participant_presence_updated',
+            fromParticipantId: 'broker',
+            payload: { participantId: 'worker-2', body: { summary: '@PO-Agent 已上线' } }
+          }
+        ]
+      }),
+      ackInbox: async (config, eventId) => acked.push({ participantId: config.participantId, eventId })
+    }
+  );
+
+  assert.equal(saved[0].state.lastSeenEventId, 11);
+  assert.deepEqual(acked, [{ participantId: 'codex-session-019d448e', eventId: 11 }]);
+});
+
 test('user prompt submit hook skips slash commands without registering', async () => {
   const calls = [];
   const result = await runUserPromptSubmitHook(

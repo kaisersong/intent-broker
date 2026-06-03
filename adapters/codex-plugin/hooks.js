@@ -114,6 +114,20 @@ function pickActionableReplyContext(items = []) {
   return pickRecentContext(items.filter(isActionableItem));
 }
 
+function highestInformationalPrefixEventId(items = []) {
+  let lastEventId = 0;
+  const sortedItems = [...items].sort((left, right) => Number(left?.eventId || 0) - Number(right?.eventId || 0));
+
+  for (const item of sortedItems) {
+    if (isActionableItem(item)) {
+      break;
+    }
+    lastEventId = Math.max(lastEventId, Number(item?.eventId || 0));
+  }
+
+  return lastEventId;
+}
+
 function pickToolName(input = {}) {
   return input.tool_name || input.toolName || input.name || input.tool || 'tool';
 }
@@ -262,10 +276,12 @@ export async function runSessionStartHook(
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
+    saveCursorState = saveCursorStateDefault,
     saveRuntimeState = saveRuntimeStateDefault,
     registerParticipant = registerParticipantDefault,
     updateWorkState = updateWorkStateDefault,
-    pollInbox = pollInboxDefault
+    pollInbox = pollInboxDefault,
+    ackInbox = ackInboxDefault
   } = {}
 ) {
   if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
@@ -319,6 +335,15 @@ export async function runSessionStartHook(
     });
     const inbox = await pollInbox(config, { after: state.lastSeenEventId, limit: 20 });
     const items = inbox.items || [];
+    const informationalPrefixEventId = highestInformationalPrefixEventId(items);
+
+    if (informationalPrefixEventId > Number(state.lastSeenEventId || 0)) {
+      await ackInbox(config, informationalPrefixEventId);
+      saveCursorState(statePath, {
+        lastSeenEventId: informationalPrefixEventId,
+        recentContext: state.recentContext ?? null
+      });
+    }
 
     return {
       context: buildCodexHookContext(items, { participantId: config.participantId, alias: registration?.alias }),
