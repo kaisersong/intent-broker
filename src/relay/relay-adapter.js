@@ -68,8 +68,8 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
       brokerService.registerParticipant({
         participantId,
         kind: payload.participantKind || 'agent',
-        roles: [],
-        capabilities: [],
+        roles: payload.roles || [],
+        capabilities: payload.capabilities || [],
         alias: prefixedAlias,
         context: payload.projectName ? { projectName: payload.projectName } : {},
         metadata: { fromRelay: true, originBrokerId, nodeId: remoteNodeId },

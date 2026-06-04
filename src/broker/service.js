@@ -489,8 +489,42 @@ export function createBrokerService({
         previousStatus,
         participantKind: participant.kind,
         projectName: participant.context?.projectName ?? null,
+        roles: participant.roles ?? [],
+        capabilities: participant.capabilities ?? [],
         body: {
           summary: formatPresenceSummary(participant, status)
+        }
+      }
+    });
+  }
+
+  function broadcastParticipantRolesChange(participantId) {
+    const participant = participants.get(participantId);
+    if (!participant) {
+      return;
+    }
+
+    const recipients = [...participants.keys()].filter((id) => id !== participantId);
+    const status = presence.getPresence(participantId)?.status ?? 'online';
+
+    sendIntentInternal({
+      intentId: `participant-roles-${participantId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'participant_presence_updated',
+      fromParticipantId: 'broker.system',
+      taskId: null,
+      threadId: null,
+      to: { mode: 'participant', participants: recipients },
+      payload: {
+        participantId,
+        alias: participant.alias ?? null,
+        status,
+        previousStatus: status,
+        participantKind: participant.kind,
+        projectName: participant.context?.projectName ?? null,
+        roles: participant.roles ?? [],
+        capabilities: participant.capabilities ?? [],
+        body: {
+          summary: `@${participant.alias ?? participantId} 角色已更新`
         }
       }
     });
@@ -702,6 +736,7 @@ export function createBrokerService({
       if (added.length) {
         store.addParticipantRoles(participantId, added);
         participant.roles = unique([...participant.roles, ...roles]);
+        broadcastParticipantRolesChange(participantId);
       }
       return { participantId, roles: participant.roles, added };
     },
@@ -714,6 +749,7 @@ export function createBrokerService({
       if (removed.length) {
         store.removeParticipantRoles(participantId, removed);
         participant.roles = participant.roles.filter((r) => !roles.includes(r));
+        broadcastParticipantRolesChange(participantId);
       }
       return { participantId, roles: participant.roles, removed };
     },
