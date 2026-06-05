@@ -1,4 +1,5 @@
 import { reduceEventStream } from '../domain/reducer.js';
+import { validateBrokerIntent } from '../domain/validators.js';
 import { createEventStore } from '../store/event-store.js';
 import { createPresenceTracker } from './presence.js';
 import { createWebSocketNotifier } from './websocket.js';
@@ -74,7 +75,8 @@ export function createBrokerService({
   dbPath,
   presenceTimeoutMs = 600000,
   presenceSweepIntervalMs = 5000,
-  websocketHeartbeatIntervalMs = 30000
+  websocketHeartbeatIntervalMs = 30000,
+  offlineContextSyncEmitter = null
 }) {
   const participants = new Map();
   const aliases = new Map();
@@ -408,6 +410,13 @@ export function createBrokerService({
   }
 
   function sendIntentInternal(input) {
+    const validation = validateBrokerIntent(input);
+    if (!validation.ok) {
+      const error = new Error(validation.error);
+      error.validation = validation;
+      throw error;
+    }
+
     const intentId = input.intentId || `${input.fromParticipantId}-${input.kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const participantResolution = input.to?.mode === 'participant'
       ? resolveParticipantTargets(input.fromParticipantId, input.to.participants || [])
@@ -421,7 +430,8 @@ export function createBrokerService({
         kind: input.kind,
         fromParticipant: sender
       }),
-      source: input.payload?.delivery?.source ?? 'default'
+      source: input.payload?.delivery?.source ?? 'default',
+      ...(input.to?.mode === 'participant' ? { targetParticipantIds: recipients } : {})
     };
     const payload = {
       ...input.payload,
@@ -536,6 +546,18 @@ export function createBrokerService({
     const previousStatus = status === 'offline' ? previousStoredStatus : previousEffectiveStatus;
     const next = presence.updatePresence(participantId, status, metadata);
     broadcastPresenceChange(participantId, next.status, previousStatus);
+
+    if (status === 'offline' && typeof offlineContextSyncEmitter === 'function') {
+      try {
+        offlineContextSyncEmitter({
+          participantId,
+          metadata,
+          sendIntent: sendIntentInternal
+        });
+      } catch {
+        // Offline context sync is best-effort and must not block presence.
+      }
+    }
 
     if (status === 'offline' && shouldPruneOfflineParticipant(participantId, metadata)) {
       pruneParticipant(participantId);

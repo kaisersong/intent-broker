@@ -33,5 +33,56 @@ export function initializeSchema(db) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (participant_id, role)
     );
+
+    CREATE TABLE IF NOT EXISTS context_syncs (
+      sync_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      source_node_id TEXT,
+      receiver_participant_id TEXT,
+      status TEXT NOT NULL DEFAULT 'prepared',
+      payload_json TEXT NOT NULL,
+      wip_branch TEXT,
+      latest_ref TEXT,
+      wip_commit_sha TEXT,
+      wip_pushed_at TEXT,
+      prepared_at TEXT,
+      emitted_at TEXT,
+      last_emit_at TEXT,
+      emit_attempts INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT,
+      acked_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expires_at TEXT NOT NULL,
+      cleanup_status TEXT,
+      cleanup_attempted_at TEXT,
+      cleanup_error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_context_syncs_user_status
+      ON context_syncs(user_id, status);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_context_syncs_one_active_per_source
+      ON context_syncs(user_id, source_node_id)
+      WHERE status IN ('prepared', 'emitted', 'cleanup_pending');
   `);
+
+  const contextSyncColumns = new Set(
+    db.prepare('PRAGMA table_info(context_syncs)').all().map((row) => row.name)
+  );
+  const optionalColumns = [
+    ['receiver_participant_id', 'TEXT'],
+    ['latest_ref', 'TEXT'],
+    ['prepared_at', 'TEXT'],
+    ['emitted_at', 'TEXT'],
+    ['next_retry_at', 'TEXT'],
+    ['last_error', 'TEXT'],
+    ['cleanup_error', 'TEXT'],
+  ];
+
+  for (const [name, definition] of optionalColumns) {
+    if (!contextSyncColumns.has(name)) {
+      db.exec(`ALTER TABLE context_syncs ADD COLUMN ${name} ${definition}`);
+    }
+  }
 }

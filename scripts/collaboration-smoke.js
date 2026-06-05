@@ -311,6 +311,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     const baseEnv = {
       BROKER_URL: brokerUrl,
       PROJECT_NAME: 'intent-broker',
+      INTENT_BROKER_SKIP_INBOX_SYNC: '0',
       ...isolatedHomeEnv(homeDir),
       INTENT_BROKER_CLAUDE_COMMAND: fakeClaude.commandPath,
       INTENT_BROKER_SMOKE_CLAUDE_LOG: fakeClaude.invocationLogPath

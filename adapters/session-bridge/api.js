@@ -10,6 +10,7 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
 const CONNECTIVITY_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ETIMEDOUT', 'EPERM']);
 const CURL_COULD_NOT_CONNECT_EXIT_CODE = 7;
 const BROKER_SOCKET_PATH = join(homedir(), '.intent-broker', 'broker.sock');
+const DEFAULT_BROKER_SOCKET_PORTS = new Set(['', '4318']);
 
 export class BrokerUnavailableError extends Error {
   constructor(url, { cause, reason = 'unavailable', fetchCause = null, curlCause = null } = {}) {
@@ -43,6 +44,14 @@ function shouldFallbackToCurl(error, url) {
 
 function isLoopbackUrl(url) {
   return LOOPBACK_HOSTNAMES.has(new URL(url).hostname);
+}
+
+function shouldUseSocketFallback(url, socketPath) {
+  if (!socketPath || !existsSync(socketPath)) {
+    return false;
+  }
+  const parsedUrl = new URL(url);
+  return LOOPBACK_HOSTNAMES.has(parsedUrl.hostname) && DEFAULT_BROKER_SOCKET_PORTS.has(parsedUrl.port);
 }
 
 function shouldWrapFetchConnectivityError(error, url) {
@@ -120,16 +129,16 @@ function socketJson(url, options = {}, socketPath = BROKER_SOCKET_PATH) {
 export async function requestJson(
   url,
   options = {},
-  { fetchImpl = fetch, execFileImpl = execFile } = {}
+  { fetchImpl = fetch, execFileImpl = execFile, socketPath = BROKER_SOCKET_PATH } = {}
 ) {
   try {
     const response = await fetchImpl(url, options);
     return response.json();
   } catch (error) {
     if (shouldFallbackToCurl(error, url)) {
-      if (existsSync(BROKER_SOCKET_PATH)) {
+      if (shouldUseSocketFallback(url, socketPath)) {
         try {
-          return await socketJson(url, options);
+          return await socketJson(url, options, socketPath);
         } catch (_) { /* fall through to curl */ }
       }
       try {
@@ -147,9 +156,9 @@ export async function requestJson(
     }
 
     if (shouldWrapFetchConnectivityError(error, url)) {
-      if (existsSync(BROKER_SOCKET_PATH)) {
+      if (shouldUseSocketFallback(url, socketPath)) {
         try {
-          return await socketJson(url, options);
+          return await socketJson(url, options, socketPath);
         } catch (_) { /* fall through to unavailable */ }
       }
       throw asBrokerUnavailableError(url, error, {

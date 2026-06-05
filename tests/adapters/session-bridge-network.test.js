@@ -26,7 +26,7 @@ test('requestJson falls back to curl when fetch gets localhost EPERM', async () 
   const response = await requestJson(
     'http://127.0.0.1:4318/health',
     {},
-    { fetchImpl, execFileImpl }
+    { fetchImpl, execFileImpl, socketPath: null }
   );
 
   assert.deepEqual(response, { ok: true });
@@ -64,7 +64,7 @@ test('requestJson wraps curl connection failures as broker unavailable', async (
   };
 
   await assert.rejects(
-    requestJson('http://127.0.0.1:4318/health', {}, { fetchImpl, execFileImpl }),
+    requestJson('http://127.0.0.1:4318/health', {}, { fetchImpl, execFileImpl, socketPath: null }),
     (error) => {
       assert.equal(error?.name, 'BrokerUnavailableError');
       assert.equal(error?.code, 'INTENT_BROKER_UNAVAILABLE');

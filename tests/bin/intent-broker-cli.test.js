@@ -37,10 +37,10 @@ test('intent-broker who prints a friendly message when broker is unavailable', a
   });
 });
 
-test('intent-broker task prints a friendly message when broker is unavailable', async () => {
+test('intent-broker send-task prints a friendly message when broker is unavailable', async () => {
   await assertBrokerUnavailable({
     scriptPath: path.join(repoRoot, 'bin', 'intent-broker.js'),
-    args: ['task', 'claude-real-1', 'real-task-1', 'real-thread-1', 'Please', 'pick', 'this', 'up']
+    args: ['send-task', 'claude-real-1', 'real-task-1', 'real-thread-1', 'Please', 'pick', 'this', 'up']
   });
 });
 
