@@ -3,11 +3,37 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
+const PASS_THROUGH_ENV_KEYS = new Set([
+  'PATH',
+  'SystemRoot',
+  'WINDIR',
+  'COMSPEC',
+  'PATHEXT',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'LC_MESSAGES',
+  'SSH_AUTH_SOCK',
+]);
+
+function buildGitEnv(overrides = {}) {
+  const base = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (PASS_THROUGH_ENV_KEYS.has(key) || key.startsWith('LC_')) {
+      base[key] = value;
+    }
+  }
+  return { ...base, ...overrides };
+}
+
 export async function runGit(args, { cwd, env = {} } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd,
-      env: { ...process.env, ...env },
+      env: buildGitEnv(env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
