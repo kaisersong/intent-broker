@@ -80,16 +80,24 @@ function removeProcessState(statePath) {
 }
 
 function listSiblingBridgeStatePaths(toolName, currentStatePath, { homeDir = os.homedir() } = {}) {
-  const stateRoot = resolveToolStateRoot(toolName, { homeDir });
+  const dirs = [
+    resolveToolStateRoot(toolName, { homeDir }),
+    path.join(homeDir, '.intent-broker', 'sessions')
+  ];
 
-  try {
-    return readdirSync(stateRoot)
-      .filter((name) => name.endsWith('.bridge.json'))
-      .map((name) => path.join(stateRoot, name))
-      .filter((candidatePath) => candidatePath !== currentStatePath);
-  } catch {
-    return [];
+  const results = [];
+  for (const dir of dirs) {
+    try {
+      const entries = readdirSync(dir)
+        .filter((name) => name.endsWith('.bridge.json'))
+        .map((name) => path.join(dir, name))
+        .filter((candidatePath) => candidatePath !== currentStatePath);
+      results.push(...entries);
+    } catch {
+      // directory may not exist yet
+    }
   }
+  return results;
 }
 
 function pruneSiblingRealtimeBridgesForParentPid({

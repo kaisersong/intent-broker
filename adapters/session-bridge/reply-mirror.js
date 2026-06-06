@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveToolStateRoot } from '../hook-installer-core/state-paths.js';
+import { existsSync as existsSyncDefault } from 'node:fs';
 import { sendProgress as sendProgressDefault } from './api.js';
 
 function normalizeOptionalString(value) {
@@ -70,7 +71,12 @@ export function createReplyMirrorState() {
 }
 
 export function resolveReplyMirrorStatePath(toolName, participantId, { homeDir = os.homedir() } = {}) {
-  return path.join(resolveToolStateRoot(toolName, { homeDir }), `${participantId}.mirror.json`);
+  const newName = `${participantId}.mirror.json`;
+  const newPath = path.join(homeDir, '.intent-broker', 'sessions', newName);
+  if (existsSyncDefault(newPath)) return newPath;
+  const legacyPath = path.join(resolveToolStateRoot(toolName, { homeDir }), newName);
+  if (existsSyncDefault(legacyPath)) return legacyPath;
+  return newPath;
 }
 
 function normalizeState(state) {

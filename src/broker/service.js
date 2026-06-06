@@ -89,6 +89,91 @@ export function createBrokerService({
   });
   let awayMode = false;
 
+  const TASK_UNACK_THRESHOLD_MS = 5 * 60 * 1000;
+  const TASK_UNACK_DEDUP_MS = 30 * 60 * 1000;
+  const watchdogTimers = new Map();
+
+  function scheduleWatchdog(taskId, delayMs) {
+    if (watchdogTimers.has(taskId)) return;
+    const timer = setTimeout(() => {
+      watchdogTimers.delete(taskId);
+      checkAndNotifyUnacked(taskId);
+    }, delayMs).unref();
+    watchdogTimers.set(taskId, timer);
+  }
+
+  function checkAndNotifyUnacked(taskId) {
+    const state = buildState();
+    const task = state.tasks[taskId];
+    if (!task || task.status !== 'open') return;
+
+    const events = store.listEvents({ taskId, limit: null });
+    const latestEvent = events[events.length - 1];
+    if (!latestEvent) return;
+
+    const unackedEvents = events.filter((e) => e.kind === 'task_unacked');
+    if (unackedEvents.length) {
+      const lastUnacked = unackedEvents[unackedEvents.length - 1];
+      const ageSinceLastUnacked = Date.now() - new Date(lastUnacked.createdAt).getTime();
+      if (ageSinceLastUnacked < TASK_UNACK_DEDUP_MS) return;
+    }
+
+    const requestEvent = events.find((e) => e.kind === 'request_task');
+    const targetParticipantIds = (requestEvent?.payload?.delivery?.targetParticipantIds) || [];
+
+    const pmParticipantIds = [...participants.values()]
+      .filter((p) => p.roles.includes('governance-pm'))
+      .map((p) => p.participantId);
+
+    const recipients = unique([...pmParticipantIds]);
+    if (!recipients.length) return;
+
+    const now = new Date();
+    const ageMs = now.getTime() - new Date(latestEvent.createdAt).getTime();
+
+    sendIntentInternal({
+      intentId: `task-unacked-${taskId}-${Date.now()}`,
+      kind: 'task_unacked',
+      fromParticipantId: 'broker.system',
+      taskId,
+      threadId: task.threadId,
+      to: { mode: 'participant', participants: recipients },
+      payload: {
+        taskId,
+        threadId: task.threadId,
+        ageMs,
+        requesterId: requestEvent?.fromParticipantId ?? null,
+        targetParticipantIds
+      }
+    });
+  }
+
+  function reconcileWatchdogs() {
+    const state = buildState();
+    const now = Date.now();
+    for (const [taskId, task] of Object.entries(state.tasks)) {
+      if (task.status !== 'open') continue;
+      const events = store.listEvents({ taskId, limit: null });
+      const latestEvent = events[events.length - 1];
+      if (!latestEvent) continue;
+
+      const requestEvent = events.find((e) => e.kind === 'request_task');
+      if (!requestEvent) continue;
+      const hasTargetedDelivery = requestEvent.payload?.delivery?.targetParticipantIds?.length > 0;
+      if (!hasTargetedDelivery) continue;
+
+      const age = now - new Date(latestEvent.createdAt).getTime();
+      if (age > TASK_UNACK_THRESHOLD_MS) {
+        checkAndNotifyUnacked(taskId);
+      } else {
+        scheduleWatchdog(taskId, TASK_UNACK_THRESHOLD_MS - age);
+      }
+    }
+  }
+
+  const watchdogReconcileTimer = setTimeout(reconcileWatchdogs, 30_000).unref();
+  const watchdogPeriodicTimer = setInterval(reconcileWatchdogs, TASK_UNACK_THRESHOLD_MS).unref();
+
   // Resolve a single target token into recipient sessionIds.
   // Explicit namespaces remove ambiguity:
   //   session:<id>  -> exact participant only
@@ -464,6 +549,10 @@ export function createBrokerService({
       }
     }
 
+    if (input.kind === 'request_task' && input.to?.mode === 'participant' && input.taskId) {
+      scheduleWatchdog(input.taskId, TASK_UNACK_THRESHOLD_MS);
+    }
+
     return {
       eventId: event.eventId,
       recipients,
@@ -472,6 +561,35 @@ export function createBrokerService({
       deliveredCount: onlineRecipients.length,
       ...(participantResolution ? { resolutions: participantResolution.resolutions } : {})
     };
+  }
+
+  function listTasks({ status, assignee } = {}) {
+    const state = buildState();
+    const entries = Object.values(state.tasks).filter((task) => {
+      if (status && task.status !== status) return false;
+      if (assignee && !task.assignees.includes(assignee)) return false;
+      return true;
+    });
+    return entries.map((task) => {
+      const events = store.listEvents({ taskId: task.taskId, limit: null });
+      const latestEvent = events[events.length - 1];
+      const requestEvent = events.find((e) => e.kind === 'request_task');
+      const latestEventAt = latestEvent?.createdAt ?? null;
+      const ageMs = latestEventAt
+        ? Date.now() - new Date(latestEventAt).getTime()
+        : null;
+      return {
+        taskId: task.taskId,
+        threadId: task.threadId,
+        status: task.status,
+        assignees: task.assignees,
+        latestSubmissionId: task.latestSubmissionId,
+        latestEventKind: latestEvent?.kind ?? null,
+        latestEventAt,
+        ageMs,
+        requesterId: requestEvent?.fromParticipantId ?? null
+      };
+    });
   }
 
   function broadcastPresenceChange(participantId, status, previousStatus) {
@@ -859,6 +977,12 @@ export function createBrokerService({
     getTaskView(taskId) {
       return buildState().tasks[taskId] ?? null;
     },
+    listTasks(options) {
+      return listTasks(options);
+    },
+    reconcileWatchdogs() {
+      reconcileWatchdogs();
+    },
     getThreadView(threadId) {
       return {
         threadId,
@@ -964,6 +1088,12 @@ export function createBrokerService({
       if (presenceSweepTimer) {
         clearInterval(presenceSweepTimer);
       }
+      clearTimeout(watchdogReconcileTimer);
+      clearInterval(watchdogPeriodicTimer);
+      for (const timer of watchdogTimers.values()) {
+        clearTimeout(timer);
+      }
+      watchdogTimers.clear();
       wsNotifier.close();
     }
   };

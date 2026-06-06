@@ -146,6 +146,13 @@ export function createServer({ broker, healthProvider = null } = {}) {
         return;
       }
 
+      if (req.method === 'GET' && pathname === '/tasks') {
+        const status = requestUrl.searchParams.get('status') || null;
+        const assignee = requestUrl.searchParams.get('assignee') || null;
+        writeJson(res, 200, { tasks: broker.listTasks({ status, assignee }) });
+        return;
+      }
+
       if (req.method === 'GET' && pathname.startsWith('/inbox/')) {
         const [, , participantId, action] = pathname.split('/');
         if (!participantId || action) {

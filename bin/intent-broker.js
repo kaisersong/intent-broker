@@ -24,12 +24,19 @@ import { runCommand as runPhase2Command } from '../adapters/phase2/cli.js';
 
 function usage() {
   console.log(`Usage:
-  intent-broker [--tool codex|claude-code|opencode|xiaok-code|qodercli] register
+  intent-broker [--tool codex|claude-code|opencode|xiaok-code|qodercli] send-task <to> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] task <to> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] register
   intent-broker [--tool ...] inbox
   intent-broker [--tool ...] who
+  intent-broker [--tool ...] tasks [--status open|assigned|in_progress|submitted|blocked|completed|cancelled] [--assignee <participantId>]
+  intent-broker [--tool ...] who-am-i
   intent-broker [--tool ...] reply [@alias] <summary>
   intent-broker [--tool ...] poll [after]
   intent-broker [--tool ...] ack <eventId>
+  intent-broker [--tool ...] ask <to> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] note <to> <taskId> <threadId> <summary>
+  intent-broker [--tool ...] progress <taskId> <threadId> <summary>
   intent-broker group list [--project <name>]
   intent-broker group notify <type> <target> [--reason <text>]
   intent-broker confirm ask <question> [options]
@@ -184,6 +191,25 @@ async function main() {
     case 'send-task':
       console.log(JSON.stringify(await runTaskCommand(config, parsed.args), null, 2));
       break;
+    case 'tasks': {
+      const statusIdx = parsed.args.indexOf('--status');
+      const assigneeIdx = parsed.args.indexOf('--assignee');
+      const statusFilter = statusIdx >= 0 ? parsed.args[statusIdx + 1] : null;
+      const assigneeFilter = assigneeIdx >= 0 ? parsed.args[assigneeIdx + 1] : null;
+      const url = new URL(`${config.brokerUrl}/tasks`);
+      if (statusFilter) url.searchParams.set('status', statusFilter);
+      if (assigneeFilter) url.searchParams.set('assignee', assigneeFilter);
+      const r = await fetch(url.toString());
+      console.log(JSON.stringify(await r.json(), null, 2));
+      break;
+    }
+    case 'who-am-i': {
+      console.log(`participantId: ${config.participantId}`);
+      console.log(`alias: ${config.alias}`);
+      console.log(`toolName: ${parsed.toolName}`);
+      console.log(`brokerUrl: ${config.brokerUrl}`);
+      break;
+    }
     case 'send-progress':
       console.log(JSON.stringify(await runProgressCommand(config, parsed.args), null, 2));
       break;
