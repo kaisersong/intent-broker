@@ -185,6 +185,7 @@ test('emitLatestPreparedCheckpoint uses a fresh prepared checkpoint without runn
 });
 
 function syncRequestEvent(overrides = {}) {
+  const { payload: payloadOverrides = {}, ...eventOverrides } = overrides;
   return {
     eventId: 7,
     intentId: DEFAULT_SYNC_ID,
@@ -210,9 +211,9 @@ function syncRequestEvent(overrides = {}) {
       wipCommitSha: 'def456',
       wipRemote: 'origin',
       expiresAt: FIXED_EXPIRES_AT,
-      ...overrides.payload,
+      ...payloadOverrides,
     },
-    ...overrides,
+    ...eventOverrides,
   };
 }
 
@@ -317,4 +318,212 @@ test('loadContextSyncRequest deduplicates by syncId and WIP SHA', async () => {
   assert.equal(duplicate.duplicate, true);
   assert.equal(fetchCount, 1);
   assert.equal(acks.length, 1);
+});
+
+test('explicitSync records partial WIP when latest ref push fails but timestamped ref exists', async () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'sender', kind: 'agent', roles: [], capabilities: [] });
+  broker.registerParticipant({ participantId: 'receiver', kind: 'agent', roles: [], capabilities: [] });
+  const error = new Error('latest rejected');
+  error.partialWip = {
+    wipBranch: 'wip/sync-songkai-1770000000000',
+    latestRef: 'wip/sync-songkai-latest',
+    wipCommitSha: 'def456',
+    wipRemote: 'origin',
+    filesModified: ['README.md'],
+    failedRef: 'wip/sync-songkai-latest',
+  };
+
+  const { store, service } = baseService({
+    broker,
+    gitTransport: {
+      collectGitContext: async () => ({
+        branch: 'main',
+        gitHead: 'abc123',
+        filesModified: ['README.md'],
+        filesPending: [],
+      }),
+      createAndPushWipCommit: async () => {
+        throw error;
+      },
+    },
+  });
+
+  const result = await service.explicitSync({
+    targetParticipantIds: ['receiver'],
+    summary: 'partial latest handoff',
+  });
+  const request = broker.readInbox('receiver', { after: 0, kind: 'context_sync_request' }).items[0];
+  const stored = store.getContextSync(result.syncId);
+
+  assert.equal(result.status, 'emitted');
+  assert.equal(stored.lastError, 'latest rejected');
+  assert.equal(stored.cleanupStatus, 'pending');
+  assert.equal(request.payload.wipBranch, 'wip/sync-songkai-1770000000000');
+  assert.equal(request.payload.wipCommitSha, 'def456');
+});
+
+test('explicitSync records partial state when WIP pushed but broker emit fails', async () => {
+  const broker = {
+    sendIntent: async () => {
+      throw new Error('broker offline');
+    },
+  };
+  const { store, service } = baseService({
+    broker,
+    gitTransport: {
+      collectGitContext: async () => ({
+        branch: 'main',
+        gitHead: 'abc123',
+        filesModified: ['README.md'],
+        filesPending: [],
+      }),
+      createAndPushWipCommit: async () => ({
+        wipBranch: 'wip/sync-songkai-1770000000000',
+        latestRef: 'wip/sync-songkai-latest',
+        wipCommitSha: 'def456',
+        wipRemote: 'origin',
+        filesModified: ['README.md'],
+      }),
+    },
+  });
+
+  const result = await service.explicitSync({
+    targetParticipantIds: ['receiver'],
+    summary: 'emit failure handoff',
+  });
+  const stored = store.getContextSync(result.syncId);
+
+  assert.equal(result.status, 'partial');
+  assert.equal(stored.status, 'partial');
+  assert.equal(stored.wipBranch, 'wip/sync-songkai-1770000000000');
+  assert.equal(stored.lastError, 'broker offline');
+  assert.equal(stored.emitAttempts, 1);
+  assert.equal(stored.cleanupStatus, 'pending');
+});
+
+test('retryContextSync re-emits a partial sync without pushing another WIP', async () => {
+  let pushCount = 0;
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'sender', kind: 'agent', roles: [], capabilities: [] });
+  broker.registerParticipant({ participantId: 'receiver', kind: 'agent', roles: [], capabilities: [] });
+  const { store, service } = baseService({
+    broker,
+    gitTransport: {
+      collectGitContext: async () => ({
+        branch: 'main',
+        gitHead: 'abc123',
+        filesModified: ['README.md'],
+        filesPending: [],
+      }),
+      createAndPushWipCommit: async () => {
+        pushCount += 1;
+        return {
+          wipBranch: 'wip/sync-songkai-1770000000000',
+          latestRef: 'wip/sync-songkai-latest',
+          wipCommitSha: 'def456',
+          wipRemote: 'origin',
+          filesModified: ['README.md'],
+        };
+      },
+    },
+  });
+  store.saveContextSync({
+    syncId: DEFAULT_SYNC_ID,
+    userId: 'songkai',
+    sourceNodeId: 'mb',
+    status: 'partial',
+    payload: {
+      syncId: DEFAULT_SYNC_ID,
+      userId: 'songkai',
+      sourceNodeId: 'mb',
+      context: { summary: 'retry me', recentUserMessages: [] },
+      wipBranch: 'wip/sync-songkai-1770000000000',
+      latestRef: 'wip/sync-songkai-latest',
+      wipCommitSha: 'def456',
+      wipRemote: 'origin',
+      expiresAt: FIXED_EXPIRES_AT,
+    },
+    wipBranch: 'wip/sync-songkai-1770000000000',
+    latestRef: 'wip/sync-songkai-latest',
+    wipCommitSha: 'def456',
+    createdAt: FIXED_PREPARED_AT,
+    expiresAt: FIXED_EXPIRES_AT,
+    emitAttempts: 1,
+    cleanupStatus: 'pending',
+  });
+
+  const result = await service.retryContextSync({
+    syncId: DEFAULT_SYNC_ID,
+    targetParticipantIds: ['receiver'],
+  });
+  const inbox = broker.readInbox('receiver', { after: 0, kind: 'context_sync_request' }).items;
+
+  assert.equal(result.status, 'emitted');
+  assert.equal(result.emitAttempts, 2);
+  assert.equal(pushCount, 0);
+  assert.equal(inbox.length, 1);
+});
+
+test('loadContextSyncRequest deduplicates using persisted store state after service recreation', async () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'sender', kind: 'agent', roles: [], capabilities: [] });
+  broker.registerParticipant({ participantId: 'receiver', kind: 'agent', roles: [], capabilities: [] });
+  let fetchCount = 0;
+  const store = createEventStore({ dbPath: createTempDbPath() });
+  const makeReceiver = () => createContextSyncService({
+    store,
+    broker,
+    participantId: 'receiver',
+    userId: 'songkai',
+    sourceNodeId: 'receiver-node',
+    gitTransport: {
+      collectGitContext: async () => {
+        throw new Error('receiver load must not checkpoint');
+      },
+      fetchAndVerifyWipCommit: async () => {
+        fetchCount += 1;
+        return { wipVerified: true, wipCommitSha: 'def456', fetchedRef: 'wip/sync-songkai-1770000000000' };
+      },
+      createIsolatedBranch: async () => ({
+        branchName: 'context-sync/sync-songkai-1770000000000',
+        wipCommitSha: 'def456',
+      }),
+    },
+  });
+
+  const first = await makeReceiver().loadContextSyncRequest(syncRequestEvent());
+  const duplicate = await makeReceiver().loadContextSyncRequest(syncRequestEvent());
+  const acks = broker.readInbox('sender', { after: 0, kind: 'context_sync_ack' }).items;
+
+  assert.equal(first.status, 'loaded');
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(fetchCount, 1);
+  assert.equal(acks.length, 1);
+});
+
+test('loadContextSyncRequest display marks untracked files as metadata only', async () => {
+  const broker = createBrokerService({ dbPath: createTempDbPath() });
+  broker.registerParticipant({ participantId: 'sender', kind: 'agent', roles: [], capabilities: [] });
+  broker.registerParticipant({ participantId: 'receiver', kind: 'agent', roles: [], capabilities: [] });
+  const { service } = baseService({
+    broker,
+    participantId: 'receiver',
+    gitTransport: {
+      collectGitContext: async () => {
+        throw new Error('receiver load must not checkpoint');
+      },
+    },
+  });
+
+  const loaded = await service.loadContextSyncRequest(syncRequestEvent({
+    payload: {
+      wipBranch: null,
+      latestRef: null,
+      wipCommitSha: null,
+      wipRemote: null,
+    },
+  }));
+
+  assert.match(loaded.displayText, /未跟踪文件仅作为元数据/);
 });
