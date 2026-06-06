@@ -1,5 +1,13 @@
 import WebSocket from 'ws';
 import {
+  DEFAULT_FLUSH_BATCH_SIZE,
+  DEFAULT_SYNC_RESPONSE_EVENT_LIMIT,
+  DEFAULT_SYNC_RESPONSE_MAX_BYTES,
+  createRelayBackpressure,
+  selectFlushBatch,
+  selectSyncResponseEvents,
+} from './backpressure.js';
+import {
   PROTOCOL_VERSION,
   RELAY_MESSAGE_TYPES,
   ALLOWED_CLIENT_TYPES,
@@ -10,6 +18,7 @@ import {
   createPing,
   createBye,
   createSyncRequest,
+  createSyncResponse,
   deriveRoomId,
 } from './protocol.js';
 import { loadCredentials, isTokenExpired } from './credential-store.js';
@@ -22,6 +31,11 @@ const RECONNECT_CONFIG = {
   resetAfterMs: 60000,
 };
 
+const CONTEXT_SYNC_KINDS = new Set([
+  'context_sync_request',
+  'context_sync_ack',
+]);
+
 export function createRelayAdapter({ brokerService, relayConfig, brokerId, logger = console }) {
   let ws = null;
   let state = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | CONNECTED | DRAINING
@@ -29,6 +43,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
   let reconnectTimer = null;
   let heartbeatTimer = null;
   let pollTimer = null;
+  let flushTimer = null;
   let lastRelaySeq = 0;
   let localCursor = 0;
   let stopped = false;
@@ -39,6 +54,11 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
   const SEEN_WINDOW_SIZE = 5000;
   const localNodeId = relayConfig.nodeId || null;
   const remoteNodes = new Map();
+  const backpressure = createRelayBackpressure();
+  const FLUSH_BATCH_SIZE = relayConfig.flushBatchSize || DEFAULT_FLUSH_BATCH_SIZE;
+  const FLUSH_INTERVAL_MS = relayConfig.flushIntervalMs || 25;
+  const SYNC_RESPONSE_EVENT_LIMIT = relayConfig.syncResponseEventLimit || DEFAULT_SYNC_RESPONSE_EVENT_LIMIT;
+  const SYNC_RESPONSE_MAX_BYTES = relayConfig.syncResponseMaxBytes || DEFAULT_SYNC_RESPONSE_MAX_BYTES;
 
   function log(level, msg, data) {
     logger[level]?.(`[relay-adapter] ${msg}`, data || '');
@@ -133,6 +153,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
   }
 
   function pollAndForward() {
+    if (backpressure.isPaused()) return;
     if (state !== 'CONNECTED' && outboundBuffer.length >= MAX_BUFFER_SIZE) return;
 
     const events = brokerService.replayEvents({ after: localCursor, limit: 50 });
@@ -156,7 +177,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
         nodeId: localNodeId,
       });
 
-      if (state === 'CONNECTED' && ws?.readyState === WebSocket.OPEN) {
+      if (state === 'CONNECTED' && ws?.readyState === WebSocket.OPEN && !backpressure.isPaused()) {
         ws.send(JSON.stringify(envelope));
       } else {
         if (outboundBuffer.length < MAX_BUFFER_SIZE) {
@@ -168,9 +189,27 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
   }
 
   function flushBuffer() {
-    while (outboundBuffer.length > 0 && ws?.readyState === WebSocket.OPEN) {
-      const msg = outboundBuffer.shift();
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (backpressure.isPaused()) {
+      flushTimer = setTimeout(flushBuffer, Math.max(1, backpressure.remainingMs()));
+      flushTimer.unref?.();
+      return;
+    }
+
+    for (const msg of selectFlushBatch(outboundBuffer, { maxBatchSize: FLUSH_BATCH_SIZE })) {
+      if (ws?.readyState !== WebSocket.OPEN) {
+        outboundBuffer.unshift(msg);
+        return;
+      }
       ws.send(JSON.stringify(msg));
+    }
+
+    if (outboundBuffer.length > 0 && ws?.readyState === WebSocket.OPEN) {
+      flushTimer = setTimeout(flushBuffer, FLUSH_INTERVAL_MS);
+      flushTimer.unref?.();
     }
   }
 
@@ -198,6 +237,7 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
         handleRemoteEvent(msg);
         break;
       case RELAY_MESSAGE_TYPES.RATE_WARNING:
+        backpressure.recordRateWarning(msg);
         log('warn', `rate limit warning: ${msg.remaining} remaining, reset in ${msg.resetMs}ms`);
         break;
       case RELAY_MESSAGE_TYPES.PEER_JOINED:
@@ -289,15 +329,27 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
       remoteNodes.set(payload.originBrokerId, payload.nodeId);
     }
 
+    const payloadJson = payload.payloadJson || {};
+    const isContextSync = CONTEXT_SYNC_KINDS.has(payload.kind);
+    const contextSyncTargets = Array.isArray(payloadJson.delivery?.targetParticipantIds)
+      ? payloadJson.delivery.targetParticipantIds
+      : [];
+    if (isContextSync && contextSyncTargets.length === 0) {
+      log('warn', `dropping ${payload.kind} without targeted relay recipients`);
+      return;
+    }
+
     brokerService.sendIntent({
       intentId: payload.intentId,
       kind: payload.kind,
       fromParticipantId: payload.fromParticipantId,
       taskId: payload.taskId,
       threadId: payload.threadId,
-      to: { mode: 'broadcast' },
+      to: isContextSync
+        ? { mode: 'participant', participants: contextSyncTargets }
+        : { mode: 'broadcast' },
       payload: {
-        ...payload.payloadJson,
+        ...payloadJson,
         fromRelay: true,
         originBrokerId: payload.originBrokerId,
       },
@@ -332,17 +384,20 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
       });
     }
     if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: RELAY_MESSAGE_TYPES.SYNC_RESPONSE,
-        events: response.slice(-100),
-        hasMore: false,
-      }));
+      const events = selectSyncResponseEvents(response, {
+        maxEvents: SYNC_RESPONSE_EVENT_LIMIT,
+        maxBytes: SYNC_RESPONSE_MAX_BYTES,
+      });
+      ws.send(JSON.stringify(createSyncResponse(
+        events,
+        response.length > events.length
+      )));
     }
   }
 
   function handleSyncResponse(msg) {
     if (!Array.isArray(msg.events)) return;
-    for (const payload of msg.events) {
+    for (const payload of msg.events.slice(0, SYNC_RESPONSE_EVENT_LIMIT)) {
       handleRemoteEvent({ type: RELAY_MESSAGE_TYPES.EVENT, payload });
     }
     log('info', `sync received ${msg.events.length} events`);
@@ -457,6 +512,10 @@ export function createRelayAdapter({ brokerService, relayConfig, brokerId, logge
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
+      }
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
       }
       if (ws) {
         if (ws.readyState === WebSocket.OPEN) {

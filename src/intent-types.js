@@ -10,6 +10,11 @@ export const INTENT_KINDS = [
   'request_approval',
   'respond_approval',
   'cancel_task',
+  'context_sync_request',
+  'context_sync_ack',
+  'participant_presence_updated',
+  'participant_alias_updated',
+  'handoff_delivery_failed',
   'workflow_progress_batch'
 ];
 

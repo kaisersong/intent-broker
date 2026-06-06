@@ -1,19 +1,41 @@
 import http from 'node:http';
 import { URL } from 'node:url';
 
+export const INTENTS_MAX_BODY_BYTES = 16 * 1024;
+
 function writeJson(res, statusCode, payload) {
   res.writeHead(statusCode, { 'content-type': 'application/json' });
   res.end(JSON.stringify(payload));
 }
 
-function readJson(req) {
+function httpError(statusCode, code) {
+  const error = new Error(code);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+function readJson(req, { maxBytes = Infinity } = {}) {
   return new Promise((resolve, reject) => {
     let raw = '';
+    let bytes = 0;
+    let rejected = false;
 
     req.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        if (!rejected) {
+          rejected = true;
+          reject(httpError(413, 'request_body_too_large'));
+        }
+        return;
+      }
       raw += chunk;
     });
     req.on('end', () => {
+      if (rejected) {
+        return;
+      }
       if (!raw) {
         resolve({});
         return;
@@ -119,7 +141,7 @@ export function createServer({ broker, healthProvider = null } = {}) {
       }
 
       if (req.method === 'POST' && pathname === '/intents') {
-        const body = await readJson(req);
+        const body = await readJson(req, { maxBytes: INTENTS_MAX_BODY_BYTES });
         writeJson(res, 202, broker.sendIntent(body));
         return;
       }
@@ -248,7 +270,11 @@ export function createServer({ broker, healthProvider = null } = {}) {
 
       writeJson(res, 404, { error: 'not_found' });
     } catch (error) {
-      writeJson(res, 500, { error: 'internal_error', message: error.message });
+      const statusCode = error.statusCode || 500;
+      writeJson(res, statusCode, {
+        error: error.code || 'internal_error',
+        message: error.message
+      });
     }
   });
 
