@@ -207,6 +207,7 @@ test('applyVerifiedWipCommit runs governance before cherry-pick on a clean workt
   const governanceCalls = [];
   const runner = fakeRunner({
     'status --porcelain': '',
+    'rev-parse HEAD': 'base123\n',
     'cherry-pick def456': '',
   }, calls);
 
@@ -214,6 +215,7 @@ test('applyVerifiedWipCommit runs governance before cherry-pick on a clean workt
     cwd: '/repo',
     wipCommitSha: 'def456',
     filesModified: ['src/broker/service.js'],
+    expectedBaseHead: 'base123',
     governanceCheck: async (input) => {
       governanceCalls.push(input);
       return { ok: true };
@@ -228,6 +230,7 @@ test('applyVerifiedWipCommit runs governance before cherry-pick on a clean workt
   }]);
   assert.deepEqual(calls.map((call) => call.args), [
     ['status', '--porcelain'],
+    ['rev-parse', 'HEAD'],
     ['cherry-pick', 'def456'],
   ]);
 });
