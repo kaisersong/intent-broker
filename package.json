@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "node scripts/run-tests.js",
+    "test:e2e:context-sync": "node --experimental-sqlite --test tests/e2e/context-sync/*.test.js",
+    "verify:context-sync": "npm test && npm run test:e2e:context-sync && git diff --check",
     "start": "node --experimental-sqlite src/cli.js",
     "broker:status": "node scripts/broker-control.js status",
     "broker:stop": "node scripts/broker-control.js stop",
