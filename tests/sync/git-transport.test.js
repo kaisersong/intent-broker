@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyVerifiedWipCommit,
+  cleanupRemoteWipRefs,
   collectGitContext,
   createAndPushWipCommit,
   createIsolatedBranch,
@@ -229,4 +230,83 @@ test('applyVerifiedWipCommit runs governance before cherry-pick on a clean workt
     ['status', '--porcelain'],
     ['cherry-pick', 'def456'],
   ]);
+});
+
+test('createAndPushWipCommit exposes partial WIP when latest ref push fails', async () => {
+  const latestError = new Error('latest rejected');
+  const runner = fakeRunner({
+    'diff --name-only HEAD --': 'README.md\n',
+    'stash create': 'def456\n',
+    'push origin def456:refs/heads/wip/sync-songkai-1770000000000': '',
+    'push origin def456:refs/heads/wip/sync-songkai-latest': latestError,
+  });
+
+  await assert.rejects(
+    () => createAndPushWipCommit({
+      cwd: '/repo',
+      userId: 'songkai',
+      timestamp: 1770000000000,
+      runner,
+    }),
+    (error) => {
+      assert.equal(error.message, 'latest rejected');
+      assert.deepEqual(error.partialWip, {
+        wipBranch: 'wip/sync-songkai-1770000000000',
+        latestRef: 'wip/sync-songkai-latest',
+        wipCommitSha: 'def456',
+        wipRemote: 'origin',
+        filesModified: ['README.md'],
+        failedRef: 'wip/sync-songkai-latest',
+      });
+      return true;
+    }
+  );
+});
+
+test('cleanupRemoteWipRefs deletes only refs still pointing at the expected SHA', async () => {
+  const calls = [];
+  const runner = fakeRunner({
+    'ls-remote origin refs/heads/wip/sync-songkai-1770000000000': 'def456\trefs/heads/wip/sync-songkai-1770000000000\n',
+    'push origin :refs/heads/wip/sync-songkai-1770000000000': '',
+    'ls-remote origin refs/heads/wip/sync-songkai-latest': 'abc999\trefs/heads/wip/sync-songkai-latest\n',
+  }, calls);
+
+  const result = await cleanupRemoteWipRefs({
+    cwd: '/repo',
+    remote: 'origin',
+    refs: ['wip/sync-songkai-1770000000000', 'wip/sync-songkai-latest'],
+    expectedSha: 'def456',
+    runner,
+  });
+
+  assert.deepEqual(result.deletedRefs, ['wip/sync-songkai-1770000000000']);
+  assert.deepEqual(result.skippedRefs, [{
+    ref: 'wip/sync-songkai-latest',
+    reason: 'sha_mismatch',
+    actualSha: 'abc999',
+  }]);
+  assert.deepEqual(calls.map((call) => call.args), [
+    ['ls-remote', 'origin', 'refs/heads/wip/sync-songkai-1770000000000'],
+    ['push', 'origin', ':refs/heads/wip/sync-songkai-1770000000000'],
+    ['ls-remote', 'origin', 'refs/heads/wip/sync-songkai-latest'],
+  ]);
+});
+
+test('applyVerifiedWipCommit requires sender base HEAD to match receiver HEAD', async () => {
+  const runner = fakeRunner({
+    'status --porcelain': '',
+    'rev-parse HEAD': 'receiver999\n',
+  });
+
+  await assert.rejects(
+    () => applyVerifiedWipCommit({
+      cwd: '/repo',
+      wipCommitSha: 'def456',
+      filesModified: ['README.md'],
+      expectedBaseHead: 'sender123',
+      governanceCheck: async () => ({ ok: true }),
+      runner,
+    }),
+    /sender_receiver_head_diverged/
+  );
 });
