@@ -115,7 +115,7 @@ export async function createAndPushWipCommit({
 
   await runner(['push', remote, `${wipCommitSha}:refs/heads/${wip.wipBranch}`], { cwd });
   try {
-    await runner(['push', remote, `${wipCommitSha}:refs/heads/${wip.latestRef}`], { cwd });
+    await runner(['push', remote, `+${wipCommitSha}:refs/heads/${wip.latestRef}`], { cwd });
   } catch (error) {
     error.partialWip = {
       ...wip,

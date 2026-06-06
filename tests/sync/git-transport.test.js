@@ -56,7 +56,7 @@ test('createAndPushWipCommit pushes exact stash commit to timestamped and latest
     'diff --name-only HEAD --': 'src/broker/service.js\n',
     'stash create': 'def456\n',
     'push origin def456:refs/heads/wip/sync-songkai-1770000000000': '',
-    'push origin def456:refs/heads/wip/sync-songkai-latest': '',
+    'push origin +def456:refs/heads/wip/sync-songkai-latest': '',
   }, calls);
 
   const result = await createAndPushWipCommit({
@@ -77,7 +77,7 @@ test('createAndPushWipCommit pushes exact stash commit to timestamped and latest
     ['diff', '--name-only', 'HEAD', '--'],
     ['stash', 'create'],
     ['push', 'origin', 'def456:refs/heads/wip/sync-songkai-1770000000000'],
-    ['push', 'origin', 'def456:refs/heads/wip/sync-songkai-latest'],
+    ['push', 'origin', '+def456:refs/heads/wip/sync-songkai-latest'],
   ]);
 });
 
@@ -241,7 +241,7 @@ test('createAndPushWipCommit exposes partial WIP when latest ref push fails', as
     'diff --name-only HEAD --': 'README.md\n',
     'stash create': 'def456\n',
     'push origin def456:refs/heads/wip/sync-songkai-1770000000000': '',
-    'push origin def456:refs/heads/wip/sync-songkai-latest': latestError,
+    'push origin +def456:refs/heads/wip/sync-songkai-latest': latestError,
   });
 
   await assert.rejects(
