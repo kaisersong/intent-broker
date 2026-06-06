@@ -1,6 +1,6 @@
 import { mkdtemp, rm, mkdir, writeFile, appendFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 
 export async function runGit(args, { cwd, env = {} } = {}) {
@@ -35,16 +35,34 @@ export async function createContextSyncE2EHarness() {
   const machineB = join(root, 'machine-b');
   const logs = join(root, 'logs');
   const reportPath = join(root, 'report.json');
+  const home = join(root, 'home');
+  const xdgConfigHome = join(root, 'xdg-config-home');
+  const gitEnv = {
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    HOME: home,
+    XDG_CONFIG_HOME: xdgConfigHome,
+  };
 
   const commandLog = [];
   async function git(args, options = {}) {
-    const result = await runGit(args, options);
-    commandLog.push(result);
-    return result;
+    const { cwd = root, env = {} } = options;
+    try {
+      const result = await runGit(args, { cwd, env: { ...gitEnv, ...env } });
+      commandLog.push(result);
+      return result;
+    } catch (error) {
+      if (error.result) {
+        commandLog.push(error.result);
+      }
+      throw error;
+    }
   }
 
   async function setup() {
     await mkdir(logs, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await mkdir(xdgConfigHome, { recursive: true });
     await git(['init', '--bare', remote], { cwd: root });
     await git(['init', machineA], { cwd: root });
     await git(['-C', machineA, 'config', 'user.email', 'machine-a@example.test'], { cwd: root });
@@ -62,14 +80,29 @@ export async function createContextSyncE2EHarness() {
     return api;
   }
 
+  function resolveMachineFile(machinePath, relativePath) {
+    if (isAbsolute(relativePath)) {
+      throw new Error(`Machine file path must be relative: ${relativePath}`);
+    }
+    const machineRoot = resolve(machinePath);
+    const fullPath = resolve(machineRoot, relativePath);
+    const relativeToRoot = relative(machineRoot, fullPath);
+    if (relativeToRoot === '..' || relativeToRoot.startsWith(`..${sep}`) || isAbsolute(relativeToRoot)) {
+      throw new Error(`Machine file path escapes machine root: ${relativePath}`);
+    }
+    return fullPath;
+  }
+
   async function writeMachineFile(machinePath, relativePath, content) {
-    const fullPath = join(machinePath, relativePath);
+    const fullPath = resolveMachineFile(machinePath, relativePath);
     await mkdir(dirname(fullPath), { recursive: true });
     await writeFile(fullPath, content);
   }
 
   async function appendMachineFile(machinePath, relativePath, content) {
-    await appendFile(join(machinePath, relativePath), content);
+    const fullPath = resolveMachineFile(machinePath, relativePath);
+    await mkdir(dirname(fullPath), { recursive: true });
+    await appendFile(fullPath, content);
   }
 
   async function commit(machinePath, message) {
