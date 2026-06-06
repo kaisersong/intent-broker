@@ -1,4 +1,5 @@
 import {
+  cleanupRemoteWipRefs,
   collectGitContext,
   createAndPushWipCommit,
   createIsolatedBranch,
@@ -6,10 +7,15 @@ import {
 } from './git-transport.js';
 
 const DEFAULT_CHECKPOINT_TTL_MS = 15 * 60 * 1000;
-const ACTIVE_SYNC_STATUSES = new Set(['prepared', 'emitted', 'cleanup_pending']);
+const ACTIVE_SYNC_STATUSES = new Set(['prepared', 'wip_pushed', 'partial', 'emitted', 'cleanup_pending']);
+const TERMINAL_RECEIVE_STATUSES = new Set(['acked', 'partial', 'failed', 'cleaned']);
 
 function toIso(date) {
   return date.toISOString();
+}
+
+function computeNextRetryAt(date, delayMs = 30 * 1000) {
+  return toIso(new Date(date.getTime() + delayMs));
 }
 
 function callNow(now) {
@@ -43,6 +49,7 @@ export function createContextSyncService({
     createAndPushWipCommit,
     fetchAndVerifyWipCommit,
     createIsolatedBranch,
+    cleanupRemoteWipRefs,
   },
 } = {}) {
   if (!store) throw new Error('context_sync_store_required');
@@ -132,6 +139,9 @@ export function createContextSyncService({
       `修改: ${(context.filesModified || []).join(', ') || '无'}`,
       `状态: 只读加载，尚未应用到当前 worktree`,
     ];
+    if ((context.filesPending || []).length > 0) {
+      lines.push(`未跟踪文件仅作为元数据: ${(context.filesPending || []).join(', ')}`);
+    }
     if (isolation?.branchName) {
       lines.push(`隔离分支: ${isolation.branchName}`);
     }
@@ -202,6 +212,7 @@ export function createContextSyncService({
       });
     } catch (error) {
       lastError = error.message;
+      wip = error.partialWip ?? null;
     }
 
     const payload = buildPayload({
@@ -214,21 +225,36 @@ export function createContextSyncService({
       wipRemote: wip?.wipRemote ?? null,
     });
     const ready = store.updateContextSync(checkpoint.syncId, {
+      status: wip ? 'wip_pushed' : 'prepared',
       payload,
       wipBranch: payload.wipBranch,
       latestRef: payload.latestRef,
       wipCommitSha: payload.wipCommitSha,
       wipPushedAt: wip ? toIso(emittedAt) : null,
       lastError,
+      cleanupStatus: wip ? 'pending' : null,
     });
 
-    sendContextSyncRequest({ record: ready, targetParticipantIds });
-    return store.updateContextSync(checkpoint.syncId, {
-      status: 'emitted',
-      emittedAt: toIso(emittedAt),
-      lastEmitAt: toIso(emittedAt),
-      emitAttempts: (ready.emitAttempts ?? 0) + 1,
-    });
+    try {
+      await sendContextSyncRequest({ record: ready, targetParticipantIds });
+      return store.updateContextSync(checkpoint.syncId, {
+        status: 'emitted',
+        emittedAt: toIso(emittedAt),
+        lastEmitAt: toIso(emittedAt),
+        emitAttempts: (ready.emitAttempts ?? 0) + 1,
+        nextRetryAt: null,
+        lastError,
+      });
+    } catch (error) {
+      return store.updateContextSync(checkpoint.syncId, {
+        status: 'partial',
+        lastEmitAt: toIso(emittedAt),
+        emitAttempts: (ready.emitAttempts ?? 0) + 1,
+        nextRetryAt: computeNextRetryAt(emittedAt),
+        lastError: error.message,
+        cleanupStatus: wip ? 'pending' : null,
+      });
+    }
   }
 
   async function emitLatestPreparedCheckpoint({
@@ -245,13 +271,46 @@ export function createContextSyncService({
       return null;
     }
 
-    sendContextSyncRequest({ record: checkpoint, targetParticipantIds });
+    await sendContextSyncRequest({ record: checkpoint, targetParticipantIds });
     return store.updateContextSync(checkpoint.syncId, {
       status: 'emitted',
       emittedAt: toIso(emittedAt),
       lastEmitAt: toIso(emittedAt),
       emitAttempts: (checkpoint.emitAttempts ?? 0) + 1,
     });
+  }
+
+  async function retryContextSync({
+    syncId,
+    targetParticipantIds,
+  } = {}) {
+    if (!syncId) throw new Error('sync_id_required');
+    const record = store.getContextSync(syncId);
+    if (!record) throw new Error('context_sync_not_found');
+    if (!['partial', 'wip_pushed', 'emitted'].includes(record.status)) {
+      throw new Error('context_sync_not_retryable');
+    }
+    const attemptedAt = callNow(now);
+
+    try {
+      await sendContextSyncRequest({ record, targetParticipantIds });
+      return store.updateContextSync(syncId, {
+        status: 'emitted',
+        emittedAt: record.emittedAt ?? toIso(attemptedAt),
+        lastEmitAt: toIso(attemptedAt),
+        emitAttempts: (record.emitAttempts ?? 0) + 1,
+        nextRetryAt: null,
+        lastError: null,
+      });
+    } catch (error) {
+      return store.updateContextSync(syncId, {
+        status: 'partial',
+        lastEmitAt: toIso(attemptedAt),
+        emitAttempts: (record.emitAttempts ?? 0) + 1,
+        nextRetryAt: computeNextRetryAt(attemptedAt),
+        lastError: error.message,
+      });
+    }
   }
 
   function markAcked(syncId, { receiverParticipantId, ackedAt = callNow(now) } = {}) {
@@ -265,6 +324,17 @@ export function createContextSyncService({
     const payload = event?.payload || {};
     const syncId = payload.syncId;
     const dedupeKey = `${syncId}:${payload.wipCommitSha || 'inline'}`;
+    const persistedDuplicate = typeof store.findReceiverContextSync === 'function'
+      ? store.findReceiverContextSync({
+        syncId,
+        receiverParticipantId: participantId,
+        wipCommitSha: payload.wipCommitSha || null,
+      })
+      : null;
+    if (persistedDuplicate && TERMINAL_RECEIVE_STATUSES.has(persistedDuplicate.status)) {
+      loadedSyncKeys.add(dedupeKey);
+      return { duplicate: true, syncId, status: persistedDuplicate.status };
+    }
     if (loadedSyncKeys.has(dedupeKey)) {
       return { duplicate: true, syncId };
     }
@@ -309,9 +379,10 @@ export function createContextSyncService({
       expiresAt: payload.expiresAt,
       ackedAt: toIso(callNow(now)),
       lastError: failureReason,
+      cleanupStatus: payload.wipCommitSha ? 'pending' : null,
     });
 
-    sendContextSyncAck({
+    await sendContextSyncAck({
       syncId,
       toParticipantId: event.fromParticipantId,
       status,
@@ -332,11 +403,41 @@ export function createContextSyncService({
     };
   }
 
+  async function cleanupContextSync(syncId) {
+    if (!syncId) throw new Error('sync_id_required');
+    const record = store.getContextSync(syncId);
+    if (!record) throw new Error('context_sync_not_found');
+    if (!record.wipCommitSha) {
+      return store.updateContextSync(syncId, {
+        cleanupStatus: 'cleaned',
+        cleanupAttemptedAt: toIso(callNow(now)),
+        cleanupError: null,
+      });
+    }
+
+    const attemptedAt = callNow(now);
+    const result = await gitTransport.cleanupRemoteWipRefs({
+      cwd,
+      remote: record.payload?.wipRemote || 'origin',
+      refs: [record.wipBranch, record.latestRef],
+      expectedSha: record.wipCommitSha,
+    });
+    const failed = result.errors.length > 0;
+    return store.updateContextSync(syncId, {
+      status: failed ? record.status : 'cleaned',
+      cleanupStatus: failed ? 'failed' : 'cleaned',
+      cleanupAttemptedAt: toIso(attemptedAt),
+      cleanupError: failed ? JSON.stringify(result.errors) : null,
+    });
+  }
+
   return {
     prepareCheckpoint,
     explicitSync,
     emitLatestPreparedCheckpoint,
+    retryContextSync,
     loadContextSyncRequest,
+    cleanupContextSync,
     markAcked,
   };
 }
