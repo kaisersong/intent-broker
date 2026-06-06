@@ -310,6 +310,18 @@ export function createEventStore({ dbPath }) {
       `).get(syncId);
       return row ? mapContextSyncRow(row) : null;
     },
+    findReceiverContextSync({ syncId, receiverParticipantId, wipCommitSha = null } = {}) {
+      const row = db.prepare(`
+        SELECT *
+        FROM context_syncs
+        WHERE sync_id = ?
+          AND receiver_participant_id = ?
+          AND COALESCE(wip_commit_sha, 'inline') = COALESCE(?, 'inline')
+          AND status IN ('acked', 'partial', 'failed', 'cleaned')
+        LIMIT 1
+      `).get(syncId, receiverParticipantId, wipCommitSha);
+      return row ? mapContextSyncRow(row) : null;
+    },
     updateContextSync(syncId, changes) {
       const entries = Object.entries(changes || {})
         .filter(([key]) => Object.hasOwn(CONTEXT_SYNC_UPDATE_COLUMNS, key));
@@ -353,6 +365,31 @@ export function createEventStore({ dbPath }) {
         params.push(limit);
       }
       return db.prepare(sql).all(...params).map(mapContextSyncRow);
+    },
+    listContextSyncCleanupCandidates({ limit = 50 } = {}) {
+      return db.prepare(`
+        SELECT *
+        FROM context_syncs
+        WHERE cleanup_status = 'pending'
+          AND wip_commit_sha IS NOT NULL
+          AND (wip_branch IS NOT NULL OR latest_ref IS NOT NULL)
+        ORDER BY COALESCE(acked_at, emitted_at, created_at) ASC
+        LIMIT ?
+      `).all(limit).map(mapContextSyncRow);
+    },
+    markContextSyncCleanup(syncId, {
+      cleanupStatus,
+      cleanupAttemptedAt = new Date().toISOString(),
+      cleanupError = null,
+    } = {}) {
+      db.prepare(`
+        UPDATE context_syncs
+        SET cleanup_status = ?,
+            cleanup_attempted_at = ?,
+            cleanup_error = ?
+        WHERE sync_id = ?
+      `).run(cleanupStatus, cleanupAttemptedAt, cleanupError, syncId);
+      return this.getContextSync(syncId);
     },
     getLatestPreparedContextSync({ userId, now = new Date(), maxAgeMs = 15 * 60 * 1000 } = {}) {
       const nowDate = now instanceof Date ? now : new Date(now);

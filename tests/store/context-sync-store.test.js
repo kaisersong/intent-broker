@@ -103,3 +103,61 @@ test('context sync ack transition records receiver metadata', () => {
   assert.equal(acked.receiverParticipantId, 'codex-b');
   assert.equal(acked.ackedAt, '2026-06-04T09:19:00.000Z');
 });
+
+test('receiver dedupe lookup finds terminal context sync for same receiver and SHA', () => {
+  const store = createEventStore({ dbPath: createTempDbPath() });
+  store.saveContextSync(syncRecord({
+    status: 'acked',
+    receiverParticipantId: 'receiver',
+    wipCommitSha: 'def456',
+    ackedAt: '2026-06-04T09:19:00.000Z',
+  }));
+
+  const duplicate = store.findReceiverContextSync({
+    syncId: 'sync-songkai-1770000000000',
+    receiverParticipantId: 'receiver',
+    wipCommitSha: 'def456',
+  });
+
+  assert.equal(duplicate.status, 'acked');
+  assert.equal(duplicate.receiverParticipantId, 'receiver');
+});
+
+test('cleanup candidates include terminal records with WIP refs', () => {
+  const store = createEventStore({ dbPath: createTempDbPath() });
+  store.saveContextSync(syncRecord({
+    status: 'acked',
+    cleanupStatus: 'pending',
+  }));
+  store.saveContextSync(syncRecord({
+    syncId: 'sync-inline',
+    status: 'acked',
+    wipBranch: null,
+    latestRef: null,
+    wipCommitSha: null,
+    cleanupStatus: 'pending',
+  }));
+
+  const candidates = store.listContextSyncCleanupCandidates({ limit: 10 });
+
+  assert.deepEqual(candidates.map((record) => record.syncId), ['sync-songkai-1770000000000']);
+});
+
+test('cleanup marker records status, attempt time, and error', () => {
+  const store = createEventStore({ dbPath: createTempDbPath() });
+  store.saveContextSync(syncRecord({
+    status: 'cleanup_pending',
+    cleanupStatus: 'pending',
+  }));
+
+  store.markContextSyncCleanup('sync-songkai-1770000000000', {
+    cleanupStatus: 'failed',
+    cleanupAttemptedAt: '2026-06-04T09:21:00.000Z',
+    cleanupError: 'remote rejected delete',
+  });
+
+  const saved = store.getContextSync('sync-songkai-1770000000000');
+  assert.equal(saved.cleanupStatus, 'failed');
+  assert.equal(saved.cleanupAttemptedAt, '2026-06-04T09:21:00.000Z');
+  assert.equal(saved.cleanupError, 'remote rejected delete');
+});
