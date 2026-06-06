@@ -89,6 +89,10 @@ export function createBrokerService({
   });
   let awayMode = false;
 
+  function parseEventTime(createdAt) {
+    return new Date(createdAt + 'Z').getTime();
+  }
+
   const TASK_UNACK_THRESHOLD_MS = 5 * 60 * 1000;
   const TASK_UNACK_DEDUP_MS = 30 * 60 * 1000;
   const watchdogTimers = new Map();
@@ -114,7 +118,7 @@ export function createBrokerService({
     const unackedEvents = events.filter((e) => e.kind === 'task_unacked');
     if (unackedEvents.length) {
       const lastUnacked = unackedEvents[unackedEvents.length - 1];
-      const ageSinceLastUnacked = Date.now() - new Date(lastUnacked.createdAt).getTime();
+      const ageSinceLastUnacked = Date.now() - parseEventTime(lastUnacked.createdAt);
       if (ageSinceLastUnacked < TASK_UNACK_DEDUP_MS) return;
     }
 
@@ -129,7 +133,7 @@ export function createBrokerService({
     if (!recipients.length) return;
 
     const now = new Date();
-    const ageMs = now.getTime() - new Date(latestEvent.createdAt).getTime();
+    const ageMs = Date.now() - parseEventTime(latestEvent.createdAt);
 
     sendIntentInternal({
       intentId: `task-unacked-${taskId}-${Date.now()}`,
@@ -162,7 +166,7 @@ export function createBrokerService({
       const hasTargetedDelivery = requestEvent.payload?.delivery?.targetParticipantIds?.length > 0;
       if (!hasTargetedDelivery) continue;
 
-      const age = now - new Date(latestEvent.createdAt).getTime();
+      const age = now - parseEventTime(latestEvent.createdAt);
       if (age > TASK_UNACK_THRESHOLD_MS) {
         checkAndNotifyUnacked(taskId);
       } else {
@@ -576,7 +580,7 @@ export function createBrokerService({
       const requestEvent = events.find((e) => e.kind === 'request_task');
       const latestEventAt = latestEvent?.createdAt ?? null;
       const ageMs = latestEventAt
-        ? Date.now() - new Date(latestEventAt).getTime()
+        ? Date.now() - parseEventTime(latestEventAt)
         : null;
       return {
         taskId: task.taskId,
