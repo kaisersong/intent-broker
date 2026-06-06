@@ -55,6 +55,7 @@ export async function createContextSyncE2EHarness() {
     await git(['-C', machineA, 'branch', '-M', 'main'], { cwd: root });
     await git(['-C', machineA, 'remote', 'add', 'origin', remote], { cwd: root });
     await git(['-C', machineA, 'push', '-u', 'origin', 'main'], { cwd: root });
+    await git(['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: root });
     await git(['clone', remote, machineB], { cwd: root });
     await git(['-C', machineB, 'config', 'user.email', 'machine-b@example.test'], { cwd: root });
     await git(['-C', machineB, 'config', 'user.name', 'Machine B'], { cwd: root });
