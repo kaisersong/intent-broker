@@ -663,6 +663,8 @@ See:
 
 ## Version History
 
+**v0.3.8** — Task lifecycle governance and context sync: P0/P1 task lifecycle governance rules enforce consistent task state transitions across agents; local context sync allows agents to exchange working-tree snapshots with partial-retry and dedupe safety; event timestamps are now parsed as UTC to fix `ageMs` calculation drift when broker and agents run in different timezones.
+
 **v0.3.7** — KSwarm delivery contract hardening: broker task delivery failure no longer creates synthetic task completion, preserving project recovery semantics for Xiaok Desktop Swarm runs.
 
 **v0.3.6** — Codex hook installer now uses `[features].hooks` instead of deprecated `[features].codex_hooks`, migrates existing configs, and refreshes managed local hooks with `npm run codex:install`.

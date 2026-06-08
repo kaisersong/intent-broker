@@ -663,6 +663,8 @@ node src/relay/relay-cli.js login --provider github
 
 ## 版本日志
 
+**v0.3.8** — 任务生命周期治理与上下文同步：P0/P1 任务生命周期治理规则在所有 agent 之间强制执行一致的任务状态转换；本地上下文同步让 agent 可以交换工作区快照，具备部分重试和去重安全机制；事件时间戳现在解析为 UTC，修复了 broker 与 agent 时区不同时 `ageMs` 计算偏差的问题。
+
 **v0.3.7** — KSwarm 投递合同加固：broker 任务投递失败不再生成合成任务完成结果，保留 Xiaok Desktop Swarm 项目的恢复和改派语义。
 
 **v0.3.6** — Codex hook 安装器改用 `[features].hooks`，不再写入已废弃的 `[features].codex_hooks`；安装时会迁移旧配置，并可通过 `npm run codex:install` 刷新本地受管 hooks。
@@ -670,6 +672,16 @@ node src/relay/relay-cli.js login --provider github
 **v0.3.5** — Qoder CLI adapter：完整 hook 接入（SessionStart、UserPromptSubmit、PreToolUse、Stop），broker 启动时自动安装，`QODER_SESSION_ID` 环境变量检测。
 
 **v0.3.4** — user-prompt-submit hook 中推送 `implementing` work-state，`who` 命令能正确显示工作中的 agent。
+
+**v0.3.3** — 适配最新 HexDeck 打包/安装流程；相对 v0.3.2 无协议或 adapter 行为变更。
+
+**v0.3.2** — Windows sidecar 和 Codex app-server 现以隐藏窗口启动，并使用跨进程启动锁；approval projection 扫描范围超出前 100 条事件，正确上报待确认数量；收紧 Codex resume 发现和 xiaok hook 覆盖范围。
+
+**v0.3.1** — 压缩 broker informational 事件：过滤 markdown、50 字符摘要截断、总计最多 3 行。
+
+**v0.3.0** — 全 3 个 adapter 接入 PreToolUse hook；Claude Code + xiaok AskUserQuestion 镜像；Codex 原生升级 + 破坏性命令检测；xiaok 人机确认/澄清往返；待处理 tool-use 上下文关联；hook 审批超时解决；压缩 informational broker 事件含截断；175 个测试。
+
+**v0.2.3** — 优雅关机、启动时清理残留进程、session-keeper 自动恢复、realtime bridge 队列改进。
 
 **v0.2.0** — Agent Group 协作：同项目自动发现、文件变更广播、冲突检测、文件锁；人机交互确认：阻塞式确认、超时 fallback；任务分发与审查；协作历史；降级容错。
 
