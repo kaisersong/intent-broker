@@ -1,9 +1,12 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
+
+import { deriveSessionBridgeConfig } from '../adapters/session-bridge/config.js';
+import { ensureRealtimeBridge } from '../adapters/session-bridge/realtime-bridge.js';
 
 function appendText(chunks, value) {
   if (value) {
@@ -17,6 +20,26 @@ function writeLog(logDir, name, content) {
 
 function writeJsonLog(logDir, name, payload) {
   writeLog(logDir, name, JSON.stringify(payload, null, 2));
+}
+
+function createLoggedDetachedSpawn(logDir, prefix) {
+  return (command, args, options = {}) => {
+    const stdoutFd = openSync(join(logDir, `${prefix}.stdout.log`), 'a');
+    const stderrFd = openSync(join(logDir, `${prefix}.stderr.log`), 'a');
+    const child = spawn(command, args, {
+      ...options,
+      stdio: ['ignore', stdoutFd, stderrFd]
+    });
+    child.on('close', () => {
+      try {
+        closeSync(stdoutFd);
+      } catch {}
+      try {
+        closeSync(stderrFd);
+      } catch {}
+    });
+    return child;
+  };
 }
 
 function readJsonFile(filePath, fallback = null) {
@@ -237,6 +260,20 @@ async function stopBrokerProcess(broker) {
   });
 }
 
+function stopRealtimeBridgeProcesses(bridgeState) {
+  for (const item of Object.values(bridgeState || {})) {
+    if (!item?.pid) {
+      continue;
+    }
+    try {
+      process.kill(item.pid, 'SIGTERM');
+    } catch {
+      // best effort only
+    }
+  }
+}
+
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
   const body = await response.json();
@@ -283,6 +320,41 @@ function buildAnalysis(summary) {
   ].join('\n');
 }
 
+async function ensureSmokeRealtimeBridge({
+  toolName,
+  cliPath,
+  participantId,
+  sessionId,
+  repoRoot,
+  env,
+  homeDir,
+  logDir,
+  logPrefix
+}) {
+  const bridgeEnv = {
+    ...env,
+    PARTICIPANT_ID: participantId,
+    INTENT_BROKER_INBOX_MODE: 'realtime'
+  };
+  const config = deriveSessionBridgeConfig({
+    toolName,
+    env: bridgeEnv,
+    cwd: repoRoot
+  });
+
+  return ensureRealtimeBridge({
+    toolName,
+    cliPath,
+    config,
+    sessionId,
+    cwd: repoRoot,
+    env: bridgeEnv,
+    homeDir,
+    parentPid: null,
+    spawnImpl: createLoggedDetachedSpawn(logDir, logPrefix)
+  });
+}
+
 export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
   const resolvedRepoRoot = resolve(repoRoot || process.cwd());
   const resolvedLogDir = resolve(logDir || join(resolvedRepoRoot, '.tmp', `collaboration-smoke-${Date.now()}`));
@@ -304,6 +376,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     logDir: resolvedLogDir,
     homeDir
   });
+  let realtimeBridgeState = null;
 
   try {
     await waitForHealth(`${brokerUrl}/health`);
@@ -340,6 +413,32 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
       args: ['adapters/claude-code-plugin/bin/claude-code-broker.js', 'hook', 'session-start'],
       stdinText: JSON.stringify({ session_id: 'claude-smoke-session-1' })
     });
+
+    realtimeBridgeState = {
+      codex: await ensureSmokeRealtimeBridge({
+        toolName: 'codex',
+        cliPath: join(resolvedRepoRoot, 'adapters', 'codex-plugin', 'bin', 'codex-broker.js'),
+        participantId: codexParticipantId,
+        sessionId: 'codex-smoke-session-1',
+        repoRoot: resolvedRepoRoot,
+        env: baseEnv,
+        homeDir,
+        logDir: resolvedLogDir,
+        logPrefix: 'codex.realtime-bridge'
+      }),
+      claude: await ensureSmokeRealtimeBridge({
+        toolName: 'claude-code',
+        cliPath: join(resolvedRepoRoot, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js'),
+        participantId: claudeParticipantId,
+        sessionId: 'claude-smoke-session-1',
+        repoRoot: resolvedRepoRoot,
+        env: baseEnv,
+        homeDir,
+        logDir: resolvedLogDir,
+        logPrefix: 'claude.realtime-bridge'
+      })
+    };
+    writeJsonLog(resolvedLogDir, 'bridge.ensure.json', realtimeBridgeState);
 
     const participants = await requestJson(`${brokerUrl}/participants?projectName=intent-broker`);
     writeJsonLog(resolvedLogDir, 'broker.participants.json', participants);
@@ -449,6 +548,7 @@ export async function runCollaborationSmoke({ repoRoot, logDir } = {}) {
     writeLog(resolvedLogDir, 'analysis.md', buildAnalysis(summary));
     return summary;
   } finally {
+    stopRealtimeBridgeProcesses(realtimeBridgeState);
     await stopBrokerProcess(broker);
     broker.flushLogs();
   }

@@ -9,12 +9,53 @@ export function defaultCommandShimPath({ homeDir = os.homedir(), commandName = '
   return path.join(homeDir, '.local', 'bin', fileName);
 }
 
-export function buildCommandShimContent({ cliPath, nodePath = process.execPath, platform = process.platform } = {}) {
-  if (platform === 'win32') {
-    return `@echo off\r\n"${nodePath}" "${cliPath}" %*\r\n`;
+function isPackagedMacAppExecutable(nodePath, platform) {
+  return platform === 'darwin' && typeof nodePath === 'string' && nodePath.includes('.app/Contents/MacOS/');
+}
+
+export function resolveCommandShimNodePath({
+  nodePath = process.execPath,
+  platform = process.platform,
+  env = process.env,
+  exists = existsSync
+} = {}) {
+  const override = env.INTENT_BROKER_NODE_PATH;
+  if (override) {
+    return override;
   }
 
-  return `#!/bin/sh\nexec "${nodePath}" "${cliPath}" "$@"\n`;
+  if (!isPackagedMacAppExecutable(nodePath, platform)) {
+    return nodePath;
+  }
+
+  const inheritedNodePath = env.npm_node_execpath || env.NODE;
+  if (inheritedNodePath) {
+    return inheritedNodePath;
+  }
+
+  for (const candidate of ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']) {
+    if (exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return nodePath;
+}
+
+export function buildCommandShimContent({
+  cliPath,
+  nodePath = process.execPath,
+  platform = process.platform,
+  env = process.env,
+  exists = existsSync
+} = {}) {
+  const resolvedNodePath = resolveCommandShimNodePath({ nodePath, platform, env, exists });
+
+  if (platform === 'win32') {
+    return `@echo off\r\n"${resolvedNodePath}" "${cliPath}" %*\r\n`;
+  }
+
+  return `#!/bin/sh\nexec "${resolvedNodePath}" "${cliPath}" "$@"\n`;
 }
 
 function isLegacyPosixShim(filePath) {

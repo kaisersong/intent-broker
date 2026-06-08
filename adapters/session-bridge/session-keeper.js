@@ -1,5 +1,5 @@
 import { execFileSync, spawn as spawnDefault } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -386,6 +386,66 @@ export async function ensureSessionKeeper({
   }
 }
 
+export function recoverStaleRuntime({
+  toolName,
+  runtimeStatePath,
+  logger,
+  isProcessAlive: isProcessAliveImpl = isProcessAlive,
+  readFileSyncImpl = readFileSync,
+  writeFileSyncImpl = writeFileSync,
+  existsSyncImpl = existsSync,
+  renameSyncImpl = renameSync,
+  appendFileSyncImpl = appendFileSync,
+  mkdirSyncImpl = mkdirSync,
+  homedirImpl = os.homedir
+} = {}) {
+  if (!toolName || !runtimeStatePath || !existsSyncImpl(runtimeStatePath)) return;
+
+  let runtime;
+  try {
+    runtime = JSON.parse(readFileSyncImpl(runtimeStatePath, 'utf8'));
+  } catch {
+    return;
+  }
+
+  if (runtime.status !== 'running') return;
+  if (!runtime.ownerPid) return;
+
+  if (isProcessAliveImpl(runtime.ownerPid)) return;
+
+  const recovered = {
+    ...runtime,
+    status: 'idle',
+    source: 'keeper-recovery',
+    updatedAt: new Date().toISOString()
+  };
+  const tmpPath = `${runtimeStatePath}.keeper-${process.pid}-${Date.now()}.tmp`;
+  try {
+    writeFileSyncImpl(tmpPath, JSON.stringify(recovered, null, 2));
+    renameSyncImpl(tmpPath, runtimeStatePath);
+  } catch (e) {
+    try { rmSync(tmpPath, { force: true }); } catch {}
+    logger?.warn?.(`[session-keeper] failed to write recovery state for ${toolName}: ${e.message}`);
+    return;
+  }
+
+  try {
+    const after = JSON.parse(readFileSyncImpl(runtimeStatePath, 'utf8'));
+    if (after.source === 'keeper-recovery') {
+      const logDir = path.join(homedirImpl(), '.intent-broker', toolName);
+      mkdirSyncImpl(logDir, { recursive: true });
+      const logPath = path.join(logDir, 'auto-dispatch-recovery.log');
+      const age = Date.now() - new Date(runtime.updatedAt || 0).getTime();
+      const entry = `[${new Date().toISOString()}] recovered stale runtime, previous owner: ${runtime.ownerPid}, age: ${age}ms\n`;
+      try { appendFileSyncImpl(logPath, entry); } catch {}
+
+      logger?.info?.(`[session-keeper] recovered stale runtime for ${toolName}: owner ${runtime.ownerPid} is dead`);
+    }
+  } catch {
+    // Verification failed — file may be corrupt or gone. Best effort.
+  }
+}
+
 export async function runSessionKeeperIteration({
   config,
   parentPid,
@@ -393,6 +453,10 @@ export async function runSessionKeeperIteration({
   registerParticipant = registerParticipantDefault,
   updatePresence = updatePresenceDefault
 } = {}) {
+  const toolName = config.toolName || config.tool || 'unknown';
+  const runtimeStatePath = path.join(os.homedir(), '.intent-broker', toolName, 'runtime-state.json');
+  recoverStaleRuntime({ toolName, runtimeStatePath, logger: config.logger, isProcessAlive: isProcessAliveImpl });
+
   const normalizedParentPid = normalizePid(parentPid);
 
   if (normalizedParentPid && !isProcessAliveImpl(normalizedParentPid)) {

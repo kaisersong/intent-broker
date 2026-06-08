@@ -97,3 +97,16 @@ When you are about to take ownership in the same project:
 - check `GET /participants?projectName=<project>`
 - check `GET /work-state?projectName=<project>`
 - avoid duplicating a task another agent is already implementing or reviewing
+
+## Cross-Agent Handoff Protocol (Mandatory)
+
+| Action | Correct | Wrong |
+|--------|---------|-------|
+| Delegate work to another agent | `intent-broker task <alias> <taskId> <threadId> <summary>` | Using `progress`/`note` to ask another agent to do something |
+| Report your own status | `intent-broker progress <taskId> <threadId> <summary>` | — |
+| Reply to a message from another agent | `intent-broker reply <summary>` | — |
+
+Only `intent-broker task` (generates `request_task`) triggers the broker's 5-minute watchdog and PM escalation.
+Using `progress` or `note` to delegate = task is silently lost with no tracking.
+
+When handing off, include: (1) design doc path, (2) implementation order, (3) key files/lines, (4) acceptance criteria.

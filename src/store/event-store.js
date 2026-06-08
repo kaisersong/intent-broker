@@ -151,6 +151,13 @@ export function createEventStore({ dbPath }) {
       `).run(participantId, eventId);
       return { participantId, eventId };
     },
+    discardInbox(participantId) {
+      db.prepare(`
+        UPDATE inbox_entries
+        SET discarded_at = CURRENT_TIMESTAMP
+        WHERE participant_id = ? AND discarded_at IS NULL
+      `).run(participantId);
+    },
     getCursor(participantId) {
       const row = db.prepare(`
         SELECT cursor_event_id

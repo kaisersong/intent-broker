@@ -16,6 +16,7 @@ export const INTENT_KINDS = [
   'participant_alias_updated',
   'handoff_delivery_failed',
   'task_unacked',
+  'participant_removed',
   'workflow_progress_batch'
 ];
 

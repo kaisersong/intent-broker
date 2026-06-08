@@ -1,5 +1,5 @@
 import { execFile as execFileCallback, spawn as spawnDefault } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -448,6 +448,12 @@ export async function maybeAutoDispatchRealtimeQueue({
       threadId: null,
       updatedAt: new Date().toISOString()
     });
+    // Log recovery
+    const logDir = path.join(os.homedir(), '.intent-broker', toolName);
+    mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, 'auto-dispatch-recovery.log');
+    const entry = `[${new Date().toISOString()}] realtime-bridge recovered stale auto-dispatch, previous owner: ${runtimeState.ownerPid || 'unknown'}, stale for: ${Date.now() - (runtimeState.updatedAt ? new Date(runtimeState.updatedAt).getTime() : 0)}ms\n`;
+    try { appendFileSync(logPath, entry); } catch {}
     await updateWorkState(
       config,
       buildAutomaticWorkState('idle')

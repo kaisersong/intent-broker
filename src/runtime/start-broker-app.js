@@ -4,6 +4,7 @@ import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { createBrokerService } from '../broker/service.js';
+import { createHumanEscalation } from './human-escalation.js';
 import { createServer } from '../http/server.js';
 import { loadIntentBrokerConfig } from '../config/load-config.js';
 import { syncAgentBridges as syncAgentBridgesDefault } from './bridge-install-sync.js';
@@ -65,7 +66,8 @@ export async function startBrokerApp({
     logger
   });
 
-  const broker = createBroker({ dbPath });
+  const enableEscalation = process.env.ENABLE_HUMAN_ESCALATION !== '0';
+  const broker = createBroker({ dbPath, onTaskUnacked: enableEscalation ? createHumanEscalation() : null });
   const channelHealth = createChannelHealthRegistry();
   const server = createHttpServer({
     broker,

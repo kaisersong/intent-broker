@@ -8,7 +8,8 @@ import {
   buildCommandShimContent,
   defaultCommandShimPath,
   ensureCommandShim,
-  isPathDirAvailable
+  isPathDirAvailable,
+  resolveCommandShimNodePath
 } from '../../adapters/hook-installer-core/command-shim.js';
 
 test('defaultCommandShimPath uses ~/.local/bin/intent-broker on POSIX', () => {
@@ -38,6 +39,30 @@ test('buildCommandShimContent wraps unified cli with node on POSIX', () => {
 
   assert.match(content, /^#!\/bin\/sh/);
   assert.match(content, /exec "\/usr\/local\/bin\/node" "\/Users\/song\/projects\/intent-broker\/bin\/intent-broker\.js" "\$@"/);
+});
+
+test('buildCommandShimContent avoids packaged macOS Electron executable in POSIX shim', () => {
+  const content = buildCommandShimContent({
+    cliPath: '/Applications/xiaok.app/Contents/Resources/services/intent-broker/bin/intent-broker.js',
+    nodePath: '/Applications/xiaok.app/Contents/MacOS/xiaok',
+    platform: 'darwin',
+    env: {},
+    exists: candidate => candidate === '/usr/local/bin/node'
+  });
+
+  assert.match(content, /exec "\/usr\/local\/bin\/node" "\/Applications\/xiaok\.app\/Contents\/Resources\/services\/intent-broker\/bin\/intent-broker\.js" "\$@"/);
+  assert.doesNotMatch(content, /Contents\/MacOS\/xiaok/);
+});
+
+test('resolveCommandShimNodePath preserves explicit overrides', () => {
+  const nodePath = resolveCommandShimNodePath({
+    nodePath: '/Applications/xiaok.app/Contents/MacOS/xiaok',
+    platform: 'darwin',
+    env: { INTENT_BROKER_NODE_PATH: '/custom/bin/node' },
+    exists: () => false
+  });
+
+  assert.equal(nodePath, '/custom/bin/node');
 });
 
 test('buildCommandShimContent wraps unified cli with node on Windows', () => {

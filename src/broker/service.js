@@ -76,7 +76,8 @@ export function createBrokerService({
   presenceTimeoutMs = 600000,
   presenceSweepIntervalMs = 5000,
   websocketHeartbeatIntervalMs = 30000,
-  offlineContextSyncEmitter = null
+  offlineContextSyncEmitter = null,
+  onTaskUnacked = null
 }) {
   const participants = new Map();
   const aliases = new Map();
@@ -93,6 +94,7 @@ export function createBrokerService({
     return new Date(createdAt + 'Z').getTime();
   }
 
+  const PRUNE_THRESHOLD_MS = Number(process.env.PRUNE_THRESHOLD_MS) || 30 * 60 * 1000;
   const TASK_UNACK_THRESHOLD_MS = 5 * 60 * 1000;
   const TASK_UNACK_DEDUP_MS = 30 * 60 * 1000;
   const watchdogTimers = new Map();
@@ -119,7 +121,7 @@ export function createBrokerService({
     if (unackedEvents.length) {
       const lastUnacked = unackedEvents[unackedEvents.length - 1];
       const ageSinceLastUnacked = Date.now() - parseEventTime(lastUnacked.createdAt);
-      if (ageSinceLastUnacked < TASK_UNACK_DEDUP_MS) return;
+      if (Number.isFinite(ageSinceLastUnacked) && ageSinceLastUnacked < TASK_UNACK_DEDUP_MS) return;
     }
 
     const requestEvent = events.find((e) => e.kind === 'request_task');
@@ -150,6 +152,45 @@ export function createBrokerService({
         targetParticipantIds
       }
     });
+
+    // Also notify human participants
+    const humanParticipantIds = [...participants.values()]
+      .filter((p) => p.kind === 'human' && p.participantId !== 'broker.system')
+      .map((p) => p.participantId);
+
+    if (humanParticipantIds.length) {
+      sendIntentInternal({
+        intentId: `task-unacked-human-${taskId}-${Date.now()}`,
+        kind: 'task_unacked',
+        fromParticipantId: 'broker.system',
+        taskId,
+        threadId: task.threadId,
+        to: { mode: 'participant', participants: humanParticipantIds },
+        payload: {
+          taskId,
+          threadId: task.threadId,
+          ageMs: Number.isFinite(ageMs) ? ageMs : 0,
+          requesterId: requestEvent?.fromParticipantId ?? null,
+          targetParticipantIds
+        }
+      });
+    }
+
+    // Fire external callback
+    if (typeof onTaskUnacked === 'function') {
+      try {
+        onTaskUnacked({
+          taskId,
+          threadId: task.threadId,
+          ageMs: Number.isFinite(ageMs) ? ageMs : 0,
+          requesterId: requestEvent?.fromParticipantId ?? null,
+          targetParticipantIds,
+          recipients
+        });
+      } catch (e) {
+        console.error('[broker] onTaskUnacked callback error:', e?.message || e);
+      }
+    }
   }
 
   function reconcileWatchdogs() {
@@ -425,6 +466,20 @@ export function createBrokerService({
       return false;
     }
 
+    // Broadcast removal BEFORE deleting — other participants need to know
+    sendIntentInternal({
+      intentId: `participant-removed-${participantId}-${Date.now()}`,
+      kind: 'participant_removed',
+      fromParticipantId: 'broker.system',
+      to: { mode: 'broadcast' },
+      payload: {
+        participantId,
+        alias: participant.alias,
+        kind: participant.kind,
+        reason: 'pruned'
+      }
+    });
+
     releaseAlias(participant.alias, participantId);
     if (participant.logicalParticipantId) {
       const sessions = logicalParticipants.get(participant.logicalParticipantId);
@@ -435,6 +490,7 @@ export function createBrokerService({
     }
     participants.delete(participantId);
     workStates.delete(participantId);
+    presence.removePresence(participantId);
     return true;
   }
 
@@ -689,6 +745,7 @@ export function createBrokerService({
   }
 
   function sweepStalePresence() {
+    const now = Date.now();
     for (const item of presence.listPresence()) {
       const raw = presence.peekPresence(item.participantId);
       if (!raw) {
@@ -700,7 +757,30 @@ export function createBrokerService({
           ...raw.metadata,
           reason: 'timeout'
         });
+        // setPresence may have already pruned the participant via shouldPruneOfflineParticipant
+        if (!participants.has(item.participantId)) continue;
       }
+
+      // Prune agents that have been offline too long
+      const participant = participants.get(item.participantId);
+      if (!participant) continue;
+      if (participant.kind !== 'agent') continue;
+      if (item.status !== 'offline') continue;
+
+      const lastSeen = raw.lastSeen;
+      if (!lastSeen) continue;
+
+      const offlineDuration = now - lastSeen;
+      if (!Number.isFinite(offlineDuration) || offlineDuration <= PRUNE_THRESHOLD_MS) continue;
+
+      // Re-check: participant is still offline (best-effort guard against re-register race)
+      const currentPresence = presence.peekPresence(item.participantId);
+      if (currentPresence && currentPresence.status !== 'offline') continue;
+      const currentParticipant = participants.get(item.participantId);
+      if (!currentParticipant) continue;
+
+      store.discardInbox(item.participantId);
+      pruneParticipant(item.participantId);
     }
   }
 

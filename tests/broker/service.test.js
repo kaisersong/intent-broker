@@ -987,7 +987,7 @@ test('presence sweep marks stale hook-only sessions offline and broadcasts the c
   await new Promise((resolve) => setTimeout(resolve, 40));
   broker.sweepPresence();
 
-  assert.equal(broker.getPresence('claude.session-1')?.status, 'offline');
+  assert.equal(broker.getPresence('claude.session-1'), null);
   await waitFor(() => broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_presence_updated').length >= 2, {
     timeoutMs: 1000,
     intervalMs: 10
@@ -996,6 +996,12 @@ test('presence sweep marks stale hook-only sessions offline and broadcasts the c
   const events = broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_presence_updated');
   assert.equal(events[0].payload.status, 'online');
   assert.equal(events[1].payload.status, 'offline');
+
+  // Pruned agent should also receive participant_removed broadcast
+  const removedEvents = broker.readInbox('human.song', { after: 0 }).items.filter((item) => item.kind === 'participant_removed');
+  assert.equal(removedEvents.length >= 1, true);
+  assert.equal(removedEvents[0].payload.participantId, 'claude.session-1');
+
   assert.equal(broker.listParticipants().some((item) => item.participantId === 'claude.session-1'), false);
 });
 
@@ -1012,7 +1018,7 @@ test('parent-exit offline updates prune stale agent registrations from the roste
 
   broker.updatePresence('codex.session-stale', 'offline', { reason: 'parent-exit' });
 
-  assert.equal(broker.getPresence('codex.session-stale')?.status, 'offline');
+  assert.equal(broker.getPresence('codex.session-stale'), null);
   assert.equal(broker.listParticipants().some((item) => item.participantId === 'codex.session-stale'), false);
 });
 
