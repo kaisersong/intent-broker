@@ -56,13 +56,15 @@ export async function startBrokerApp({
   ),
   socketPath = resolveDefaultSocketPath({ env })
 } = {}) {
+  const repoRoot = env.INTENT_BROKER_REPO_ROOT || cwd;
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
 
   mkdirSync(dirname(dbPath), { recursive: true });
 
   await syncAgentBridges({
-    repoRoot: cwd,
+    repoRoot,
+    cwd,
     logger
   });
 
@@ -103,7 +105,7 @@ export async function startBrokerApp({
   const registerParticipantLocally = async (participantConfig) =>
     broker.registerParticipant(asBrokerParticipantRegistration(participantConfig));
   await refreshPersistedAgentSessions({
-    repoRoot: cwd,
+    repoRoot,
     brokerUrl,
     env,
     logger,
@@ -115,7 +117,7 @@ export async function startBrokerApp({
   });
   const codexResumeDiscovery = createCodexResumeDiscoveryRuntime({
     brokerUrl,
-    repoRoot: cwd,
+    repoRoot,
     env,
     logger
   });
@@ -149,7 +151,7 @@ export async function startBrokerApp({
   const persistedSessionRefreshTimer = persistedSessionRefreshIntervalMs > 0
     ? setInterval(() => {
       void refreshPersistedAgentSessions({
-        repoRoot: cwd,
+        repoRoot,
         brokerUrl,
         env,
         logger: { warn: logger?.warn?.bind?.(logger) },

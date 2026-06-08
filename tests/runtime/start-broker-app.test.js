@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { resolveDefaultSocketPath, SOCKET_PATH, startBrokerApp } from '../../src/runtime/start-broker-app.js';
 
@@ -131,4 +134,90 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
   await app.close();
 
   assert.deepEqual(order.slice(-4), ['discovery-stop', 'channels-stop', 'broker-close', 'server-close']);
+});
+
+test('startBrokerApp separates writable runtime cwd from packaged repo root', async () => {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'intent-broker-runtime-'));
+  const repoRoot = '/Applications/xiaok.app/Contents/Resources/services/intent-broker';
+  const seen = {};
+  const logger = { log() {}, warn() {} };
+  const broker = {
+    registerParticipant(participant) {
+      return participant;
+    },
+    attachWebSocket() {},
+    close() {}
+  };
+  const server = {
+    async listen() {},
+    raw() {
+      return {};
+    },
+    address() {
+      return { port: 4318 };
+    },
+    async close() {}
+  };
+  const channels = {
+    async startAll() {},
+    async stopAll() {},
+    describe() {
+      return [];
+    }
+  };
+  const discovery = {
+    async start() {},
+    async stop() {}
+  };
+
+  try {
+    const app = await startBrokerApp({
+      cwd: runtimeRoot,
+      env: { INTENT_BROKER_REPO_ROOT: repoRoot },
+      logger,
+      persistedSessionRefreshIntervalMs: 0,
+      socketPath: null,
+      loadConfig: ({ cwd, env }) => {
+        seen.configCwd = cwd;
+        seen.configRepoRoot = env.INTENT_BROKER_REPO_ROOT;
+        return {
+          server: { dbPath: '.tmp/test.db', host: '127.0.0.1', port: 4318 },
+          channels: {},
+          configPath: join(repoRoot, 'intent-broker.config.json'),
+          localConfigPath: join(runtimeRoot, 'intent-broker.local.json')
+        };
+      },
+      createBroker: ({ dbPath }) => {
+        seen.dbPath = dbPath;
+        return broker;
+      },
+      createHttpServer: () => server,
+      createChannelsRuntime: () => channels,
+      createCodexResumeDiscoveryRuntime: (options) => {
+        seen.discoveryRepoRoot = options.repoRoot;
+        return discovery;
+      },
+      syncAgentBridges: async (options) => {
+        seen.syncRepoRoot = options.repoRoot;
+        seen.syncCwd = options.cwd;
+        return [];
+      },
+      refreshPersistedAgentSessions: async (options) => {
+        seen.refreshRepoRoot = options.repoRoot;
+        return [];
+      }
+    });
+
+    assert.equal(seen.configCwd, runtimeRoot);
+    assert.equal(seen.configRepoRoot, repoRoot);
+    assert.equal(seen.dbPath, join(runtimeRoot, '.tmp', 'test.db'));
+    assert.equal(seen.syncRepoRoot, repoRoot);
+    assert.equal(seen.syncCwd, runtimeRoot);
+    assert.equal(seen.refreshRepoRoot, repoRoot);
+    assert.equal(seen.discoveryRepoRoot, repoRoot);
+
+    await app.close();
+  } finally {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+  }
 });

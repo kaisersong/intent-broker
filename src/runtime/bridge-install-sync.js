@@ -19,6 +19,7 @@ function log(logger, level, message) {
 
 export async function syncAgentBridges({
   repoRoot = process.cwd(),
+  cwd = repoRoot,
   homeDir = os.homedir(),
   logger = console
 } = {}) {
@@ -29,7 +30,7 @@ export async function syncAgentBridges({
     },
     {
       name: 'claude-code',
-      run: () => ensureClaudeCodeInstall({ cwd: repoRoot, homeDir })
+      run: () => ensureClaudeCodeInstall({ cwd, repoRoot, homeDir })
     },
     {
       name: 'xiaok-code',
