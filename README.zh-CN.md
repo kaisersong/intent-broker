@@ -21,13 +21,13 @@
 
 **这不是"让几个 agent 能聊天"，而是让人可以并行分派工作，同时让 agent 之间保留足够的共享状态。**
 
-## Xiaok Desktop v1.4.8 集成说明
+## Xiaok Desktop v1.4.9 集成说明
 
-- Intent Broker 仍是 Xiaok Desktop v1.4.8、KSwarm 项目 handoff、定时 loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
+- Intent Broker 仍是 Xiaok Desktop v1.4.9、KSwarm 项目 handoff、定时 loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
 - Broker 不判断任务是否完成，也不改写任务内容。它记录 request、delivery attempt、reply、approval、cancellation、run metadata 和 recovery signal；KSwarm 与 Xiaok Desktop 基于这些事实判断项目/任务状态和 artifact evidence。
 - 投递失败必须保持显式失败。Broker delivery failure 不能被转换成成功任务结果，因为 Xiaok loop diagnostics 会扫描 completion record，查找缺失产物和异常交付结果。
 - Runtime 恢复要分层诊断：先看 `127.0.0.1:4318` 的 broker health，再看 `127.0.0.1:4400` 的 KSwarm health，最后看 Desktop runtime/adapter 状态。Broker 健康只说明协作层可用，不代表 KSwarm sidecar 或定时任务执行器健康。
-- 本次 Xiaok v1.4.8 README 基线不要求 broker 协议迁移；现有 inbox delivery、event replay、hook 安装和 Unix socket fallback 语义仍是当前集成合同。随包 broker 基线仍是 `0.3.8`。
+- 本次 Xiaok v1.4.9 README 基线不要求 broker 协议迁移；现有 inbox delivery、event replay、hook 安装和 Unix socket fallback 语义仍是当前集成合同。随包 broker 基线仍是 `0.3.8`。
 
 ## 当前集成基线
 
