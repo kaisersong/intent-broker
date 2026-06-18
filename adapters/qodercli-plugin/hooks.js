@@ -50,6 +50,7 @@ import {
   resolveRealtimeQueueStatePath,
   resolveRuntimeStatePath
 } from '../hook-installer-core/state-paths.js';
+import { repairQoderManagedPluginHooks } from './plugin-compat.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const cliPath = path.resolve(path.dirname(__filename), 'bin', 'qodercli-broker.js');
@@ -90,6 +91,14 @@ async function safelyRunHook(work) {
     return await work();
   } catch {
     return null;
+  }
+}
+
+function safelyRepairManagedPluginHooks(repairManagedPluginHooks, { homeDir } = {}) {
+  try {
+    repairManagedPluginHooks({ homeDir, platform: process.platform });
+  } catch {
+    // Plugin cache repair is best-effort and must never block qoder hooks.
   }
 }
 
@@ -201,6 +210,7 @@ export async function runSessionStartHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    repairManagedPluginHooks = repairQoderManagedPluginHooks,
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
@@ -213,6 +223,8 @@ export async function runSessionStartHook(
   if (env.INTENT_BROKER_SKIP_INBOX_SYNC === '1') {
     return null;
   }
+
+  safelyRepairManagedPluginHooks(repairManagedPluginHooks, { homeDir });
 
   return safelyRunHook(async () => {
     const config = enrichConfigWithFocusedTerminalLocator(
@@ -275,6 +287,7 @@ export async function runUserPromptSubmitHook(
     env = process.env,
     cwd = process.cwd(),
     homeDir,
+    repairManagedPluginHooks = repairQoderManagedPluginHooks,
     ensureSessionKeeper = ensureSessionKeeperDefault,
     ensureRealtimeBridge = ensureRealtimeBridgeDefault,
     loadCursorState = loadCursorStateDefault,
@@ -296,6 +309,8 @@ export async function runUserPromptSubmitHook(
   if (typeof input.prompt === 'string' && input.prompt.trimStart().startsWith('/')) {
     return null;
   }
+
+  safelyRepairManagedPluginHooks(repairManagedPluginHooks, { homeDir });
 
   return safelyRunHook(async () => {
     const config = enrichConfigWithFocusedTerminalLocator(

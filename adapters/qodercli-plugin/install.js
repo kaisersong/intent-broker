@@ -13,6 +13,7 @@ import {
   mergeManagedHookGroups
 } from '../hook-installer-core/install-core.js';
 import { resolveToolStateRoot } from '../hook-installer-core/state-paths.js';
+import { repairQoderManagedPluginHooks } from './plugin-compat.js';
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -128,6 +129,10 @@ export function inspectQodercliInstall(options = {}) {
 
 export function ensureQodercliInstall(options = {}) {
   const inspection = inspectQodercliInstall(options);
+  const repairResult = repairQoderManagedPluginHooks({
+    homeDir: options.homeDir,
+    platform: options.platform
+  });
 
   for (const item of inspection.updated) {
     if (item === 'settings') {
@@ -144,6 +149,7 @@ export function ensureQodercliInstall(options = {}) {
     updated: inspection.updated,
     paths: inspection.paths,
     cliPath: inspection.cliPath,
-    verboseHooks: inspection.effectiveVerbose
+    verboseHooks: inspection.effectiveVerbose,
+    repairedPluginHooks: repairResult.repairedFiles
   };
 }
