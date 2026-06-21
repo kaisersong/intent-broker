@@ -100,11 +100,11 @@ The broker-side terminal locator contract lives in [TERMINAL_JUMP.md](TERMINAL_J
 
 ### Claude Code
 
-Tell Claude: "Install https://github.com/kaisersong/intent-broker"
+Tell Claude: "Install https://github.com/nicepkg/intent-broker"
 
 Or manually:
 ```bash
-git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-broker
+git clone https://github.com/nicepkg/intent-broker ~/.claude/skills/intent-broker
 ```
 
 ### Codex
@@ -112,7 +112,7 @@ git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-br
 From a source checkout:
 
 ```bash
-git clone https://github.com/kaisersong/intent-broker ~/projects/intent-broker
+git clone https://github.com/nicepkg/intent-broker ~/projects/intent-broker
 cd ~/projects/intent-broker
 npm install
 npm run codex:install

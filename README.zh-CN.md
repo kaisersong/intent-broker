@@ -100,11 +100,11 @@ broker 侧的终端定位契约记录在 [TERMINAL_JUMP.md](TERMINAL_JUMP.md)。
 
 ### Claude Code
 
-对 Claude 说：「安装 https://github.com/kaisersong/intent-broker」
+对 Claude 说：「安装 https://github.com/nicepkg/intent-broker」
 
 或手动：
 ```bash
-git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-broker
+git clone https://github.com/nicepkg/intent-broker ~/.claude/skills/intent-broker
 ```
 
 ### Codex
@@ -112,7 +112,7 @@ git clone https://github.com/kaisersong/intent-broker ~/.claude/skills/intent-br
 从源码 checkout 安装：
 
 ```bash
-git clone https://github.com/kaisersong/intent-broker ~/projects/intent-broker
+git clone https://github.com/nicepkg/intent-broker ~/projects/intent-broker
 cd ~/projects/intent-broker
 npm install
 npm run codex:install
