@@ -21,13 +21,13 @@ English | [简体中文](README.zh-CN.md)
 
 **This is not "let agents chat" — it's letting humans delegate work in parallel while agents retain enough shared state to coordinate.**
 
-## Xiaok Desktop v1.4.9 Integration Notes
+## Xiaok Desktop v1.4.11 Integration Notes
 
-- Intent Broker remains the event-first coordination layer for Xiaok Desktop v1.4.9, KSwarm project handoffs, scheduled loop dispatch, and local agent runtime adapters.
+- Intent Broker remains the event-first coordination layer for Xiaok Desktop v1.4.11, KSwarm project handoffs, scheduled loop dispatch, and local agent runtime adapters.
 - The broker does not decide whether a task is complete and does not rewrite task content. It records requests, delivery attempts, replies, approvals, cancellations, run metadata, and recovery signals; KSwarm and Xiaok Desktop use those facts to determine project/task state and artifact evidence.
 - Delivery failure must stay explicit. A failed broker delivery cannot be converted into a successful task result, because Xiaok loop diagnostics scan completion records for missing artifacts and anomalous delivery outcomes.
 - Runtime recovery should be diagnosed in layers: broker health on `127.0.0.1:4318`, KSwarm health on `127.0.0.1:4400`, then Desktop runtime/adapter state. A healthy broker confirms coordination is available, but it does not prove the KSwarm sidecar or a scheduled task executor is healthy.
-- No broker protocol migration is required for the Xiaok v1.4.9 README baseline; existing inbox delivery, event replay, hook installation, and Unix socket fallback semantics remain the active integration contract. The packaged broker baseline remains `0.3.8`.
+- No broker protocol migration is required for the Xiaok v1.4.11 README baseline; existing inbox delivery, event replay, hook installation, and Unix socket fallback semantics remain the active integration contract. The packaged broker baseline remains `0.3.8`.
 
 ## Current Integration Baseline
 
