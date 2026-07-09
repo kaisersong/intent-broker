@@ -21,14 +21,15 @@
 
 **这不是"让几个 agent 能聊天"，而是让人可以并行分派工作，同时让 agent 之间保留足够的共享状态。**
 
-## Xiaok Desktop v1.4.20 集成说明
+## Xiaok Desktop v1.4.21 集成说明
 
-- Intent Broker 仍是 Xiaok Desktop v1.4.20、KSwarm 项目 handoff、定时 loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
+- Intent Broker 仍是 Xiaok Desktop v1.4.21、KSwarm 项目 handoff、定时 loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
 - Broker 不判断任务是否完成，也不改写任务内容。它记录 request、delivery attempt、reply、approval、cancellation、run metadata 和 recovery signal；KSwarm 与 Xiaok Desktop 基于这些事实判断项目/任务状态和 artifact evidence。
 - 投递失败必须保持显式失败。Broker delivery failure 不能被转换成成功任务结果，因为 Xiaok loop diagnostics 会扫描 completion record，查找缺失产物和异常交付结果。
 - Runtime 恢复要分层诊断：先看 `127.0.0.1:4318` 的 broker health，再看 `127.0.0.1:4400` 的 KSwarm health，最后看 Desktop runtime/adapter 状态。Broker 健康只说明协作层可用，不代表 KSwarm sidecar 或定时任务执行器健康。
-- Xiaok Desktop v1.4.20 会在 broker 投递的工作完成后，从 Desktop evidence record 和 task snapshot 读取 task-completion loop 结果。这只是增加用户可见结果入口，不改变 broker 的投递语义。
-- 本次 Xiaok v1.4.20 README 基线不要求 broker 协议迁移；现有 inbox delivery、event replay、hook 安装和 Unix socket fallback 语义仍是当前集成合同。随包 broker 基线仍是 `0.3.8`。
+- Xiaok Desktop v1.4.21 会在 broker 投递的工作完成后，从 Desktop evidence record 和 task snapshot 读取 task-completion loop 结果。这只是增加用户可见结果入口，不改变 broker 的投递语义。
+- Xiaok Desktop 的 AI 录音路径刻意保持在 Desktop 知识库栈本地闭环。麦克风采集、Whisper 模型下载/续传、实时转写预览、纪要总结和保存转写来源都不需要 broker 投递；只有保存后的知识被 agent、项目或定时 loop 使用时，Broker 事件才进入后续协作链路。
+- 本次 Xiaok v1.4.21 README 基线不要求 broker 协议迁移；现有 inbox delivery、event replay、hook 安装和 Unix socket fallback 语义仍是当前集成合同。随包 broker 基线仍是 `0.3.8`。
 
 ## 当前集成基线
 
