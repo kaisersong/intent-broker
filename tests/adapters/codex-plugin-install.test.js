@@ -206,6 +206,38 @@ test('mergeIntentBrokerHooks replaces existing intent-broker handlers but preser
   );
 });
 
+test('mergeIntentBrokerHooks replaces all stale no-status hooks from the incident path', () => {
+  const oldCli = '/Users/song/projects/slide-creator/adapters/codex-plugin/bin/codex-broker.js';
+  const commands = {
+    sessionStartCommand: 'node "/repo/codex-broker.js" hook session-start',
+    userPromptSubmitCommand: 'node "/repo/codex-broker.js" hook user-prompt-submit',
+    preToolUseCommand: 'node "/repo/codex-broker.js" hook pre-tool-use',
+    stopCommand: 'node "/repo/codex-broker.js" hook stop'
+  };
+  const merged = mergeIntentBrokerHooks(
+    {
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: `node "${oldCli}" hook session-start` }] }],
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: `node "${oldCli}" hook user-prompt-submit` }] }],
+        PreToolUse: [{ matcher: 'Bash|exec_command', hooks: [{ type: 'command', command: `node "${oldCli}" hook pre-tool-use` }] }],
+        Stop: [{ hooks: [{ type: 'command', command: `node "${oldCli}" hook stop` }] }],
+        Custom: [{ hooks: [{ type: 'command', command: 'node keep-me' }] }]
+      }
+    },
+    commands
+  );
+
+  assert.equal(merged.hooks.SessionStart.length, 1);
+  assert.equal(merged.hooks.UserPromptSubmit.length, 1);
+  assert.equal(merged.hooks.PreToolUse.length, 1);
+  assert.equal(merged.hooks.Stop.length, 1);
+  assert.equal(merged.hooks.SessionStart[0].hooks[0].command, commands.sessionStartCommand);
+  assert.equal(merged.hooks.UserPromptSubmit[0].hooks[0].command, commands.userPromptSubmitCommand);
+  assert.equal(merged.hooks.PreToolUse[0].hooks[0].command, commands.preToolUseCommand);
+  assert.equal(merged.hooks.Stop[0].hooks[0].command, commands.stopCommand);
+  assert.equal(merged.hooks.Custom[0].hooks[0].command, 'node keep-me');
+});
+
 test('managedHookStatusMessages exposes stable hook status labels', () => {
   assert.deepEqual(managedHookStatusMessages, {
     sessionStart: 'intent-broker session sync',

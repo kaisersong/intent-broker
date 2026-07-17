@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { resolveDefaultSocketPath, SOCKET_PATH, startBrokerApp } from '../../src/runtime/start-broker-app.js';
 
@@ -25,9 +26,18 @@ test('resolveDefaultSocketPath disables the local socket by default on Windows',
   );
 });
 
-test('startBrokerApp syncs local agent bridges before managed channels start', async () => {
+test('startBrokerApp syncs code-root bridges while preserving runtime cwd fallbacks', { timeout: 2000 }, async (t) => {
+  const codeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const runtimeCwd = mkdtempSync(join(tmpdir(), 'intent-broker-unrelated-runtime-'));
+  t.after(() => rmSync(runtimeCwd, { recursive: true, force: true }));
   const order = [];
   const registrations = [];
+  const discoveryOptions = [];
+  const refreshOptions = [];
+  let resolveSecondRefresh;
+  const secondRefresh = new Promise((resolveSecond) => {
+    resolveSecondRefresh = resolveSecond;
+  });
   const logger = { log() {}, warn() {} };
   const broker = {
     registerParticipant(participant) {
@@ -75,14 +85,18 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     }
   };
 
-  const app = await startBrokerApp({
-    cwd: '/Users/song/projects/intent-broker',
+  let app;
+  t.after(async () => {
+    await app?.close();
+  });
+  app = await startBrokerApp({
+    cwd: runtimeCwd,
     env: {},
     logger,
-    persistedSessionRefreshIntervalMs: 0,
+    persistedSessionRefreshIntervalMs: 1,
     socketPath: null,
     loadConfig: () => ({
-      server: { dbPath: '.tmp/test.db', host: '127.0.0.1', port: 4318 },
+      server: { dbPath: join(tmpdir(), 'intent-broker-start-broker-app-test.db'), host: '127.0.0.1', port: 4318 },
       channels: {},
       configPath: '/repo/intent-broker.config.json',
       localConfigPath: '/repo/intent-broker.local.json'
@@ -90,34 +104,49 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
     createBroker: () => broker,
     createHttpServer: () => server,
     createChannelsRuntime: () => channels,
-    createCodexResumeDiscoveryRuntime: () => discovery,
+    createCodexResumeDiscoveryRuntime: (options) => {
+      discoveryOptions.push(options);
+      return discovery;
+    },
     syncAgentBridges: async (options) => {
       order.push(`sync:${options.repoRoot}`);
       return [];
     },
     refreshPersistedAgentSessions: async (options) => {
-      await options.registerParticipant({
-        participantId: 'codex-session-019dc3ee',
-        roles: ['coder'],
-        capabilities: ['broker.auto_dispatch'],
-        alias: 'codex',
-        context: { projectName: 'hexdeck' },
-        metadata: { projectPath: '/Users/song/projects/hexdeck' },
-        inboxMode: 'realtime'
-      });
-      order.push(`refresh:${options.repoRoot}`);
+      refreshOptions.push(options);
+      if (refreshOptions.length === 1) {
+        await options.registerParticipant({
+          participantId: 'codex-session-019dc3ee',
+          roles: ['coder'],
+          capabilities: ['broker.auto_dispatch'],
+          alias: 'codex',
+          context: { projectName: 'hexdeck' },
+          metadata: { projectPath: '/Users/song/projects/hexdeck' },
+          inboxMode: 'realtime'
+        });
+        order.push(`refresh:${options.repoRoot}`);
+      }
+      if (refreshOptions.length === 2) {
+        resolveSecondRefresh();
+      }
       return [];
     }
   });
 
+  await secondRefresh;
+
   assert.deepEqual(order.slice(0, 5), [
-    'sync:/Users/song/projects/intent-broker',
+    `sync:${codeRoot}`,
     'listen',
     'attach-ws',
-    'refresh:/Users/song/projects/intent-broker',
+    `refresh:${runtimeCwd}`,
     'channels-start'
   ]);
   assert.equal(order[5], 'discovery-start');
+  assert.equal(discoveryOptions[0].repoRoot, codeRoot);
+  assert.equal(discoveryOptions[0].fallbackCwd, runtimeCwd);
+  assert.equal(refreshOptions.length >= 2, true);
+  assert.equal(refreshOptions.every((options) => options.repoRoot === runtimeCwd), true);
   assert.deepEqual(registrations, [
     {
       participantId: 'codex-session-019dc3ee',
@@ -132,6 +161,7 @@ test('startBrokerApp syncs local agent bridges before managed channels start', a
   ]);
 
   await app.close();
+  app = null;
 
   assert.deepEqual(order.slice(-4), ['discovery-stop', 'channels-stop', 'broker-close', 'server-close']);
 });
@@ -195,6 +225,7 @@ test('startBrokerApp separates writable runtime cwd from packaged repo root', as
       createChannelsRuntime: () => channels,
       createCodexResumeDiscoveryRuntime: (options) => {
         seen.discoveryRepoRoot = options.repoRoot;
+        seen.discoveryFallbackCwd = options.fallbackCwd;
         return discovery;
       },
       syncAgentBridges: async (options) => {
@@ -213,8 +244,9 @@ test('startBrokerApp separates writable runtime cwd from packaged repo root', as
     assert.equal(seen.dbPath, join(runtimeRoot, '.tmp', 'test.db'));
     assert.equal(seen.syncRepoRoot, repoRoot);
     assert.equal(seen.syncCwd, runtimeRoot);
-    assert.equal(seen.refreshRepoRoot, repoRoot);
+    assert.equal(seen.refreshRepoRoot, runtimeRoot);
     assert.equal(seen.discoveryRepoRoot, repoRoot);
+    assert.equal(seen.discoveryFallbackCwd, runtimeRoot);
 
     await app.close();
   } finally {

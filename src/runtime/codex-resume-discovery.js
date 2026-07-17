@@ -183,6 +183,7 @@ export async function discoverCodexResumeSessions({
 export async function attachDiscoveredCodexSession({
   brokerUrl,
   repoRoot = process.cwd(),
+  fallbackCwd = repoRoot,
   sessionId,
   parentPid,
   env = process.env,
@@ -204,7 +205,7 @@ export async function attachDiscoveredCodexSession({
     throw new Error('sessionId is required');
   }
 
-  const sessionCwd = resolveSessionCwdFromTranscript('codex', sessionId, { homeDir }) || repoRoot;
+  const sessionCwd = resolveSessionCwdFromTranscript('codex', sessionId, { homeDir }) || fallbackCwd;
   const bridgeEnv = buildDiscoveryBridgeEnv(env, brokerUrl, sessionId);
   const config = deriveSessionBridgeConfig({
     toolName: 'codex',
@@ -274,6 +275,7 @@ export async function attachDiscoveredCodexSession({
 export function createCodexResumeDiscoveryRuntime({
   brokerUrl,
   repoRoot = process.cwd(),
+  fallbackCwd = repoRoot,
   env = process.env,
   homeDir = os.homedir(),
   logger = console,
@@ -296,6 +298,7 @@ export function createCodexResumeDiscoveryRuntime({
         await attachSession({
           brokerUrl,
           repoRoot,
+          fallbackCwd,
           sessionId: session.sessionId,
           parentPid: session.pid,
           env,

@@ -3,6 +3,7 @@ import net from 'node:net';
 import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { createBrokerService } from '../broker/service.js';
 import { createHumanEscalation } from './human-escalation.js';
 import { createServer } from '../http/server.js';
@@ -15,6 +16,7 @@ import { refreshPersistedAgentSessions as refreshPersistedAgentSessionsDefault }
 import { createRelayAdapter } from '../relay/relay-adapter.js';
 
 export const SOCKET_PATH = join(homedir(), '.intent-broker', 'broker.sock');
+const MODULE_CODE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 export function resolveDefaultSocketPath({
   env = process.env,
@@ -56,7 +58,7 @@ export async function startBrokerApp({
   ),
   socketPath = resolveDefaultSocketPath({ env })
 } = {}) {
-  const repoRoot = env.INTENT_BROKER_REPO_ROOT || cwd;
+  const repoRoot = env.INTENT_BROKER_REPO_ROOT || MODULE_CODE_ROOT;
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
 
@@ -104,13 +106,14 @@ export async function startBrokerApp({
   const brokerUrl = `http://${config.server.host}:${server.address().port}`;
   const registerParticipantLocally = async (participantConfig) =>
     broker.registerParticipant(asBrokerParticipantRegistration(participantConfig));
-  await refreshPersistedAgentSessions({
-    repoRoot,
+  const refreshSessions = (refreshLogger = logger) => refreshPersistedAgentSessions({
+    repoRoot: cwd,
     brokerUrl,
     env,
-    logger,
+    logger: refreshLogger,
     registerParticipant: registerParticipantLocally
   });
+  await refreshSessions();
   const channels = createChannelsRuntime({
     brokerUrl,
     channels: config.channels
@@ -118,6 +121,7 @@ export async function startBrokerApp({
   const codexResumeDiscovery = createCodexResumeDiscoveryRuntime({
     brokerUrl,
     repoRoot,
+    fallbackCwd: cwd,
     env,
     logger
   });
@@ -150,13 +154,7 @@ export async function startBrokerApp({
 
   const persistedSessionRefreshTimer = persistedSessionRefreshIntervalMs > 0
     ? setInterval(() => {
-      void refreshPersistedAgentSessions({
-        repoRoot,
-        brokerUrl,
-        env,
-        logger: { warn: logger?.warn?.bind?.(logger) },
-        registerParticipant: registerParticipantLocally
-      }).catch((error) => {
+      void refreshSessions({ warn: logger?.warn?.bind?.(logger) }).catch((error) => {
         logger?.warn?.(
           `intent-broker persisted session refresh timer: ${error instanceof Error ? error.message : String(error)}`
         );

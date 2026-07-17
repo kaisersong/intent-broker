@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
   attachDiscoveredCodexSession,
+  createCodexResumeDiscoveryRuntime,
   discoverCodexResumeSessions
 } from '../../src/runtime/codex-resume-discovery.js';
 
@@ -76,17 +79,42 @@ test('discoverCodexResumeSessions hides the Windows PowerShell process query', a
   assert.equal(calls[0].options.windowsHide, true);
 });
 
-test('attachDiscoveredCodexSession starts broker sidecars for a resumed codex process', async () => {
+test('createCodexResumeDiscoveryRuntime forwards code root and fallback cwd to attachments', async () => {
   const calls = [];
+  const runtime = createCodexResumeDiscoveryRuntime({
+    brokerUrl: 'http://127.0.0.1:4318',
+    repoRoot: '/opt/xiaok/services/intent-broker',
+    fallbackCwd: '/workspace/project',
+    env: {},
+    intervalMs: 60_000,
+    discoverSessions: async () => [{ pid: 90210, sessionId: 'session-1' }],
+    attachSession: async (options) => {
+      calls.push(options);
+    }
+  });
+
+  await runtime.start();
+  await runtime.stop();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].repoRoot, '/opt/xiaok/services/intent-broker');
+  assert.equal(calls[0].fallbackCwd, '/workspace/project');
+});
+
+test('attachDiscoveredCodexSession keeps code root separate from fallback cwd', async (t) => {
+  const calls = [];
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-codex-discovery-'));
+  t.after(() => rmSync(homeDir, { recursive: true, force: true }));
 
   await attachDiscoveredCodexSession({
     brokerUrl: 'http://127.0.0.1:4318',
     repoRoot: '/Users/song/projects/intent-broker',
+    fallbackCwd: '/Users/song/projects/projects',
     sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec',
     parentPid: 90210,
     env: {},
-    homeDir: '/Users/song',
-    resolveSessionCwdFromTranscript: () => '/Users/song/projects/projects',
+    homeDir,
+    resolveSessionCwdFromTranscript: () => null,
     loadRuntimeState: () => ({
       status: 'idle',
       sessionId: null,
@@ -111,6 +139,10 @@ test('attachDiscoveredCodexSession starts broker sidecars for a resumed codex pr
     updateWorkState: async (config, state) => {
       calls.push({ type: 'work-state', config, state });
       return { ok: true };
+    },
+    maybeAutoDispatchRealtimeQueue: async (input) => {
+      calls.push({ type: 'auto-dispatch', input });
+      return { dispatched: false, reason: 'test' };
     }
   });
 
@@ -120,7 +152,16 @@ test('attachDiscoveredCodexSession starts broker sidecars for a resumed codex pr
   assert.equal(calls[0].input.config.inboxMode, 'realtime');
   assert.deepEqual(calls[0].input.config.context, { projectName: 'projects' });
   assert.equal(calls[0].input.cwd, '/Users/song/projects/projects');
+  assert.equal(
+    calls[0].input.cliPath,
+    path.join('/Users/song/projects/intent-broker', 'adapters', 'codex-plugin', 'bin', 'codex-broker.js')
+  );
   assert.equal(calls[1].type, 'bridge');
+  assert.equal(calls[1].input.cwd, '/Users/song/projects/projects');
+  assert.equal(
+    calls[1].input.cliPath,
+    path.join('/Users/song/projects/intent-broker', 'adapters', 'codex-plugin', 'bin', 'codex-broker.js')
+  );
   assert.equal(calls[2].type, 'register');
   assert.equal(calls[2].config.participantId, 'codex-session-019d4c08');
   assert.deepEqual(calls[3], {
@@ -128,6 +169,8 @@ test('attachDiscoveredCodexSession starts broker sidecars for a resumed codex pr
     config: calls[2].config,
     state: { status: 'idle', summary: null }
   });
+  assert.equal(calls[4].type, 'auto-dispatch');
+  assert.equal(calls[4].input.cwd, '/Users/song/projects/projects');
 });
 
 test('attachDiscoveredCodexSession strips leaked smoke-test broker env before spawning sidecars', async () => {
