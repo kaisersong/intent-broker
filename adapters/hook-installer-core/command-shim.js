@@ -19,7 +19,7 @@ export function resolveCommandShimNodePath({
   env = process.env,
   exists = existsSync
 } = {}) {
-  const override = env.INTENT_BROKER_NODE_PATH;
+  const override = env.INTENT_BROKER_NODE_PATH || env.XIAOK_NODE_CMD;
   if (override) {
     return override;
   }
@@ -33,7 +33,11 @@ export function resolveCommandShimNodePath({
     return inheritedNodePath;
   }
 
-  for (const candidate of ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']) {
+  const userLocalNode = env.HOME ? path.join(env.HOME, '.local', 'node', 'bin', 'node') : null;
+  for (const candidate of [userLocalNode, '/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']) {
+    if (!candidate) {
+      continue;
+    }
     if (exists(candidate)) {
       return candidate;
     }

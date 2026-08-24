@@ -65,6 +65,28 @@ test('resolveCommandShimNodePath preserves explicit overrides', () => {
   assert.equal(nodePath, '/custom/bin/node');
 });
 
+test('resolveCommandShimNodePath uses Xiaok configured Node before filesystem fallbacks', () => {
+  const nodePath = resolveCommandShimNodePath({
+    nodePath: '/Users/kai/Applications/xiaok.app/Contents/MacOS/xiaok',
+    platform: 'darwin',
+    env: { XIAOK_NODE_CMD: '/custom/xiaok/node' },
+    exists: () => false
+  });
+
+  assert.equal(nodePath, '/custom/xiaok/node');
+});
+
+test('resolveCommandShimNodePath finds user-local Node for packaged macOS apps', () => {
+  const nodePath = resolveCommandShimNodePath({
+    nodePath: '/Users/kai/Applications/xiaok.app/Contents/MacOS/xiaok',
+    platform: 'darwin',
+    env: { HOME: '/Users/kai' },
+    exists: candidate => candidate === '/Users/kai/.local/node/bin/node'
+  });
+
+  assert.equal(nodePath, '/Users/kai/.local/node/bin/node');
+});
+
 test('buildCommandShimContent wraps unified cli with node on Windows', () => {
   const content = buildCommandShimContent({
     cliPath: 'D:\\projects\\intent-broker\\bin\\intent-broker.js',
