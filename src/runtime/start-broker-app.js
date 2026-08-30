@@ -75,6 +75,9 @@ export async function startBrokerApp({
   const channelHealth = createChannelHealthRegistry();
   const server = createHttpServer({
     broker,
+    roomService: broker.room,
+    roomDesktopToken: env.INTENT_BROKER_DESKTOP_TOKEN,
+    roomKSwarmToken: env.INTENT_BROKER_KSWARM_TOKEN,
     healthProvider: () => {
       const summary = channelHealth.summarize();
       return {

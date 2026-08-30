@@ -18,7 +18,6 @@ import {
   runWhoCommand
 } from '../adapters/session-bridge/command-runner.js';
 import { runCliMain } from '../adapters/session-bridge/cli-errors.js';
-import { runCommand as runGroupCommand } from '../adapters/group-manager/cli.js';
 import { runCommand as runConfirmCommand } from '../adapters/user-confirm/cli.js';
 import { runCommand as runPhase2Command } from '../adapters/phase2/cli.js';
 
@@ -222,7 +221,16 @@ async function main() {
       }), null, 2));
       break;
     case 'group':
-      await runGroupCommand(parsed.toolName, parsed.args);
+      // Deprecated experimental group-manager surface (design §2.2, §9.1):
+      // stable deprecation contract for one release cycle — non-zero exit,
+      // migration guidance, no broker round trip, never reports success.
+      console.error(
+        'Error: `intent-broker group` is deprecated (group_cli_deprecated).\n' +
+        'Group notifications were experimental and never reached the broker contract.\n' +
+        'Use `intent-broker room` commands instead: rooms are the durable\n' +
+        'multi-agent collaboration surface with membership, transcript and delivery.'
+      );
+      process.exitCode = 1;
       break;
     case 'confirm':
       await runConfirmCommand(parsed.toolName, parsed.args);

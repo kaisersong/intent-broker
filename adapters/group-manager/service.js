@@ -113,7 +113,7 @@ export function createGroupManager({ brokerUrl = 'http://127.0.0.1:4318' } = {})
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           intentId: `group-notify-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          kind: 'group_notification',
+          kind: 'file_changed',
           fromParticipantId: fromParticipantId || 'group-manager',
           taskId: notification.taskId || null,
           threadId: null,

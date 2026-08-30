@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { URL } from 'node:url';
 
 export const INTENTS_MAX_BODY_BYTES = 16 * 1024;
@@ -51,16 +52,41 @@ function readJson(req, { maxBytes = Infinity } = {}) {
   });
 }
 
-export function createServer({ broker, healthProvider = null } = {}) {
+function tokenMatches(actual, expected) {
+  if (typeof actual !== 'string' || typeof expected !== 'string' || expected.length === 0) return false;
+  const left = Buffer.from(actual);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function roomStatus(result, successStatus = 200) {
+  if (result?.ok !== false) return successStatus;
+  if (result.code === 'room_authentication_required') return 401;
+  if (result.code === 'room_actor_forbidden' || result.code === 'room_actor_identity_mismatch') return 403;
+  if (result.code === 'room_not_found' || result.code === 'room_message_not_found') return 404;
+  if (result.code === 'room_revision_conflict' || result.code === 'room_message_duplicate') return 409;
+  return 400;
+}
+
+export function createServer({
+  broker,
+  healthProvider = null,
+  roomService = null,
+  roomDesktopToken = null,
+  roomKSwarmToken = null,
+} = {}) {
   const getHealth = healthProvider || (() => ({ ok: true }));
   const raw = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url, 'http://127.0.0.1');
     const pathname = requestUrl.pathname;
 
-    // CORS headers for Tauri webview fetch requests
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const roomPath = pathname === '/rooms' || pathname.startsWith('/rooms/')
+      || pathname === '/room-wakes' || pathname.startsWith('/room-wakes/');
+    // Legacy generic APIs still support the Tauri webview. Room APIs are
+    // main-process-only and never advertise a browser origin.
+    if (!roomPath) res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, x-intent-broker-room-token');
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -68,6 +94,139 @@ export function createServer({ broker, healthProvider = null } = {}) {
     }
 
     try {
+      if (roomPath) {
+        const token = req.headers['x-intent-broker-room-token'];
+        const desktopAuthenticated = tokenMatches(token, roomDesktopToken);
+        const kswarmAuthenticated = tokenMatches(token, roomKSwarmToken);
+        if (!roomService || (!desktopAuthenticated && !kswarmAuthenticated)) {
+          writeJson(res, 401, { error: 'room_authentication_required' });
+          return;
+        }
+
+        // Wake claim/complete is a Desktop-main-only transport surface. The
+        // renderer never receives this token or a generic HTTP primitive.
+        if (pathname === '/room-wakes' || pathname.startsWith('/room-wakes/')) {
+          if (!desktopAuthenticated) {
+            writeJson(res, 403, { code: 'room_actor_forbidden' });
+            return;
+          }
+          if (req.method === 'GET' && pathname === '/room-wakes') {
+            const logicalAgentId = requestUrl.searchParams.get('logicalAgentId') || '';
+            const result = roomService.listPendingWakeObligations({ logicalAgentId });
+            writeJson(res, roomStatus(result), result);
+            return;
+          }
+          if (req.method === 'POST' && pathname === '/room-wakes/claim') {
+            const body = await readJson(req);
+            const dispatcherAgentCtx = {
+              sessionId: 'desktop-room-wake-dispatcher',
+              requestSource: 'agent',
+              actor: { kind: 'agent', logicalAgentId: body.logicalAgentId },
+              allowedLogicalAgentIds: [body.logicalAgentId],
+              hostParticipantId: body.hostParticipantId,
+              issuedAt: new Date().toISOString(),
+            };
+            const result = roomService.claimWake(body, dispatcherAgentCtx);
+            writeJson(res, roomStatus(result), result);
+            return;
+          }
+          if (req.method === 'POST' && pathname === '/room-wakes/complete') {
+            const result = await roomService.completeWake(await readJson(req));
+            writeJson(res, roomStatus(result, 201), result);
+            return;
+          }
+          writeJson(res, 404, { error: 'not_found' });
+          return;
+        }
+
+        const ctx = desktopAuthenticated
+          ? {
+              sessionId: 'desktop-main-user',
+              requestSource: 'user',
+              actor: { kind: 'user', userId: 'user.local' },
+              allowedLogicalAgentIds: [],
+              issuedAt: new Date().toISOString(),
+            }
+          : {
+              sessionId: 'kswarm-system',
+              requestSource: 'system',
+              actor: { kind: 'system', service: 'kswarm' },
+              scopes: ['room-read', 'room-membership-lease', 'room-project-event-publisher'],
+              issuedAt: new Date().toISOString(),
+            };
+        const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent);
+        const roomId = segments[1];
+        const action = segments[2];
+        let result;
+
+        if (req.method === 'GET' && segments.length === 1) {
+          result = roomService.listCollaborationRooms({}, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
+        if (req.method === 'POST' && segments.length === 1) {
+          result = roomService.createRoom(await readJson(req), ctx);
+          writeJson(res, roomStatus(result, 201), result);
+          return;
+        }
+        if (req.method === 'GET' && roomId && !action) {
+          result = roomService.getCollaborationRoom({ roomId }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'messages') {
+          result = roomService.sendRoomMessage({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result, 201), result);
+          return;
+        }
+        if (req.method === 'PUT' && roomId && action === 'members') {
+          result = roomService.updateRoomMembers({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'archive') {
+          result = roomService.archiveRoom({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'seen') {
+          result = roomService.markRoomSeen({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'discussions') {
+          result = roomService.startTeamDiscussion({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result, 201), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'membership-leases') {
+          result = roomService.acquireMembershipLease({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result, 201), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'project-events') {
+          const body = await readJson(req);
+          result = roomService.sendRoomMessage({
+            roomId,
+            kind: 'project_event',
+            text: body.text ?? body.summary,
+            sourceRef: {
+              projectId: body.projectId,
+              projectRevision: body.projectRevision,
+              eventType: body.eventType,
+              projectionEventId: body.projectionEventId,
+            },
+            responsePolicy: 'none',
+            idempotencyKey: body.idempotencyKey ?? body.projectionEventId,
+          }, ctx);
+          writeJson(res, roomStatus(result, 201), result);
+          return;
+        }
+
+        writeJson(res, 404, { error: 'not_found' });
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/health') {
         writeJson(res, 200, getHealth());
         return;

@@ -268,7 +268,7 @@ export async function notifyFileModified({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         intentId: `file-modified-${file}-${Date.now()}`,
-        kind: 'group_notification',
+        kind: 'file_conflict',
         fromParticipantId: participantId,
         taskId: null,
         threadId: null,

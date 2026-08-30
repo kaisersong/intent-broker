@@ -3,6 +3,11 @@ import { validateBrokerIntent } from '../domain/validators.js';
 import { createEventStore } from '../store/event-store.js';
 import { createPresenceTracker } from './presence.js';
 import { createWebSocketNotifier } from './websocket.js';
+import { isReservedRoomIntent, ROOM_INTENT_REJECTION_CODE } from '../room/reserved-namespace.js';
+import { createRoomStore } from '../room/store.js';
+import { createRoomService } from '../room/service.js';
+
+const KNOWN_RECIPIENT_MODES = new Set(['participant', 'role', 'capability', 'broadcast']);
 
 function unique(values) {
   return Array.from(new Set(values));
@@ -84,6 +89,12 @@ export function createBrokerService({
   const logicalParticipants = new Map();
   const workStates = new Map();
   const store = createEventStore({ dbPath });
+  // The broker owns the Room domain on the same durable SQLite file.
+  // Room tables are separate from the generic event/inbox surface and are
+  // never dual-written by generic intents (design §9.1).
+  const roomStore = createRoomStore({ dbPath });
+  roomStore.migrate();
+  const room = createRoomService({ store: roomStore });
   const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs });
   const wsNotifier = createWebSocketNotifier({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
@@ -827,6 +838,7 @@ export function createBrokerService({
   }
 
   return {
+    room,
     registerParticipant(participant) {
       const isFromRelay = participant.metadata?.fromRelay === true;
       const existing = participants.get(participant.participantId);
@@ -1005,6 +1017,17 @@ export function createBrokerService({
       });
     },
     sendIntent(input) {
+      // Reserved Room materialization namespace: the generic surface must
+      // never write Room state, even for opaque intents (design §10.3).
+      if (isReservedRoomIntent(input)) {
+        return { ok: false, code: ROOM_INTENT_REJECTION_CODE };
+      }
+      // Generic recipient resolver default-denies missing or unknown
+      // to.mode instead of falling back to broadcast (design §9.1).
+      const recipientMode = input?.to?.mode;
+      if (!KNOWN_RECIPIENT_MODES.has(recipientMode)) {
+        return { ok: false, code: 'recipient_mode_invalid' };
+      }
       return sendIntentInternal(input);
     },
     readInbox(participantId, options = {}) {
@@ -1179,6 +1202,7 @@ export function createBrokerService({
       }
       watchdogTimers.clear();
       wsNotifier.close();
+      room.close();
     }
   };
 }
