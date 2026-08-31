@@ -248,6 +248,87 @@ test('logical agents sharing one runtime participant keep separate deliveries, a
   assert.equal(worker.wakeStatus, 'pending');
 });
 
+test('active room accepts a claimed reply after the claim lease time when the discussion epoch is unchanged', async () => {
+  const { service } = createService({
+    now: () => new Date('2026-08-30T00:00:00Z'),
+    wakeClaimGraceMs: 60_000,
+  });
+  const created = await createRoom(service, ['agent-alpha']);
+  const sent = sendMessage(service, created.room, {
+    text: '@agent-alpha perform a long bounded analysis',
+    mentions: [{ kind: 'agent', logicalAgentId: 'agent-alpha' }],
+    responsePolicy: 'mentioned',
+    idempotencyKey: 'im-active-long-1',
+  });
+  const claim = service.claimWake(
+    { roomMessageId: sent.message.messageId, logicalAgentId: 'agent-alpha', hostParticipantId: 'xiaok-desktop' },
+    agentCtx('agent-alpha')
+  );
+  assert.ok(claim.ok, JSON.stringify(claim));
+
+  const completed = await service.completeWake({
+    claimToken: claim.claimToken,
+    reply: { kind: 'text', text: 'long analysis completed' },
+    now: new Date('2026-08-30T00:02:00Z'),
+  });
+
+  assert.ok(completed.ok, JSON.stringify(completed));
+  const messages = service.listRoomMessages({ roomId: created.room.roomId }, userCtx());
+  assert.equal(messages.messages.filter((message) => message.text === 'long analysis completed').length, 1);
+  const delivery = service.listDeliveries({ roomMessageId: sent.message.messageId })
+    .find((entry) => entry.recipientKey === 'agent:agent-alpha');
+  assert.equal(delivery.wakeStatus, 'completed');
+  assert.equal(service.listExecutionAudit({ roomId: created.room.roomId }).entries.length, 0);
+});
+
+test('active room rejects a claimed reply from a stale discussion epoch and records it once', async () => {
+  const { service } = createService({
+    now: () => new Date('2026-08-30T00:00:00Z'),
+    wakeClaimGraceMs: 60_000,
+  });
+  const created = await createRoom(service, ['agent-alpha']);
+  const sent = sendMessage(service, created.room, {
+    text: '@agent-alpha analyze turn one',
+    mentions: [{ kind: 'agent', logicalAgentId: 'agent-alpha' }],
+    responsePolicy: 'mentioned',
+    idempotencyKey: 'im-stale-epoch-1',
+  });
+  const claim = service.claimWake(
+    { roomMessageId: sent.message.messageId, logicalAgentId: 'agent-alpha', hostParticipantId: 'xiaok-desktop' },
+    agentCtx('agent-alpha')
+  );
+  assert.ok(claim.ok, JSON.stringify(claim));
+
+  sendMessage(service, created.room, {
+    text: 'turn two supersedes the old run',
+    responsePolicy: 'none',
+    idempotencyKey: 'im-stale-epoch-2',
+  });
+
+  const stale = await service.completeWake({
+    claimToken: claim.claimToken,
+    reply: { kind: 'text', text: 'stale turn one output' },
+    now: new Date('2026-08-30T00:00:30Z'),
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'room_delivery_conflict');
+  assert.equal(stale.settled, 'stale_epoch');
+
+  const messages = service.listRoomMessages({ roomId: created.room.roomId }, userCtx());
+  assert.equal(messages.messages.filter((message) => message.text === 'stale turn one output').length, 0);
+  const audit = service.listExecutionAudit({ roomId: created.room.roomId }).entries;
+  assert.equal(audit.filter((entry) => entry.outcome === 'stale_epoch').length, 1);
+
+  const duplicate = await service.completeWake({
+    claimToken: claim.claimToken,
+    reply: { kind: 'text', text: 'stale turn one output again' },
+    now: new Date('2026-08-30T00:00:40Z'),
+  });
+  assert.equal(duplicate.ok, false);
+  assert.equal(duplicate.code, 'room_delivery_conflict');
+  assert.equal(service.listExecutionAudit({ roomId: created.room.roomId }).entries.length, 1);
+});
+
 test('user seen cursor does not affect agent wake cursors and vice versa', async () => {
   const { service } = createService();
   const created = await createRoom(service, ['agent-alpha']);

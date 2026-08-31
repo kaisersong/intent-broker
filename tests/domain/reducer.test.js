@@ -58,3 +58,50 @@ test('task lifecycle events without task id are ignored during state rebuild', (
 
   assert.deepEqual(state.tasks, {});
 });
+
+test('a second submit_result for an already-submitted task is recorded as a duplicate, not a silent overwrite', () => {
+  // Mirrors cumora's atomic verbatim-dup gate: once a task has a canonical
+  // submission, a second submit_result for the same taskId (e.g. two workers
+  // racing on the same dispatch, or a retried submission) must not silently
+  // replace latestSubmissionId. The first submission stays canonical; the
+  // second is tracked as a rejected duplicate so the caller can be told.
+  const state = reduceEventStream([
+    { kind: 'request_task', taskId: 'task-dup', threadId: 'thread-dup' },
+    { kind: 'accept_task', taskId: 'task-dup', assignmentMode: 'single', participantId: 'agent.a' },
+    { kind: 'submit_result', taskId: 'task-dup', submissionId: 'sub-1' },
+    { kind: 'submit_result', taskId: 'task-dup', submissionId: 'sub-2' },
+  ]);
+
+  const task = state.tasks['task-dup'];
+  assert.equal(task.latestSubmissionId, 'sub-1', 'first submission remains canonical');
+  assert.deepEqual(task.submissions, ['sub-1'], 'duplicate submission id is not appended to the canonical list');
+  assert.deepEqual(task.duplicateSubmissionIds, ['sub-2'], 'duplicate is tracked separately for visibility');
+});
+
+test('re-submitting the same submissionId twice is idempotent, not a duplicate', () => {
+  // A retried delivery of the exact same submissionId (network retry, at-least-once
+  // redelivery) is not a race between two different results — it is the same
+  // fact repeated. It must not appear in duplicateSubmissionIds.
+  const state = reduceEventStream([
+    { kind: 'request_task', taskId: 'task-retry', threadId: 'thread-retry' },
+    { kind: 'submit_result', taskId: 'task-retry', submissionId: 'sub-1' },
+    { kind: 'submit_result', taskId: 'task-retry', submissionId: 'sub-1' },
+  ]);
+
+  const task = state.tasks['task-retry'];
+  assert.equal(task.latestSubmissionId, 'sub-1');
+  assert.deepEqual(task.submissions, ['sub-1']);
+  assert.deepEqual(task.duplicateSubmissionIds, []);
+});
+
+test('submit_result after cancel_task is rejected as a duplicate rather than reopening the task', () => {
+  const state = reduceEventStream([
+    { kind: 'request_task', taskId: 'task-cancelled', threadId: 'thread-cancelled' },
+    { kind: 'cancel_task', taskId: 'task-cancelled' },
+    { kind: 'submit_result', taskId: 'task-cancelled', submissionId: 'sub-late' },
+  ]);
+
+  const task = state.tasks['task-cancelled'];
+  assert.equal(task.status, 'cancelled', 'a late submission does not resurrect a cancelled task');
+  assert.deepEqual(task.duplicateSubmissionIds, ['sub-late']);
+});

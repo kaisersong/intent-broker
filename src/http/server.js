@@ -206,11 +206,15 @@ export function createServer({
         }
         if (req.method === 'POST' && roomId && action === 'project-events') {
           const body = await readJson(req);
+          const sourceRefs = body.sourceRefs && typeof body.sourceRefs === 'object' && !Array.isArray(body.sourceRefs)
+            ? body.sourceRefs
+            : {};
           result = roomService.sendRoomMessage({
             roomId,
             kind: 'project_event',
             text: body.text ?? body.summary,
             sourceRef: {
+              ...sourceRefs,
               projectId: body.projectId,
               projectRevision: body.projectRevision,
               eventType: body.eventType,

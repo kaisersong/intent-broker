@@ -182,14 +182,43 @@ test('KSwarm token can publish project events and acquire leases but cannot impe
     body: {
       projectId: 'project-1',
       projectRevision: 1,
-      eventType: 'project_created',
-      text: 'Project created',
+      eventType: 'artifact.registered',
+      text: 'Artifact report.html registered',
       idempotencyKey: 'project-event-http-1',
+      projectionEventId: 'proj:project-1#7',
+      sourceRefs: {
+        projectId: 'forged-project',
+        projectRevision: 999,
+        eventType: 'forged.event',
+        projectionEventId: 'forged-projection',
+        taskId: 'task-report',
+        artifactId: 'artifact-report-html',
+        artifact: {
+          projectId: 'project-1',
+          filename: 'report.html',
+          kind: 'html',
+          mimeType: 'text/html',
+        },
+      },
     },
   });
   assert.equal(event.response.status, 201, JSON.stringify(event.payload));
 
   const detail = await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}`, { token: DESKTOP_TOKEN });
   assert.equal(detail.response.status, 200);
-  assert.ok(detail.payload.messages.some((message) => message.kind === 'project_event'));
+  const projectEvent = detail.payload.messages.find((message) => message.kind === 'project_event');
+  assert.deepEqual(projectEvent.sourceRef, {
+    projectId: 'project-1',
+    projectRevision: 1,
+    eventType: 'artifact.registered',
+    projectionEventId: 'proj:project-1#7',
+    taskId: 'task-report',
+    artifactId: 'artifact-report-html',
+    artifact: {
+      projectId: 'project-1',
+      filename: 'report.html',
+      kind: 'html',
+      mimeType: 'text/html',
+    },
+  });
 });

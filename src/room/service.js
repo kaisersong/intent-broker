@@ -712,24 +712,50 @@ export function createRoomService({
     if (!delivery || delivery.claimToken !== claimToken) {
       return fail('room_delivery_conflict');
     }
-    if (delivery.wakeStatus === 'completed') {
+    if (delivery.wakeStatus !== 'claimed') {
       return fail('room_delivery_conflict', { wakeStatus: delivery.wakeStatus });
     }
 
     const sourceMessage = store.getMessageById(roomMessageId);
     const room = store.getRoomRow(sourceMessage.roomId);
     const effectiveNow = nowDate(nowOverride ?? now());
+    const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId });
+    const activeExecutionContext = room.status === 'active' && member?.status === 'active';
+    const claimEpoch = Number.parseInt(epoch, 10);
 
-    if (new Date(leaseUntil).getTime() < effectiveNow.getTime()) {
-      // grace window expired: outcome is durable audit only
-      store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
-      store.insertAudit({
-        roomId: sourceMessage.roomId,
-        roomMessageId,
-        logicalAgentId,
-        outcome: 'grace_expired',
-        detail: { replyText: reply?.text ?? null, reason: 'claim_lease_expired' },
-        createdAt: effectiveNow.toISOString(),
+    if (activeExecutionContext && Number.isFinite(claimEpoch) && claimEpoch !== room.discussionEpoch) {
+      store.withTransaction(() => {
+        store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
+        store.insertAudit({
+          roomId: sourceMessage.roomId,
+          roomMessageId,
+          logicalAgentId,
+          outcome: 'stale_epoch',
+          detail: {
+            replyText: reply?.text ?? null,
+            claimEpoch,
+            currentEpoch: room.discussionEpoch,
+            reason: 'discussion_epoch_advanced',
+          },
+          createdAt: effectiveNow.toISOString(),
+        });
+      });
+      return fail('room_delivery_conflict', { settled: 'stale_epoch' });
+    }
+
+    if (!activeExecutionContext && new Date(leaseUntil).getTime() < effectiveNow.getTime()) {
+      // The fixed lease is a settlement grace deadline after archive/removal,
+      // not an execution timeout for an otherwise active room member.
+      store.withTransaction(() => {
+        store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
+        store.insertAudit({
+          roomId: sourceMessage.roomId,
+          roomMessageId,
+          logicalAgentId,
+          outcome: 'grace_expired',
+          detail: { replyText: reply?.text ?? null, reason: 'claim_lease_expired' },
+          createdAt: effectiveNow.toISOString(),
+        });
       });
       return fail('room_archived', { settled: 'grace_expired' });
     }
@@ -748,7 +774,7 @@ export function createRoomService({
       responsePolicy: 'none',
       idempotencyKey: `wake:${claimToken}`,
       roomSequence: 0,
-      discussionEpoch: Number(epoch) || room.discussionEpoch,
+      discussionEpoch: Number.isFinite(claimEpoch) ? claimEpoch : room.discussionEpoch,
       createdAt: timestamp,
     };
 

@@ -6,6 +6,7 @@ function ensureTask(state, event) {
       status: 'open',
       assignees: [],
       submissions: [],
+      duplicateSubmissionIds: [],
       latestSubmissionId: null
     };
   }
@@ -62,6 +63,21 @@ export function reduceEventStream(events) {
         break;
       case 'submit_result':
         if (task) {
+          // Idempotent redelivery of the same submissionId is not a race —
+          // it is the same fact repeated (e.g. an at-least-once retry) and
+          // must not be tracked as a duplicate.
+          if (event.submissionId === task.latestSubmissionId) {
+            break;
+          }
+          // A task that already has a canonical submission, or has moved to
+          // a terminal state (cancelled), does not accept a second result as
+          // truth — the first submission (or the cancellation) stays
+          // canonical and the late/racing submission is recorded separately
+          // so callers can surface it instead of silently overwriting state.
+          if (task.submissions.length > 0 || task.status === 'cancelled') {
+            task.duplicateSubmissionIds.push(event.submissionId);
+            break;
+          }
           task.submissions.push(event.submissionId);
           task.latestSubmissionId = event.submissionId;
           task.status = 'submitted';
