@@ -676,6 +676,8 @@ node src/relay/relay-cli.js login --provider github
 
 ## 版本日志
 
+**未发布** — Session bridge 崩溃安全加固：`ensureSessionKeeper`、`ensureRealtimeBridge`，以及 Codex auto-dispatch 恢复时的 spawn，从未监听 detached 子进程的 `error` 事件。当 spawn 失败（例如 `nodePath` 解析到一个失效的 version-manager 符号链接）时，这个错误会以未处理的 `error` 事件逃逸，变成 Node.js 的 `uncaughtException`，可能让整个宿主 CLI 进程（Codex/Claude Code）崩溃——调用方的 `.catch(() => null)` 只能捕获 Promise rejection，捕获不到这个异步事件。现在三处 spawn 调用都补上了对子进程 `error` 事件的监听，启动后台进程失败时会静默降级而不会拖垮宿主进程。同时修复了两个此前看起来像"环境无关"的测试问题（测试硬编码开发者机器路径导致 `EACCES`；断言仍停留在迁移前的 `~/.intent-broker/<tool>/...` runtime state 路径，而不是当前的 `~/.intent-broker/sessions/...` 路径）。`npm test` 502/502 全部通过。
+
 **v0.3.8** — 任务生命周期治理与上下文同步：P0/P1 任务生命周期治理规则在所有 agent 之间强制执行一致的任务状态转换；本地上下文同步让 agent 可以交换工作区快照，具备部分重试和去重安全机制；事件时间戳现在解析为 UTC，修复了 broker 与 agent 时区不同时 `ageMs` 计算偏差的问题。
 
 **v0.3.7** — KSwarm 投递合同加固：broker 任务投递失败不再生成合成任务完成结果，保留 Xiaok Desktop Swarm 项目的恢复和改派语义。

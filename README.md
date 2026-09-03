@@ -676,6 +676,8 @@ See:
 
 ## Version History
 
+**Unreleased** — Session bridge crash-safety hardening: `ensureSessionKeeper`, `ensureRealtimeBridge`, and the Codex auto-dispatch resume spawn never listened for the detached child process's `error` event. A failed spawn (e.g. a stale `nodePath` resolving to a broken version-manager symlink) escaped as an unhandled `error` event and became a Node.js `uncaughtException`, which could crash the whole host CLI process (Codex/Claude Code) — the caller's `.catch(() => null)` only handles Promise rejection and cannot catch this. All three spawn sites now guard the child's `error` event so a failed background-process launch degrades silently instead of taking down the host. Fixed alongside two stale test issues (a hardcoded developer-machine path causing `EACCES`, and assertions pinned to the pre-migration `~/.intent-broker/<tool>/...` runtime-state path instead of the current `~/.intent-broker/sessions/...` path) that had been surfacing as unrelated-looking failures. `npm test` passes 502/502.
+
 **v0.3.8** — Task lifecycle governance and context sync: P0/P1 task lifecycle governance rules enforce consistent task state transitions across agents; local context sync allows agents to exchange working-tree snapshots with partial-retry and dedupe safety; event timestamps are now parsed as UTC to fix `ageMs` calculation drift when broker and agents run in different timezones.
 
 **v0.3.7** — KSwarm delivery contract hardening: broker task delivery failure no longer creates synthetic task completion, preserving project recovery semantics for Xiaok Desktop Swarm runs.
