@@ -21,18 +21,18 @@ English | [简体中文](README.zh-CN.md)
 
 **This is not "let agents chat" — it's letting humans delegate work in parallel while agents retain enough shared state to coordinate.**
 
-## Xiaok Desktop v1.5.0 Integration Notes
+## Xiaok Desktop v1.5.1 Integration Notes
 
-- Intent Broker remains the event-first coordination layer for Xiaok Desktop v1.5.0, KSwarm project handoffs, scheduled Loop dispatch, and local agent runtime adapters.
+- Intent Broker remains the event-first coordination layer for Xiaok Desktop v1.5.1, KSwarm project handoffs, scheduled Loop dispatch, and local agent runtime adapters.
 - Durable Collaboration Rooms now add explicit membership, transcript, project links, seen state, discussions, membership leases, project-event projection, and recoverable agent wakes. Room HTTP mutations require the scoped Desktop or KSwarm token and do not expose permissive write CORS.
 - Room messages and their delivery obligations commit atomically. Wake claim/completion is durable, archived Rooms do not accept new work, and generic inbox/ack paths cannot mutate the reserved Room namespace.
 - The broker does not decide whether a task is complete and does not rewrite task content. It records requests, delivery attempts, replies, approvals, cancellations, run metadata, and recovery signals; KSwarm and Xiaok Desktop use those facts to determine project/task state and artifact evidence.
 - Delivery failure must stay explicit. A failed broker delivery cannot be converted into a successful task result, because Xiaok loop diagnostics scan completion records for missing artifacts and anomalous delivery outcomes.
 - Runtime recovery should be diagnosed in layers: broker health on `127.0.0.1:4318`, KSwarm health on `127.0.0.1:4400`, then Desktop runtime/adapter state. A healthy broker confirms coordination is available, but it does not prove the KSwarm sidecar or a scheduled task executor is healthy.
-- Xiaok Desktop v1.5.0 keeps Project, Graph, and Loop facts outside the broker: KSwarm owns durable workflow/project state, Desktop owns Loop runs and completion evidence, and Intent Broker owns Room communication without rewriting those domain records.
+- Xiaok Desktop v1.5.1 keeps Project, Graph, and Loop facts outside the broker: KSwarm owns durable workflow/project state, Desktop owns Loop runs and completion evidence, and Intent Broker owns Room communication without rewriting those domain records.
 - The conversation-first Desktop home can surface project continuation and automation attention, but replay still comes from broker/task/project stores rather than renderer-local state. A healthy broker proves coordination availability, not that a model run, KSwarm workflow, plugin renderer, or Loop verifier succeeded.
 - AI recording remains local to the Desktop Knowledge Base stack. Microphone capture, Sherpa-ONNX or Whisper model handling, user-configured Alibaba Cloud and Volcengine streaming ASR, punctuation restoration, notes summarization, and saving the transcript source do not require broker delivery. Broker events only become relevant if the saved knowledge is later used by an agent, project, or scheduled loop.
-- The Desktop release workflow for `desktop-v1.5.0` checks out the matching `desktop-v1.5.0` tag from this repository. Existing inbox delivery, event replay, hook installation, queued-context delivery, and Unix socket fallback remain available alongside the Room APIs. The packaged broker version remains `0.3.8`.
+- The Desktop release workflow for `desktop-v1.5.1` checks out the matching `desktop-v1.5.1` tag from this repository. Existing inbox delivery, event replay, hook installation, queued-context delivery, Unix socket fallback, durable Rooms, and session-bridge crash safety ship as Intent Broker `0.3.9`.
 
 ## Current Integration Baseline
 
@@ -676,7 +676,7 @@ See:
 
 ## Version History
 
-**Unreleased** — Session bridge crash-safety hardening: `ensureSessionKeeper`, `ensureRealtimeBridge`, and the Codex auto-dispatch resume spawn never listened for the detached child process's `error` event. A failed spawn (e.g. a stale `nodePath` resolving to a broken version-manager symlink) escaped as an unhandled `error` event and became a Node.js `uncaughtException`, which could crash the whole host CLI process (Codex/Claude Code) — the caller's `.catch(() => null)` only handles Promise rejection and cannot catch this. All three spawn sites now guard the child's `error` event so a failed background-process launch degrades silently instead of taking down the host. Fixed alongside two stale test issues (a hardcoded developer-machine path causing `EACCES`, and assertions pinned to the pre-migration `~/.intent-broker/<tool>/...` runtime-state path instead of the current `~/.intent-broker/sessions/...` path) that had been surfacing as unrelated-looking failures. `npm test` passes 502/502.
+**v0.3.9** — Session bridge crash-safety hardening: `ensureSessionKeeper`, `ensureRealtimeBridge`, and the Codex auto-dispatch resume spawn now guard detached child-process `error` events, so broken or stale Node paths degrade without crashing the host CLI. This release also carries the durable Room collaboration delivery fixes used by Xiaok Desktop v1.5.1. `npm test` passes 502/502.
 
 **v0.3.8** — Task lifecycle governance and context sync: P0/P1 task lifecycle governance rules enforce consistent task state transitions across agents; local context sync allows agents to exchange working-tree snapshots with partial-retry and dedupe safety; event timestamps are now parsed as UTC to fix `ageMs` calculation drift when broker and agents run in different timezones.
 

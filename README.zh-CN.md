@@ -21,18 +21,18 @@
 
 **这不是"让几个 agent 能聊天"，而是让人可以并行分派工作，同时让 agent 之间保留足够的共享状态。**
 
-## Xiaok Desktop v1.5.0 集成说明
+## Xiaok Desktop v1.5.1 集成说明
 
-- Intent Broker 仍是 Xiaok Desktop v1.5.0、KSwarm 项目 handoff、定时 Loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
+- Intent Broker 仍是 Xiaok Desktop v1.5.1、KSwarm 项目 handoff、定时 Loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
 - 持久化协作空间新增明确成员、transcript、项目关联、已读状态、discussion、membership lease、项目事件投影和可恢复 agent wake。Room HTTP mutation 必须携带作用域明确的 Desktop 或 KSwarm token，并且不开放宽松的写 CORS。
 - Room 消息与投递 obligation 在同一事务提交；wake claim/complete 可恢复，已归档 Room 不接受新工作，通用 inbox/ack 路径也不能修改保留的 Room namespace。
 - Broker 不判断任务是否完成，也不改写任务内容。它记录 request、delivery attempt、reply、approval、cancellation、run metadata 和 recovery signal；KSwarm 与 Xiaok Desktop 基于这些事实判断项目/任务状态和 artifact evidence。
 - 投递失败必须保持显式失败。Broker delivery failure 不能被转换成成功任务结果，因为 Xiaok loop diagnostics 会扫描 completion record，查找缺失产物和异常交付结果。
 - Runtime 恢复要分层诊断：先看 `127.0.0.1:4318` 的 broker health，再看 `127.0.0.1:4400` 的 KSwarm health，最后看 Desktop runtime/adapter 状态。Broker 健康只说明协作层可用，不代表 KSwarm sidecar 或定时任务执行器健康。
-- Xiaok Desktop v1.5.0 继续把 Project、Graph 与 Loop 事实放在 broker 之外：KSwarm 负责持久化 workflow/project state，Desktop 负责 Loop run 与 completion evidence；Intent Broker 持有 Room 协作事实，但不改写其他领域记录。
+- Xiaok Desktop v1.5.1 继续把 Project、Graph 与 Loop 事实放在 broker 之外：KSwarm 负责持久化 workflow/project state，Desktop 负责 Loop run 与 completion evidence；Intent Broker 持有 Room 协作事实，但不改写其他领域记录。
 - 对话优先的 Desktop 首页可以呈现项目续接和自动化 attention，但 replay 仍来自 broker/task/project store，而不是 renderer 本地状态。Broker 健康只证明协作层可用，不代表模型运行、KSwarm workflow、plugin renderer 或 Loop verifier 已成功。
 - AI 录音仍保持在 Desktop 知识库栈本地闭环。麦克风采集、Sherpa-ONNX 或 Whisper 模型处理、用户自配阿里云与火山引擎流式 ASR、标点恢复、纪要总结和保存转写来源都不需要 broker 投递；只有保存后的知识被 agent、项目或定时 loop 使用时，Broker 事件才进入后续协作链路。
-- `desktop-v1.5.0` Release workflow 会 checkout 本仓库匹配的 `desktop-v1.5.0` tag。现有 inbox delivery、event replay、hook 安装、queued-context delivery 和 Unix socket fallback 会与 Room API 一起保留；随包 broker 版本仍是 `0.3.8`。
+- `desktop-v1.5.1` Release workflow 会 checkout 本仓库匹配的 `desktop-v1.5.1` tag。现有 inbox delivery、event replay、hook 安装、queued-context delivery、Unix socket fallback、持久化 Room 与 session bridge 崩溃保护会作为 Intent Broker `0.3.9` 一起发布。
 
 ## 当前集成基线
 
@@ -676,7 +676,7 @@ node src/relay/relay-cli.js login --provider github
 
 ## 版本日志
 
-**未发布** — Session bridge 崩溃安全加固：`ensureSessionKeeper`、`ensureRealtimeBridge`，以及 Codex auto-dispatch 恢复时的 spawn，从未监听 detached 子进程的 `error` 事件。当 spawn 失败（例如 `nodePath` 解析到一个失效的 version-manager 符号链接）时，这个错误会以未处理的 `error` 事件逃逸，变成 Node.js 的 `uncaughtException`，可能让整个宿主 CLI 进程（Codex/Claude Code）崩溃——调用方的 `.catch(() => null)` 只能捕获 Promise rejection，捕获不到这个异步事件。现在三处 spawn 调用都补上了对子进程 `error` 事件的监听，启动后台进程失败时会静默降级而不会拖垮宿主进程。同时修复了两个此前看起来像"环境无关"的测试问题（测试硬编码开发者机器路径导致 `EACCES`；断言仍停留在迁移前的 `~/.intent-broker/<tool>/...` runtime state 路径，而不是当前的 `~/.intent-broker/sessions/...` 路径）。`npm test` 502/502 全部通过。
+**v0.3.9** — Session bridge 崩溃安全加固：`ensureSessionKeeper`、`ensureRealtimeBridge` 与 Codex auto-dispatch 恢复现在都会监听 detached 子进程的 `error` 事件，失效或过期的 Node 路径只会降级，不再拖垮宿主 CLI。本版本也包含 Xiaok Desktop v1.5.1 使用的持久化 Room 协作投递修复。`npm test` 502/502 全部通过。
 
 **v0.3.8** — 任务生命周期治理与上下文同步：P0/P1 任务生命周期治理规则在所有 agent 之间强制执行一致的任务状态转换；本地上下文同步让 agent 可以交换工作区快照，具备部分重试和去重安全机制；事件时间戳现在解析为 UTC，修复了 broker 与 agent 时区不同时 `ageMs` 计算偏差的问题。
 
