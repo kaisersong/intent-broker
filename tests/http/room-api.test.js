@@ -151,6 +151,66 @@ test('Desktop wake dispatcher can claim exactly one pending mention and complete
   assert.equal(reply?.responsePolicy, 'none');
 });
 
+test('design §6.2 RoomHistoryReadCapability: POST /room-wakes/history-page lets a claimed agent page room history and rejects a wrong roomId or missing token', { concurrency: false }, async (t) => {
+  const baseUrl = await startRoomServer(t);
+  const created = await request(baseUrl, '/rooms', {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: { title: 'History page room', memberAgentIds: ['agent-alpha'], clientRequestKey: 'room-create-http-history-page' },
+  });
+  const roomId = created.payload.room.roomId;
+  for (let i = 0; i < 3; i += 1) {
+    await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}/messages`, {
+      token: DESKTOP_TOKEN,
+      method: 'POST',
+      body: { text: `fyi ${i}`, responsePolicy: 'none', idempotencyKey: `history-page-fyi-${i}` },
+    });
+  }
+  const sent = await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}/messages`, {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: {
+      text: '@agent-alpha please read history',
+      mentions: [{ kind: 'agent', logicalAgentId: 'agent-alpha' }],
+      responsePolicy: 'mentioned',
+      idempotencyKey: 'history-page-wake',
+    },
+  });
+  const claimed = await request(baseUrl, '/room-wakes/claim', {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: { roomMessageId: sent.payload.message.messageId, logicalAgentId: 'agent-alpha', hostParticipantId: 'xiaok-desktop' },
+  });
+  assert.equal(claimed.response.status, 200, JSON.stringify(claimed.payload));
+
+  const page = await request(baseUrl, '/room-wakes/history-page', {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: { claimToken: claimed.payload.claimToken, roomId, limit: 2 },
+  });
+  assert.equal(page.response.status, 200, JSON.stringify(page.payload));
+  assert.equal(page.payload.ok, true);
+  assert.ok(page.payload.messages.length <= 2);
+
+  const otherRoom = await request(baseUrl, '/rooms', {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: { title: 'Other room', memberAgentIds: ['agent-alpha'], clientRequestKey: 'room-create-http-history-page-other' },
+  });
+  const wrongRoomPage = await request(baseUrl, '/room-wakes/history-page', {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: { claimToken: claimed.payload.claimToken, roomId: otherRoom.payload.room.roomId, limit: 2 },
+  });
+  assert.equal(wrongRoomPage.payload.ok, false, 'a claim token bound to one room must not read another room');
+
+  const noToken = await request(baseUrl, '/room-wakes/history-page', {
+    method: 'POST',
+    body: { claimToken: claimed.payload.claimToken, roomId, limit: 2 },
+  });
+  assert.equal(noToken.response.status, 401, 'this Desktop-main-only surface must still require the room transport token');
+});
+
 test('KSwarm token can publish project events and acquire leases but cannot impersonate a user', { concurrency: false }, async (t) => {
   const baseUrl = await startRoomServer(t);
   const created = await request(baseUrl, '/rooms', {
@@ -222,3 +282,61 @@ test('KSwarm token can publish project events and acquire leases but cannot impe
     },
   });
 });
+
+// design §6.2：GET /rooms/:roomId/messages?afterSequence=&beforeSequence=&limit=
+test('GET /rooms/:roomId/messages supports bounded pagination and rejects unauthenticated/non-member access', { concurrency: false }, async (t) => {
+  const baseUrl = await startRoomServer(t);
+  const created = await request(baseUrl, '/rooms', {
+    token: DESKTOP_TOKEN,
+    method: 'POST',
+    body: {
+      title: 'Pagination HTTP room',
+      memberAgentIds: ['agent-alpha'],
+      clientRequestKey: 'room-create-pagination-http-1',
+    },
+  });
+  assert.equal(created.response.status, 201, JSON.stringify(created.payload));
+  const roomId = created.payload.room.roomId;
+
+  for (let i = 0; i < 10; i += 1) {
+    const sent = await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}/messages`, {
+      token: DESKTOP_TOKEN,
+      method: 'POST',
+      body: {
+        text: `page-message-${i}`,
+        responsePolicy: 'none',
+        idempotencyKey: `room-message-pagination-http-${i}`,
+      },
+    });
+    assert.equal(sent.response.status, 201, JSON.stringify(sent.payload));
+  }
+
+  // no query params: legacy full-materialization shape via GET (no bounds param at all).
+  const full = await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}/messages`, { token: DESKTOP_TOKEN });
+  assert.equal(full.response.status, 200, JSON.stringify(full.payload));
+  assert.equal(full.payload.messages.length, 10);
+  assert.equal(full.payload.totalMessages, undefined);
+
+  // bounded: limit=3
+  const paged = await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}/messages?limit=3`, { token: DESKTOP_TOKEN });
+  assert.equal(paged.response.status, 200, JSON.stringify(paged.payload));
+  assert.equal(paged.payload.messages.length, 3);
+  assert.equal(paged.payload.totalMessages, 10);
+  assert.equal(paged.payload.hasMoreAfter, true);
+
+  // bounded: afterSequence walks forward without duplicates
+  const firstPageLastSeq = paged.payload.messages[paged.payload.messages.length - 1].roomSequence;
+  const secondPage = await request(
+    baseUrl,
+    `/rooms/${encodeURIComponent(roomId)}/messages?afterSequence=${firstPageLastSeq}&limit=3`,
+    { token: DESKTOP_TOKEN },
+  );
+  assert.equal(secondPage.response.status, 200, JSON.stringify(secondPage.payload));
+  assert.equal(secondPage.payload.messages.length, 3);
+  assert.ok(secondPage.payload.messages.every((m) => m.roomSequence > firstPageLastSeq));
+
+  // unauthenticated request rejected
+  const anon = await request(baseUrl, `/rooms/${encodeURIComponent(roomId)}/messages?limit=3`, {});
+  assert.equal(anon.response.status, 401);
+});
+

@@ -523,6 +523,11 @@ export async function maybeAutoDispatchRealtimeQueue({
       }
     );
     child.unref?.();
+    // design 现状核实（2026-09-03）：这个 auto-dispatch 子进程（codex exec
+    // resume）同样是 detached spawn，从未监听 'error' 事件——命令不存在
+    // 或环境异常时会变成 uncaughtException，可能让宿主进程崩溃。这是
+    // 最佳努力的后台自动派发，启动失败不应该影响主流程。
+    child.on?.('error', () => {});
 
     return {
       dispatched: true,
@@ -753,6 +758,11 @@ export async function ensureRealtimeBridge({
     });
 
     child.unref?.();
+    // 与 session-keeper.js 完全同构的修复（2026-09-03 核实）：detached
+    // spawn 从未监听 'error' 事件，会让 nodePath ENOENT 之类的失败变成
+    // uncaughtException，可能让宿主进程崩溃。bridge 是最佳努力的后台
+    // 保活机制，启动失败不应该影响主流程。
+    child.on?.('error', () => {});
 
     writeFileSync(statePath, JSON.stringify({
       pid: child.pid,

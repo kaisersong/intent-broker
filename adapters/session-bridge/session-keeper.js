@@ -366,6 +366,15 @@ export async function ensureSessionKeeper({
     });
 
     child.unref?.();
+    // 现状核实（2026-09-03）：detached spawn 从未监听 'error' 事件——如果
+    // nodePath 解析到一个不存在的可执行文件（失效的 nvm/version-manager
+    // 符号链接等真实环境场景），spawn 会异步触发 'error' 事件；调用方
+    // hooks.js 里的 `.catch(() => null)` 只能捕获 Promise rejection，捕获
+    // 不到子进程的异步 error 事件，导致它变成 Node.js 的 uncaughtException，
+    // 可能让整个宿主进程（Codex/Claude CLI）崩溃。这里补上监听，静默吞掉
+    // spawn 失败——keeper 本身是最佳努力的后台保活机制，启动失败不应该
+    // 影响主流程或让宿主进程崩溃。
+    child.on?.('error', () => {});
 
     writeFileSync(statePath, JSON.stringify({
       pid: child.pid,

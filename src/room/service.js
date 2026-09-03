@@ -593,7 +593,11 @@ export function createRoomService({
     return { ok: true, message };
   }
 
-  function listRoomMessages({ roomId } = {}, ctx = null) {
+  /**
+   * design §6.2：向后兼容扩展。afterSequence/beforeSequence/limit 是可选的
+   * bounded query 参数；旧调用（仅 { roomId }）保持全量物化语义。
+   */
+  function listRoomMessages({ roomId, afterSequence, beforeSequence, limit } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
 
@@ -603,7 +607,39 @@ export function createRoomService({
     const memberError = requireActiveMember(roomId, ctx);
     if (memberError) return memberError;
 
-    return { ok: true, messages: store.listMessages(roomId) };
+    const hasBounds = afterSequence !== undefined || beforeSequence !== undefined || limit !== undefined;
+    if (!hasBounds) {
+      return { ok: true, messages: store.listMessages(roomId) };
+    }
+
+    const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit });
+    const bounds = store.getRoomSequenceBounds(roomId);
+    const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
+    const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
+    // design §6.2："每次 agent history page read 由 intent-broker 写独立的
+    // room_history_read_audits 记录"。此前 recordRoomHistoryReadAudit 只有
+    // store 层单元测试覆盖，从未被这条真实分页读取路径调用——只在真正走
+    // bounded query（分页语义）时写入，不为无参数的旧全量读取产生噪音记录。
+    // actorParticipantId 复用与 sendRoomMessage 等既有 mutation 相同的
+    // actor→participant 映射规则（user:<userId> / agent:<logicalAgentId>），
+    // 不单独造一套身份编码。
+    store.recordRoomHistoryReadAudit({
+      roomId,
+      actorParticipantId: recipientKeyForActor(ctx.actor),
+      fromSequence,
+      toSequence,
+      requestedLimit: limit ?? null,
+      resultCount: messages.length,
+    });
+    return {
+      ok: true,
+      messages,
+      totalMessages: bounds.totalMessages,
+      fromSequence,
+      toSequence,
+      hasMoreBefore: messages.length > 0 && bounds.minSequence !== null && messages[0].roomSequence > bounds.minSequence,
+      hasMoreAfter: messages.length > 0 && bounds.maxSequence !== null && messages[messages.length - 1].roomSequence < bounds.maxSequence,
+    };
   }
 
   function getCollaborationRoom({ roomId } = {}, ctx = null) {
@@ -663,6 +699,82 @@ export function createRoomService({
   }
 
   // ---------------------------------------------------------------- wake claims
+  /**
+   * design §6.2 RoomHistoryReadCapability：agent-only、claim-token-bound 的
+   * 历史分页读取，比 listRoomMessages（宽松 ctx，desktop UI 全量/分页读取）
+   * 更严格。不接受 ctx——只信任 claim token 自身编码的
+   * roomMessageId|logicalAgentId|discussionEpoch|leaseUntil，并要求：
+   *   - token 派生的 roomId 与请求 roomId 完全一致（防止跨 Room 使用同一
+   *     token）；
+   *   - delivery.claimToken 精确匹配、wakeStatus==='claimed'（尚未 settle）；
+   *   - member/room 处于 active 状态，且 discussion epoch 与 token 编码时
+   *     完全一致——不给 grace period（这是 active execution 期间的读取，
+   *     不是 completeWake 的 settlement，room_delivery_conflict/
+   *     room_archived 立即拒绝，不做"lease 未到期就放行"的宽松判断）。
+   */
+  function listRoomMessagesPage({ claimToken, roomId, afterSequence, beforeSequence, limit } = {}) {
+    if (typeof claimToken !== 'string' || !claimToken.includes('|')) {
+      return fail('room_input_invalid', { field: 'claimToken' });
+    }
+    const [tokenRoomMessageId, tokenLogicalAgentId, tokenEpochRaw] = claimToken.split('|');
+
+    const delivery = store.getDelivery(tokenRoomMessageId, `agent:${tokenLogicalAgentId}`);
+    if (!delivery || delivery.claimToken !== claimToken) {
+      return fail('room_delivery_conflict');
+    }
+    if (delivery.wakeStatus !== 'claimed') {
+      return fail('room_delivery_conflict', { wakeStatus: delivery.wakeStatus });
+    }
+
+    const sourceMessage = store.getMessageById(tokenRoomMessageId);
+    if (!sourceMessage) return fail('room_message_not_found');
+
+    // 防止用一个 Room 的 token 读取另一个 Room 的历史：token 派生的 roomId
+    // 必须与请求 roomId 完全一致，不做任何"信任请求方声明"的捷径。
+    if (sourceMessage.roomId !== roomId) {
+      return fail('room_actor_forbidden');
+    }
+
+    const room = store.getRoomRow(sourceMessage.roomId);
+    if (!room || room.status !== 'active') {
+      return fail('room_archived');
+    }
+
+    const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId: tokenLogicalAgentId });
+    if (!member || member.status !== 'active') {
+      return fail('room_membership_required');
+    }
+
+    const tokenEpoch = Number.parseInt(tokenEpochRaw, 10);
+    if (!Number.isFinite(tokenEpoch) || tokenEpoch !== room.discussionEpoch) {
+      return fail('room_delivery_conflict', { reason: 'stale_epoch' });
+    }
+
+    const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit });
+    const bounds = store.getRoomSequenceBounds(roomId);
+    const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
+    const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
+
+    store.recordRoomHistoryReadAudit({
+      roomId,
+      actorParticipantId: `agent:${tokenLogicalAgentId}`,
+      fromSequence,
+      toSequence,
+      requestedLimit: limit ?? null,
+      resultCount: messages.length,
+    });
+
+    return {
+      ok: true,
+      messages,
+      totalMessages: bounds.totalMessages,
+      fromSequence,
+      toSequence,
+      hasMoreBefore: messages.length > 0 && bounds.minSequence !== null && messages[0].roomSequence > bounds.minSequence,
+      hasMoreAfter: messages.length > 0 && bounds.maxSequence !== null && messages[messages.length - 1].roomSequence < bounds.maxSequence,
+    };
+  }
+
   function claimWake({ roomMessageId, logicalAgentId, hostParticipantId } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
@@ -863,6 +975,7 @@ export function createRoomService({
     acquireMembershipLease,
     sendRoomMessage,
     listRoomMessages,
+    listRoomMessagesPage,
     getCollaborationRoom,
     listCollaborationRooms,
     markRoomSeen,

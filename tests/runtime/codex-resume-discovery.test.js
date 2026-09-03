@@ -273,7 +273,7 @@ test('attachDiscoveredCodexSession resets stale auto-dispatch runtime and replay
   });
 
   assert.equal(savedRuntime.length, 1);
-  assert.equal(savedRuntime[0].statePath, path.join('/Users/song', '.intent-broker', 'codex', 'codex-session-019d4c08.runtime.json'));
+  assert.equal(savedRuntime[0].statePath, path.join('/Users/song', '.intent-broker', 'sessions', 'codex-session-019d4c08.runtime.json'));
   assert.deepEqual(savedRuntime[0].state, {
     status: 'idle',
     sessionId: '019d4c08-f640-7423-8ab8-b4f3d96715ec',
@@ -289,6 +289,6 @@ test('attachDiscoveredCodexSession resets stale auto-dispatch runtime and replay
     state: { status: 'idle', summary: null }
   });
   assert.equal(calls.at(-1).type, 'auto-dispatch');
-  assert.equal(calls.at(-1).input.runtimeStatePath, path.join('/Users/song', '.intent-broker', 'codex', 'codex-session-019d4c08.runtime.json'));
-  assert.equal(calls.at(-1).input.queueStatePath, path.join('/Users/song', '.intent-broker', 'codex', 'codex-session-019d4c08.queue.json'));
+  assert.equal(calls.at(-1).input.runtimeStatePath, path.join('/Users/song', '.intent-broker', 'sessions', 'codex-session-019d4c08.runtime.json'));
+  assert.equal(calls.at(-1).input.queueStatePath, path.join('/Users/song', '.intent-broker', 'sessions', 'codex-session-019d4c08.queue.json'));
 });

@@ -5,7 +5,7 @@
  * tests. They must not be redefined ad hoc at call sites.
  */
 
-export const ROOM_SCHEMA_VERSION = 2;
+export const ROOM_SCHEMA_VERSION = 3;
 
 export const ROOM_TABLES = [
   'rooms',
@@ -16,6 +16,8 @@ export const ROOM_TABLES = [
   'room_recipient_cursors',
   'room_membership_leases',
   'room_execution_audit',
+  'room_history_read_audits',
+  'room_history_read_audit_meta',
 ];
 
 export const ROOM_MAX_ACTIVE_AGENT_MEMBERS = 6;

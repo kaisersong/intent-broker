@@ -1144,6 +1144,42 @@ test('maybeAutoDispatchRealtimeQueue drains actionable work queued while claude 
   });
 });
 
+test('ensureRealtimeBridge does not crash the host process with an uncaughtException when the spawned nodePath does not exist', async () => {
+  // 与 session-keeper.js 完全同构的真实缺陷（2026-09-03 核实）：默认
+  // spawnImpl 从未监听 'error' 事件，nodePath 解析到不存在的可执行文件时
+  // 会异步触发未捕获的 error 事件，变成 uncaughtException，可能让整个
+  // 宿主进程崩溃。
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-realtime-crash-'));
+  let uncaught = null;
+  const handler = (error) => { uncaught = error; };
+  process.once('uncaughtException', handler);
+  try {
+    const result = await ensureRealtimeBridge({
+      toolName: 'codex',
+      cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+      sessionId: '019d448e-realtime-crash-test',
+      cwd: homeDir,
+      homeDir,
+      parentPid: 4242,
+      nodePath: '/definitely/not/a/real/node/binary/at/this/path',
+      config: {
+        brokerUrl: 'http://127.0.0.1:4318',
+        participantId: 'codex-session-realtime-crash-test',
+        alias: 'codex',
+        inboxMode: 'realtime',
+        roles: ['coder'],
+        capabilities: [],
+        context: { projectName: 'intent-broker' }
+      }
+    });
+    assert.equal(result.started, true);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(uncaught, null, `ensureRealtimeBridge must not let a spawn ENOENT escape as an uncaughtException, got: ${uncaught}`);
+  } finally {
+    process.removeListener('uncaughtException', handler);
+  }
+});
+
 test('ensureRealtimeBridge spawns a detached background bridge and records its pid', async () => {
   const spawnCalls = [];
   const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-realtime-'));

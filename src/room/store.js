@@ -186,7 +186,12 @@ export function getDefaultMigrations() {
       },
     },
     {
-      version: ROOM_SCHEMA_VERSION,
+      // 固化为字面值 2（历史真实版本号），不再动态引用 ROOM_SCHEMA_VERSION——
+      // 之前写成 `version: ROOM_SCHEMA_VERSION` 是一个隐患：当常量被更新为
+      // 指向更新的版本时，这一步会意外跟着"滑动"到新版本号，与后续新增的
+      // 迁移步骤发生版本号冲突（两个不同的 up() 共享同一个 version，导致
+      // migrate() 的 `step.version <= current` 累加判断把其中一步静默跳过）。
+      version: 2,
       id: 'room_execution_audit',
       createsTable: 'room_execution_audit',
       up(db) {
@@ -203,6 +208,40 @@ export function getDefaultMigrations() {
 
           CREATE INDEX IF NOT EXISTS idx_room_execution_audit_room
             ON room_execution_audit(room_id);
+        `);
+      },
+    },
+    {
+      version: 3,
+      id: 'room_history_read_audits',
+      up(db) {
+        // design §6.2：Room 历史读取审计使用独立 schema，不复用要求
+        // room_message_id/logical_agent_id 的 room_execution_audit —— 分页
+        // 读取场景没有单一 message/agent 上下文。字段严格限定为设计文档
+        // 冻结清单，不记录消息正文。默认保留 30 天，清理由 broker 启动时
+        // 一次性 + 按 last_cleanup_at 做最多每 24 小时一次的惰性清理执行
+        // （不新增后台 timer），见 pruneStaleRoomHistoryReadAudits。
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS room_history_read_audits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id TEXT NOT NULL,
+            actor_participant_id TEXT NOT NULL,
+            from_sequence INTEGER,
+            to_sequence INTEGER,
+            requested_limit INTEGER,
+            result_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_room_history_read_audits_room
+            ON room_history_read_audits(room_id);
+          CREATE INDEX IF NOT EXISTS idx_room_history_read_audits_created_at
+            ON room_history_read_audits(created_at);
+
+          CREATE TABLE IF NOT EXISTS room_history_read_audit_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+          );
         `);
       },
     },
@@ -403,8 +442,139 @@ export function createRoomStore({ dbPath, migrations } = {}) {
     );
   }
 
-  function listMessages(roomId) {
-    return db.prepare('SELECT * FROM room_messages WHERE room_id = ? ORDER BY room_sequence').all(roomId).map(mapMessageRow);
+  const DEFAULT_LIST_MESSAGES_LIMIT = 50;
+  const MAX_LIST_MESSAGES_LIMIT = 200;
+
+  /**
+   * design §6.2：向后兼容扩展。无参数调用（仅 roomId）保持旧的全量物化语义，
+   * 供现有 UI 继续使用。传入 afterSequence/beforeSequence/limit 时启用
+   * bounded query，使用 room_sequence 索引，不再全量物化再 slice。
+   *
+   * limit 非整数/越界（<=0 或 >MAX_LIST_MESSAGES_LIMIT）直接拒绝调用方传入的
+   * 值并回落到默认值，不静默放大——调用方若传入非法 limit，视为未指定。
+   */
+  function listMessages(roomId, { afterSequence, beforeSequence, limit } = {}) {
+    const hasBounds = afterSequence !== undefined || beforeSequence !== undefined || limit !== undefined;
+    if (!hasBounds) {
+      return db.prepare('SELECT * FROM room_messages WHERE room_id = ? ORDER BY room_sequence').all(roomId).map(mapMessageRow);
+    }
+
+    const effectiveLimit = normalizeListMessagesLimit(limit);
+    const conditions = ['room_id = ?'];
+    const params = [roomId];
+    if (Number.isInteger(afterSequence)) {
+      conditions.push('room_sequence > ?');
+      params.push(afterSequence);
+    }
+    if (Number.isInteger(beforeSequence)) {
+      conditions.push('room_sequence < ?');
+      params.push(beforeSequence);
+    }
+    params.push(effectiveLimit);
+
+    const rows = db.prepare(
+      `SELECT * FROM room_messages WHERE ${conditions.join(' AND ')} ORDER BY room_sequence LIMIT ?`
+    ).all(...params);
+    return rows.map(mapMessageRow);
+  }
+
+  function normalizeListMessagesLimit(limit) {
+    // design §6.2：非整数/非正数（<=0）视为"未指定"，回落默认值 50；
+    // 超过最大值 200 时 clamp 到 200（不是回落默认值——调用方明确想要一大页，
+    // 只是超过了硬上限，应该给到允许的最大值，而不是意外缩小到默认页大小）。
+    if (!Number.isInteger(limit) || limit <= 0) return DEFAULT_LIST_MESSAGES_LIMIT;
+    if (limit > MAX_LIST_MESSAGES_LIMIT) return MAX_LIST_MESSAGES_LIMIT;
+    return limit;
+  }
+
+  /**
+   * design §6.2：返回该 room 完整 room_sequence 域的边界信息，供
+   * RoomContextWindow 计算 totalMessages/fromSequence/toSequence/isComplete。
+   * 不按 message kind 二次过滤（totalMessages 域覆盖所有 user/agent/system/
+   * artifact message kind）。
+   */
+  function getRoomSequenceBounds(roomId) {
+    const row = db.prepare(
+      'SELECT COUNT(*) as total, MIN(room_sequence) as minSeq, MAX(room_sequence) as maxSeq FROM room_messages WHERE room_id = ?'
+    ).get(roomId);
+    return {
+      totalMessages: row?.total || 0,
+      minSequence: row?.minSeq ?? null,
+      maxSequence: row?.maxSeq ?? null,
+    };
+  }
+
+  const ROOM_HISTORY_READ_AUDIT_RETENTION_DAYS = 30;
+  const ROOM_HISTORY_READ_AUDIT_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * design §6.2：每次 agent history page read 写一条独立审计记录，不含消息
+   * 正文，字段严格限定为设计文档冻结清单。
+   */
+  function recordRoomHistoryReadAudit({
+    roomId,
+    actorParticipantId,
+    fromSequence = null,
+    toSequence = null,
+    requestedLimit = null,
+    resultCount,
+    now = Date.now(),
+  }) {
+    db.prepare(`
+      INSERT INTO room_history_read_audits
+        (room_id, actor_participant_id, from_sequence, to_sequence, requested_limit, result_count, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      roomId,
+      actorParticipantId,
+      fromSequence,
+      toSequence,
+      requestedLimit,
+      resultCount,
+      new Date(now).toISOString()
+    );
+    pruneStaleRoomHistoryReadAuditsIfDue(now);
+  }
+
+  /**
+   * design §6.2：清理在 broker 启动时执行一次，并在写 audit 时按持久
+   * last_cleanup_at 做最多每 24 小时一次的惰性清理，不新增后台 timer/
+   * shutdown owner；清理失败只记录、不阻断读取（本函数吞掉异常，调用方
+   * 永远不会因为清理失败而无法完成本次审计写入 —— 清理是在写入之后才
+   * 触发的独立步骤）。
+   */
+  function pruneStaleRoomHistoryReadAuditsIfDue(now = Date.now()) {
+    try {
+      const lastCleanupRow = db.prepare(
+        "SELECT value FROM room_history_read_audit_meta WHERE key = 'last_cleanup_at'"
+      ).get();
+      const lastCleanupAt = lastCleanupRow ? Number(lastCleanupRow.value) : 0;
+      if (now - lastCleanupAt < ROOM_HISTORY_READ_AUDIT_CLEANUP_INTERVAL_MS) return { pruned: 0, skipped: true };
+
+      const cutoffIso = new Date(now - ROOM_HISTORY_READ_AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      const result = db.prepare('DELETE FROM room_history_read_audits WHERE created_at < ?').run(cutoffIso);
+      db.prepare(`
+        INSERT INTO room_history_read_audit_meta (key, value) VALUES ('last_cleanup_at', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(now));
+      return { pruned: result.changes ?? 0, skipped: false };
+    } catch (err) {
+      // 清理失败只记录、不阻断读取/写入路径。
+      return { pruned: 0, skipped: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  function listRoomHistoryReadAudits(roomId) {
+    return db.prepare('SELECT * FROM room_history_read_audits WHERE room_id = ? ORDER BY id').all(roomId).map(row => ({
+      id: row.id,
+      roomId: row.room_id,
+      actorParticipantId: row.actor_participant_id,
+      fromSequence: row.from_sequence,
+      toSequence: row.to_sequence,
+      requestedLimit: row.requested_limit,
+      resultCount: row.result_count,
+      createdAt: row.created_at,
+    }));
   }
 
   // -- deliveries ------------------------------------------------------------
@@ -569,6 +739,10 @@ export function createRoomStore({ dbPath, migrations } = {}) {
     getMessage,
     getMessageById,
     listMessages,
+    getRoomSequenceBounds,
+    recordRoomHistoryReadAudit,
+    pruneStaleRoomHistoryReadAuditsIfDue,
+    listRoomHistoryReadAudits,
     insertDelivery,
     updateDelivery,
     getDelivery,

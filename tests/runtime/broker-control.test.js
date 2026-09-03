@@ -203,9 +203,10 @@ test('restartBroker stops an existing broker and starts a new detached process',
   const killed = [];
   const spawned = [];
   let lsofCalls = 0;
+  const repoRoot = mkdtempSync(path.join(tmpdir(), 'intent-broker-restart-'));
 
   const result = await restartBroker({
-    repoRoot: '/Users/song/projects/intent-broker',
+    repoRoot,
     platform: 'darwin',
     port: 4318,
     termWaitMs: 1,
@@ -247,7 +248,7 @@ test('restartBroker stops an existing broker and starts a new detached process',
   assert.equal(spawned.length, 1);
   assert.equal(spawned[0].command, process.execPath);
   assert.deepEqual(spawned[0].args, ['--experimental-sqlite', 'src/cli.js']);
-  assert.equal(spawned[0].options.cwd, '/Users/song/projects/intent-broker');
+  assert.equal(spawned[0].options.cwd, repoRoot);
   assert.equal(spawned[0].options.detached, true);
   assert.equal(spawned[0].options.windowsHide, false);
   assert.equal(result.started, true);

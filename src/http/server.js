@@ -135,6 +135,22 @@ export function createServer({
             writeJson(res, roomStatus(result, 201), result);
             return;
           }
+          // design §6.2 RoomHistoryReadCapability：agent-only claim-token-bound
+          // 历史分页读取。与 GET /rooms/:roomId/messages（desktop UI 全量/分页
+          // 读取，走宽松 ctx）完全独立，不复用同一鉴权分支——这里只信任
+          // claim token 自身，body 不能声明 requestSource/actor 覆盖它。
+          if (req.method === 'POST' && pathname === '/room-wakes/history-page') {
+            const body = await readJson(req);
+            const result = roomService.listRoomMessagesPage({
+              claimToken: body.claimToken,
+              roomId: body.roomId,
+              afterSequence: body.afterSequence,
+              beforeSequence: body.beforeSequence,
+              limit: body.limit,
+            });
+            writeJson(res, roomStatus(result), result);
+            return;
+          }
           writeJson(res, 404, { error: 'not_found' });
           return;
         }
@@ -177,6 +193,22 @@ export function createServer({
         if (req.method === 'POST' && roomId && action === 'messages') {
           result = roomService.sendRoomMessage({ ...(await readJson(req)), roomId }, ctx);
           writeJson(res, roomStatus(result, 201), result);
+          return;
+        }
+        // design §6.2：GET /rooms/:roomId/messages?afterSequence=&beforeSequence=&limit=
+        // 只委托同一 roomService.listRoomMessages；不新建第二套 store query 路径。
+        // 无查询参数的调用保持旧全量语义供现有 UI 使用。
+        if (req.method === 'GET' && roomId && action === 'messages') {
+          const afterSequenceRaw = requestUrl.searchParams.get('afterSequence');
+          const beforeSequenceRaw = requestUrl.searchParams.get('beforeSequence');
+          const limitRaw = requestUrl.searchParams.get('limit');
+          result = roomService.listRoomMessages({
+            roomId,
+            ...(afterSequenceRaw !== null ? { afterSequence: Number(afterSequenceRaw) } : {}),
+            ...(beforeSequenceRaw !== null ? { beforeSequence: Number(beforeSequenceRaw) } : {}),
+            ...(limitRaw !== null ? { limit: Number(limitRaw) } : {}),
+          }, ctx);
+          writeJson(res, roomStatus(result), result);
           return;
         }
         if (req.method === 'PUT' && roomId && action === 'members') {

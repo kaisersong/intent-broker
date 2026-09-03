@@ -13,6 +13,46 @@ import {
   runSessionKeeperIteration
 } from '../../adapters/session-bridge/session-keeper.js';
 
+test('ensureSessionKeeper does not crash the host process with an uncaughtException when the spawned nodePath does not exist', async () => {
+  // 现状核实（2026-09-03）：session-keeper.js 的默认 spawnImpl 使用真实
+  // node:child_process spawn，detached:true 且从未监听 'error' 事件——如果
+  // nodePath 解析到一个不存在的可执行文件（例如失效的 nvm/version-manager
+  // 符号链接），spawn 会异步触发 'error' 事件；没有监听方就会变成
+  // Node.js 的 uncaughtException，可能让整个宿主进程（Codex/Claude CLI）
+  // 崩溃，而不是被 hooks.js 里期望的 `.catch(() => null)` 静默吞掉——那个
+  // catch 只能捕获 Promise rejection，捕获不到子进程的异步 error 事件。
+  const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-crash-'));
+  let uncaught = null;
+  const handler = (error) => { uncaught = error; };
+  process.once('uncaughtException', handler);
+  try {
+    const result = await ensureSessionKeeper({
+      toolName: 'codex',
+      cliPath: '/repo/adapters/codex-plugin/bin/codex-broker.js',
+      sessionId: '019d448e-crash-test',
+      cwd: homeDir,
+      homeDir,
+      parentPid: 4242,
+      nodePath: '/definitely/not/a/real/node/binary/at/this/path',
+      config: {
+        brokerUrl: 'http://127.0.0.1:4318',
+        participantId: 'codex-session-crash-test',
+        alias: 'codex',
+        inboxMode: 'realtime',
+        roles: ['coder'],
+        capabilities: [],
+        context: { projectName: 'intent-broker' }
+      }
+    });
+    assert.equal(result.started, true);
+    // 给异步 spawn error 事件一个机会在这个宏任务队列里冒出来。
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(uncaught, null, `ensureSessionKeeper must not let a spawn ENOENT escape as an uncaughtException, got: ${uncaught}`);
+  } finally {
+    process.removeListener('uncaughtException', handler);
+  }
+});
+
 test('ensureSessionKeeper spawns a detached background keeper and records its pid', async () => {
   const spawnCalls = [];
   const homeDir = mkdtempSync(path.join(tmpdir(), 'intent-broker-keeper-'));
