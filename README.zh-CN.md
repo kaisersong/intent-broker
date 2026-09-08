@@ -2,7 +2,7 @@
 
 > 你有多个 AI 助手（Codex、Claude Code、Qoder CLI、OpenCode）在同一个项目上工作，但它们彼此不知道对方的存在——直到人类变成所有窗口之间的路由器、记忆体和冲突探测器。Intent Broker 解决这个协调问题：先持久化事件，再进行投递；让多 agent 围绕同一任务对象协作，人类负责审批和裁决，日常同步、任务交接、状态恢复全部进入 broker 托管的协作流。
 
-本地优先的多 Agent 协作 broker。不是聊天服务器，也不是工作流平台，而是可靠的协作协议中间层。
+本地优先的协作协议层，提供 agent 发现、持久化协作空间、任务交接、审批与可恢复投递。
 
 [English](README.md) | 简体中文
 
@@ -21,30 +21,33 @@
 
 **这不是"让几个 agent 能聊天"，而是让人可以并行分派工作，同时让 agent 之间保留足够的共享状态。**
 
-## Xiaok Desktop v1.5.1 集成说明
+## Xiaok Desktop 集成说明
 
-- Intent Broker 仍是 Xiaok Desktop v1.5.1、KSwarm 项目 handoff、定时 Loop 派发和本地 agent runtime adapter 使用的 event-first 协作层。
-- 持久化协作空间新增明确成员、transcript、项目关联、已读状态、discussion、membership lease、项目事件投影和可恢复 agent wake。Room HTTP mutation 必须携带作用域明确的 Desktop 或 KSwarm token，并且不开放宽松的写 CORS。
-- Room 消息与投递 obligation 在同一事务提交；wake claim/complete 可恢复，已归档 Room 不接受新工作，通用 inbox/ack 路径也不能修改保留的 Room namespace。
-- Broker 不判断任务是否完成，也不改写任务内容。它记录 request、delivery attempt、reply、approval、cancellation、run metadata 和 recovery signal；KSwarm 与 Xiaok Desktop 基于这些事实判断项目/任务状态和 artifact evidence。
-- 投递失败必须保持显式失败。Broker delivery failure 不能被转换成成功任务结果，因为 Xiaok loop diagnostics 会扫描 completion record，查找缺失产物和异常交付结果。
-- Runtime 恢复要分层诊断：先看 `127.0.0.1:4318` 的 broker health，再看 `127.0.0.1:4400` 的 KSwarm health，最后看 Desktop runtime/adapter 状态。Broker 健康只说明协作层可用，不代表 KSwarm sidecar 或定时任务执行器健康。
-- Xiaok Desktop v1.5.1 继续把 Project、Graph 与 Loop 事实放在 broker 之外：KSwarm 负责持久化 workflow/project state，Desktop 负责 Loop run 与 completion evidence；Intent Broker 持有 Room 协作事实，但不改写其他领域记录。
-- 对话优先的 Desktop 首页可以呈现项目续接和自动化 attention，但 replay 仍来自 broker/task/project store，而不是 renderer 本地状态。Broker 健康只证明协作层可用，不代表模型运行、KSwarm workflow、plugin renderer 或 Loop verifier 已成功。
-- AI 录音仍保持在 Desktop 知识库栈本地闭环。麦克风采集、Sherpa-ONNX 或 Whisper 模型处理、用户自配阿里云与火山引擎流式 ASR、标点恢复、纪要总结和保存转写来源都不需要 broker 投递；只有保存后的知识被 agent、项目或定时 loop 使用时，Broker 事件才进入后续协作链路。
-- `desktop-v1.5.1` Release workflow 会 checkout 本仓库匹配的 `desktop-v1.5.1` tag。现有 inbox delivery、event replay、hook 安装、queued-context delivery、Unix socket fallback、持久化 Room 与 session bridge 崩溃保护会作为 Intent Broker `0.3.9` 一起发布。
+文档按 **2026-09-07** 的源码核对，Intent Broker 包版本为 **0.3.9**。Xiaok Desktop 已发布版本为 **1.5.1**；其 release workflow 固定检出本仓库的 `desktop-v1.5.1` 标签，当前工作区变更与已发布快照需分别验证。
+
+- **持久化协作空间**：成员、transcript、项目关联、已读状态、discussion、membership lease、项目事件投影和 agent wake 由 broker 管理。消息与投递义务原子提交，重启后可恢复投递。
+- **明确权限边界**：Room mutation 需要作用域明确的 Desktop 或 KSwarm token；归档空间拒绝新工作，通用 inbox/ack 不能修改保留的 Room 命名空间。
+- **投递不是完成**：broker 保存请求、进度、回复、审批、取消与恢复事实；KSwarm 决定项目/任务状态，Desktop 决定会话、Goal 和定时执行状态。投递失败保持为失败，不能合成成功结果。
+- **SubAgent 不等于 broker participant**：会话内 SubAgent 的启动策略、分工、星座代号、工具权限和资源回收由 Xiaok runtime 管理；broker 的在线状态不证明模型已启动或工作已完成。
+- **逐层诊断**：默认先检查 broker `127.0.0.1:4318`，再查 KSwarm `127.0.0.1:4400` 和 Desktop adapter/executor。使用配置覆盖端口时，以实际服务地址为准。
 
 ## 当前集成基线
 
-Intent Broker 是 xiaok Desktop 与 KSwarm 使用的协作协议层：
+- Xiaok 通过 hooks 注册 presence、代号、项目上下文和 work-state。
+- KSwarm 通过 broker 发送 `assign_po`、`request_task`、`review_submission`、`cancel_run` 与恢复请求；动态 workflow node 也沿该路径交接。
+- Inbox、ack cursor 和持久化事件回放支持中断后的恢复；Unix socket fallback 支持受限 loopback 环境，不代表 Windows 提供同一 Unix socket 路径。
+- Codex hook 安装使用稳定的 `[features].hooks`；`npm run codex:install` 迁移旧 `[features].codex_hooks` 配置。
+- 录音、ASR、插件渲染、知识库和 Computer Use 由 Desktop/插件负责；只有显式协作和任务交接经过 broker。
 
-- xiaok agent 通过 broker hooks 注册在线状态、alias、项目上下文和 work-state。
-- KSwarm 通过 broker 协议发送 `assign_po`、`request_task`、`review_submission`、`cancel_run` 和恢复类 intent。
-- KSwarm 动态 workflow 节点 handoff 也走 broker 通道：桌面 runtime worker 接收 script-generated workflow agent node，并把结构化节点输出提交回 KSwarm。
-- Runtime 恢复依赖 broker inbox 投递和持久化事件重放，因此 PO 制定计划或 worker 执行被中断后，可以恢复或重试，而不是消失在某个本地终端里。
-- Broker 投递失败不等于任务完成。目标 agent 不可用时，broker 只记录投递失败，让 KSwarm 恢复或改派，不能合成一个成功的任务结果。
-- Broker 提供本地 Unix socket fallback，用于 loopback HTTP 受限的环境；当直接 fetch `127.0.0.1` 被阻断时，Desktop 和 E2E runtime bridge 仍可工作。
-- Codex hook 安装使用稳定的 `[features].hooks` 开关；旧的 `[features].codex_hooks` 配置会由 `npm run codex:install` 迁移。
+### 关联项目与打包
+
+| 项目 | 职责 |
+|---|---|
+| [xiaok-cli](https://github.com/kaisersong/xiaok-cli) | CLI/Desktop 用户入口、模型与工具执行、SubAgent、Goal、知识库及自动化；Desktop 管理 broker sidecar。 |
+| [kswarm](https://github.com/kaisersong/kswarm) | 持久化项目、任务、工作流、评审、恢复和交付事实来源。 |
+| [kai-xiaok-plugins](https://github.com/kaisersong/kai-xiaok-plugins) | 报告、幻灯片、画布、会议转写回退和 macOS Computer Use。 |
+
+源码构建将四个仓库放在同一父目录。Desktop 打包 broker 的 `src`、`bin`、`adapters`、`package.json` 和 `node_modules/ws`。改 adapter/lifecycle 后运行 `npm test` 与 `npm run verify:collaboration`，再到 Xiaok 验证 packaging contract；发布快照需与 [Desktop release workflow](https://github.com/kaisersong/xiaok-cli/blob/master/.github/workflows/desktop-release.yml) 对齐。
 
 ---
 
@@ -577,13 +580,14 @@ GET /projects/:projectName/snapshot
 
 ## 技术选型
 
-- Node 22
+- Node 22+
 - 原生 ESM
 - `node:http`
 - `node:sqlite`
 - `node:test`
+- `ws`
 
-**目的：** 今天就能跑起来，不引第三方运行时依赖，把协议和可靠性路径先验证掉。
+运行时依赖保持精简：HTTP、SQLite 和测试使用 Node 内置模块，WebSocket transport 使用 `ws`。以 [package.json](package.json) 为准。
 
 ---
 
@@ -656,7 +660,7 @@ node src/relay/relay-cli.js login --provider github
 ```
 
 详见：
-- [docs/ADAPTERS.md](./docs/ADAPTERS.md) - Adapter 架构设计
+- [adapters/README.md](adapters/README.md) - Adapter 架构设计
 - [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md) - 云之家配置
 
 ---
@@ -697,6 +701,10 @@ node src/relay/relay-cli.js login --provider github
 **v0.3.0** — 全 3 个 adapter 接入 PreToolUse hook；Claude Code + xiaok AskUserQuestion 镜像；Codex 原生升级 + 破坏性命令检测；xiaok 人机确认/澄清往返；待处理 tool-use 上下文关联；hook 审批超时解决；压缩 informational broker 事件含截断；175 个测试。
 
 **v0.2.3** — 优雅关机、启动时清理残留进程、session-keeper 自动恢复、realtime bridge 队列改进。
+
+**v0.2.2** — 修复 Claude Code hook 在随包 broker 中的安装路径。
+
+**v0.2.1** — Agent hook 审批卡片：镜像 AskUserQuestion 和 Codex 原生提权审批。
 
 **v0.2.0** — Agent Group 协作：同项目自动发现、文件变更广播、冲突检测、文件锁；人机交互确认：阻塞式确认、超时 fallback；任务分发与审查；协作历史；降级容错。
 

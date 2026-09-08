@@ -2,7 +2,7 @@
 
 > You have multiple AI assistants (Codex, Claude Code, Qoder CLI, OpenCode) working on the same project, but they don't know about each other — until the human becomes the router, memory, and conflict detector between all windows. Intent Broker solves this coordination problem: persist events first, then deliver; let multiple agents collaborate around the same task object, with humans handling approvals and final decisions, while daily sync, task handoff, and state recovery all flow through broker-managed coordination.
 
-Local-first multi-agent collaboration broker. Not a chat server, not a workflow platform — a reliable coordination protocol layer.
+A local-first coordination layer for agent discovery, durable Rooms, task handoffs, approvals, and recoverable delivery.
 
 English | [简体中文](README.zh-CN.md)
 
@@ -21,30 +21,33 @@ English | [简体中文](README.zh-CN.md)
 
 **This is not "let agents chat" — it's letting humans delegate work in parallel while agents retain enough shared state to coordinate.**
 
-## Xiaok Desktop v1.5.1 Integration Notes
+## Xiaok Desktop Integration Notes
 
-- Intent Broker remains the event-first coordination layer for Xiaok Desktop v1.5.1, KSwarm project handoffs, scheduled Loop dispatch, and local agent runtime adapters.
-- Durable Collaboration Rooms now add explicit membership, transcript, project links, seen state, discussions, membership leases, project-event projection, and recoverable agent wakes. Room HTTP mutations require the scoped Desktop or KSwarm token and do not expose permissive write CORS.
-- Room messages and their delivery obligations commit atomically. Wake claim/completion is durable, archived Rooms do not accept new work, and generic inbox/ack paths cannot mutate the reserved Room namespace.
-- The broker does not decide whether a task is complete and does not rewrite task content. It records requests, delivery attempts, replies, approvals, cancellations, run metadata, and recovery signals; KSwarm and Xiaok Desktop use those facts to determine project/task state and artifact evidence.
-- Delivery failure must stay explicit. A failed broker delivery cannot be converted into a successful task result, because Xiaok loop diagnostics scan completion records for missing artifacts and anomalous delivery outcomes.
-- Runtime recovery should be diagnosed in layers: broker health on `127.0.0.1:4318`, KSwarm health on `127.0.0.1:4400`, then Desktop runtime/adapter state. A healthy broker confirms coordination is available, but it does not prove the KSwarm sidecar or a scheduled task executor is healthy.
-- Xiaok Desktop v1.5.1 keeps Project, Graph, and Loop facts outside the broker: KSwarm owns durable workflow/project state, Desktop owns Loop runs and completion evidence, and Intent Broker owns Room communication without rewriting those domain records.
-- The conversation-first Desktop home can surface project continuation and automation attention, but replay still comes from broker/task/project stores rather than renderer-local state. A healthy broker proves coordination availability, not that a model run, KSwarm workflow, plugin renderer, or Loop verifier succeeded.
-- AI recording remains local to the Desktop Knowledge Base stack. Microphone capture, Sherpa-ONNX or Whisper model handling, user-configured Alibaba Cloud and Volcengine streaming ASR, punctuation restoration, notes summarization, and saving the transcript source do not require broker delivery. Broker events only become relevant if the saved knowledge is later used by an agent, project, or scheduled loop.
-- The Desktop release workflow for `desktop-v1.5.1` checks out the matching `desktop-v1.5.1` tag from this repository. Existing inbox delivery, event replay, hook installation, queued-context delivery, Unix socket fallback, durable Rooms, and session-bridge crash safety ship as Intent Broker `0.3.9`.
+Checked against source on **September 7, 2026**; the Intent Broker package version is **0.3.9**. The published Xiaok Desktop version is **1.5.1**, whose release workflow checks out this repository's `desktop-v1.5.1` tag. Working-tree changes and published snapshots must be verified separately.
+
+- **Durable Rooms:** the broker owns membership, transcripts, project links, seen state, discussions, membership leases, project-event projection, and agent wakes. Messages and delivery obligations commit atomically and can recover after restart.
+- **Explicit authority:** Room mutations require scoped Desktop or KSwarm tokens. Archived Rooms reject new work, and generic inbox/ack paths cannot mutate the reserved Room namespace.
+- **Delivery is not completion:** the broker records requests, progress, replies, approvals, cancellation, and recovery facts. KSwarm owns project/task state; Desktop owns conversations, goals, and scheduled execution. Failed delivery remains a failure.
+- **SubAgents are not broker participants:** Xiaok's runtime owns conversation-local delegation, assignments, constellation codenames, tool policy, and cleanup. Broker presence does not prove a model started or work finished.
+- **Layered diagnosis:** check broker health at `127.0.0.1:4318`, then KSwarm at `127.0.0.1:4400`, then the Desktop adapter/executor. Use configured service addresses when defaults are overridden.
 
 ## Current Integration Baseline
 
-Intent Broker is the coordination layer used by xiaok Desktop and KSwarm:
+- Xiaok hooks register presence, aliases, project context, and work-state.
+- KSwarm sends `assign_po`, `request_task`, `review_submission`, `cancel_run`, and recovery requests through the broker; dynamic workflow nodes use the same handoff path.
+- Inbox delivery, ack cursors, and durable event replay support recovery after interruption. A Unix socket fallback supports restricted loopback environments; this does not imply the same Unix socket path exists on Windows.
+- Codex hook installation uses the stable `[features].hooks` switch; `npm run codex:install` migrates legacy `[features].codex_hooks` configuration.
+- Desktop/plugins own recording, ASR, rendering, knowledge, and Computer Use. Only explicit collaboration and handoffs travel through the broker.
 
-- xiaok agents register presence, aliases, project context, and work-state through broker hooks.
-- KSwarm sends `assign_po`, `request_task`, `review_submission`, `cancel_run`, and recovery intents through the broker protocol.
-- KSwarm dynamic workflow node handoffs also use the broker path: desktop runtime workers receive script-generated workflow agent nodes and submit structured node outputs back to KSwarm.
-- Runtime recovery depends on broker inbox delivery plus durable event replay, so interrupted PO planning and worker execution can be resumed or retried instead of disappearing into a local terminal.
-- Broker delivery failure is not task completion. If a target agent is unavailable, the broker records delivery failure and lets KSwarm recover or reroute; it must not synthesize a successful task result.
-- The broker exposes a local Unix socket fallback for loopback-restricted environments, which keeps desktop and E2E runtime bridges working when direct HTTP fetch to `127.0.0.1` is blocked.
-- Codex hook installation uses the stable `[features].hooks` switch; legacy `[features].codex_hooks` configs are migrated by `npm run codex:install`.
+### Related Projects and Packaging
+
+| Project | Responsibility |
+|---|---|
+| [xiaok-cli](https://github.com/kaisersong/xiaok-cli) | CLI/Desktop entry points, model and tool execution, SubAgents, goals, knowledge, and automation; Desktop manages the broker sidecar. |
+| [kswarm](https://github.com/kaisersong/kswarm) | Durable projects, tasks, workflows, review, recovery, and delivery state. |
+| [kai-xiaok-plugins](https://github.com/kaisersong/kai-xiaok-plugins) | Reports, slides, canvas, meeting transcription fallback, and macOS Computer Use. |
+
+Keep all four source repositories under one parent directory. Desktop packages the broker's `src`, `bin`, `adapters`, `package.json`, and `node_modules/ws`. After adapter/lifecycle changes, run `npm test` and `npm run verify:collaboration`, then Xiaok's packaging contracts. Align published snapshots with the [Desktop release workflow](https://github.com/kaisersong/xiaok-cli/blob/master/.github/workflows/desktop-release.yml).
 
 ---
 
@@ -577,13 +580,14 @@ Returns aggregated read-only project view: participants with presence and work-s
 
 ## Tech Stack
 
-- Node 22
+- Node 22+
 - Native ESM
 - `node:http`
 - `node:sqlite`
 - `node:test`
+- `ws`
 
-**Goal:** Run today without third-party runtime deps, validate protocol and reliability path first.
+Runtime dependencies are intentionally small: Node built-ins provide HTTP, SQLite, and tests; `ws` provides WebSocket transport. See [package.json](package.json).
 
 ---
 
@@ -656,7 +660,7 @@ Messaging Platform → Platform Adapter → Intent Broker → Agents
 ```
 
 See:
-- [docs/ADAPTERS.md](./docs/ADAPTERS.md) - Adapter architecture
+- [adapters/README.md](adapters/README.md) - Adapter architecture
 - [adapters/yunzhijia/README.md](./adapters/yunzhijia/README.md) - Yunzhijia config
 
 ---
