@@ -1,0 +1,271 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRoomStore } from '../../src/room/store.js';
+import { createRoomService } from '../../src/room/service.js';
+import { createTempDbPath } from '../fixtures/temp-dir.js';
+import { workspaceDigest } from '../../src/room/workspace-service.js';
+
+function fixture(t) {
+  const dbPath=createTempDbPath();const store = createRoomStore({ dbPath }); store.migrate();
+  t.after(() => store.close());
+  const service = createRoomService({ store });
+  const ctx = { sessionId: 'desktop', requestSource: 'user', actor: { kind: 'user', userId: 'user.local' }, issuedAt: new Date().toISOString(), hostPrincipal: 'install-A' };
+  const roomId = service.createRoom({ title: 'Workspace', memberAgentIds: ['a'] }, ctx).room.roomId;
+  const w = service.workspace;
+  const host = w.registerHost({ startupId: 'boot-1' }, ctx).host;
+  ctx.hostIncarnation = host.hostIncarnation;
+  return { store, service, w, ctx, roomId, host, dbPath };
+}
+function bind(f) {
+  let r = f.w.beginChange({ roomId: f.roomId, expectedRevision: 0, requestId: 'change-1', payloadDigest: 'a'.repeat(64) }, f.ctx);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  r = f.w.commitBinding({ roomId: f.roomId, expectedRevision: r.config.revision, operationId: r.config.operationId, workspaceId: 'ws-1', bindingId: 'binding-1', payloadDigest: 'a'.repeat(64) }, f.ctx);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  r = f.w.activateBinding({ roomId: f.roomId, expectedRevision: r.config.revision, operationId: r.config.operationId }, f.ctx);
+  assert.equal(r.ok, true, JSON.stringify(r)); return r.config;
+}
+test('workspace CAS, immutable instructions and restart persistence use production Room store', (t) => {
+  const f = fixture(t); const config = bind(f);
+  assert.equal(config.generation, 1);
+  assert.equal(f.w.beginChange({ roomId: f.roomId, expectedRevision: 0, requestId: 'bad', payloadDigest: 'b'.repeat(64) }, f.ctx).code, 'room_revision_conflict');
+  const first = f.w.publishInstructions({ roomId: f.roomId, expectedRevision: config.revision, requestId: 'rules-1', publishedText: 'Rules', description: 'd', directoryNotes: ['任意目录'] }, f.ctx);
+  assert.equal(first.ok, true, JSON.stringify(first));
+  assert.equal(f.w.getState({roomId:f.roomId}, f.ctx).instructions.publishedText, 'Rules');
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM room_workspace_records').get().n > 0, true);
+  const restored=createRoomStore({dbPath:f.dbPath});restored.migrate();t.after(()=>restored.close());
+  const state=createRoomService({store:restored}).workspace.getState({roomId:f.roomId},f.ctx);
+  assert.equal(state.instructions.snapshotDigest,first.instructions.snapshotDigest);
+  assert.equal(state.config.requiredProtocol,'room_workspace_v1');
+});
+test('claim cancellation cannot fake physical release, host fencing and manual tickets', (t) => {
+  const f = fixture(t); const config = bind(f);
+  const a = {...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+  const acquired = f.w.acquireClaim({roomId:f.roomId, runId:'run1',executorInstanceId:'ex1',contextScope:{kind:'room_only'},capability:{contextVersion:1,resultVersion:1,releaseVersion:1,canSetCwd:true,canTrackChildren:true,canRelease:true}},a);
+  assert.equal(acquired.ok,true,JSON.stringify(acquired));
+  const claimId=acquired.claim.claimId;
+  const echo={protocolVersion:1,runId:acquired.claim.runId,executorInstanceId:acquired.claim.executorInstanceId,workspaceId:acquired.claim.workspaceId,originHostId:acquired.claim.originHostId,hostIncarnation:acquired.claim.hostIncarnation,bindingId:acquired.claim.bindingId,generation:acquired.claim.generation,instructionsRevision:acquired.claim.instructionsRevision};
+  assert.equal(f.w.ackClaim({roomId:f.roomId,claimId,...echo,executorInstanceId:'wrong',cwdVerified:true,actualCwd:'/test/root'},a).code,'workspace_ack_mismatch');
+  assert.equal(f.w.ackClaim({roomId:f.roomId,claimId,...echo,cwdVerified:true,actualCwd:'/test/root'},a).ok,true);
+  assert.equal(f.w.cancelClaim({roomId:f.roomId,claimId},f.ctx).ok,true);
+  assert.equal(f.w.issueCommitTicket({roomId:f.roomId,claimId,submissionId:'s1',payloadDigest:'b'.repeat(64)},a).ok,false);
+  const source=f.service.sendRoomMessage({roomId:f.roomId,text:'work',mentions:[{kind:'agent',logicalAgentId:'a'}],responsePolicy:'mentioned',idempotencyKey:'cancelled-wake'},f.ctx).message;
+  assert.equal(f.w.claimWake({roomId:f.roomId,roomMessageId:source.messageId,logicalAgentId:'a',claimId},a).code,'workspace_claim_revoked');
+  const begin=f.w.beginChange({roomId:f.roomId,expectedRevision:config.revision,requestId:'change-2',payloadDigest:'c'.repeat(64)},f.ctx);
+  assert.equal(f.w.commitBinding({roomId:f.roomId,expectedRevision:begin.config.revision,operationId:begin.config.operationId,workspaceId:'ws-1',bindingId:'binding-2',payloadDigest:'c'.repeat(64)},f.ctx).code,'workspace_drain_pending');
+  assert.equal(f.w.releaseClaim({roomId:f.roomId,claimId,...echo,cleanupOutcome:'released',terminationEvidence:{executorInstanceId:'ex1',kind:'process-exit',verified:true}},a).ok,true);
+  const newer=f.w.registerHost({startupId:'boot-2'},f.ctx).host;
+  assert.equal(newer.hostIncarnation,2);
+  assert.equal(f.w.releaseClaim({roomId:f.roomId,claimId},a).code,'workspace_host_fenced');
+});
+test('manual ticket survives archive for historical projection, replay does not grant new authority', (t) => {
+  const f=fixture(t);const config=bind(f);
+  const input={roomId:f.roomId,submissionId:'manual',payloadDigest:'d'.repeat(64),contextScope:{kind:'room_only'},bindingId:config.activeBindingId,generation:config.generation};
+  assert.equal(f.w.issueCommitTicket(input,f.ctx).code,'workspace_read_denied');
+  assert.equal(f.w.getState({roomId:f.roomId},f.ctx).permissions.canRegister,false);
+  assert.equal(f.w.issueReadGrant({roomId:f.roomId,expectedRevision:config.revision,requestId:'initial-grant',bindingId:config.activeBindingId,generation:config.generation,contextScope:{kind:'room_only'},subjectKind:'user',subjectId:'user.local',allowedPathsOrVersions:[{kind:'path',relativePath:'',recursive:true}]},f.ctx).ok,true);
+  assert.equal(f.w.getState({roomId:f.roomId},f.ctx).permissions.canRegister,true);
+  const first=f.w.issueCommitTicket(input,f.ctx);
+  assert.equal(first.ok,true,JSON.stringify(first));
+  assert.equal(first.ticket.subject.kind,'authenticatedUserAction');
+  assert.equal(f.w.issueCommitTicket(input,f.ctx).ticket.ticketId,first.ticket.ticketId);
+  assert.equal(f.w.issueCommitTicket({...input,payloadDigest:'e'.repeat(64)},f.ctx).code,'workspace_idempotency_conflict');
+  f.service.archiveRoom({roomId:f.roomId},f.ctx);
+  assert.equal(f.w.issueCommitTicket({...input,submissionId:'later'},f.ctx).code,'room_archived');
+  assert.equal(f.w.recoverTicket({roomId:f.roomId,submissionId:input.submissionId,payloadDigest:input.payloadDigest},f.ctx).ticket.ticketId,first.ticket.ticketId);
+  const event={roomId:f.roomId,ticketId:first.ticket.ticketId,payloadDigest:input.payloadDigest,eventKind:'artifact.registered'};
+  const one=f.w.projectEvent(event,f.ctx);assert.equal(one.ok,true,JSON.stringify(one));
+  assert.equal(f.w.projectEvent({...event,eventId:'different'},f.ctx).event.eventId,one.event.eventId);
+});
+test('owner-only confirmation, explicit grants, stale generation and archived history', (t)=>{
+  const f=fixture(t);const c=bind(f);
+  const agent={...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+  assert.equal(f.w.beginChange({roomId:f.roomId,expectedRevision:c.revision,requestId:'evil',payloadDigest:'f'.repeat(64)},agent).ok,false);
+  const read={roomId:f.roomId,bindingId:c.activeBindingId,generation:c.generation,contextScope:{kind:'room_only'},relativePath:'nested/file.txt'};
+  assert.equal(f.w.authorizeRead(read,f.ctx).code,'workspace_read_denied');
+  const g=f.w.issueReadGrant({...read,expectedRevision:c.revision,requestId:'grant1',subjectKind:'user',subjectId:'user.local',allowedPathsOrVersions:[{kind:'path',relativePath:'',recursive:true}]},f.ctx);
+  assert.equal(g.ok,true,JSON.stringify(g));assert.equal(f.w.authorizeRead(read,f.ctx).authorized,true);
+  assert.equal(f.w.authorizeRead({...read,relativePath:'../escape'},f.ctx).ok,false);
+  assert.equal(f.w.authorizeRead({...read,relativePath:'C:/escape'},f.ctx).ok,false);
+  assert.equal(f.w.authorizeRead({...read,relativePath:'normal..file'},f.ctx).ok,true);
+  const ticket=f.w.issueCommitTicket({...read,submissionId:'draft',payloadDigest:'a'.repeat(64)},f.ctx).ticket;
+  assert.equal(f.w.projectEvent({roomId:f.roomId,ticketId:ticket.ticketId,payloadDigest:ticket.payloadDigest,eventKind:'artifact.confirmed'},f.ctx).code,'workspace_ticket_mismatch');
+  const confirmed=f.w.confirmArtifact({...read,expectedRevision:g.config.revision,submissionId:'confirm',versionId:'v1',payloadDigest:'b'.repeat(64)},f.ctx);
+  assert.equal(confirmed.ok,true,JSON.stringify(confirmed));
+  assert.equal(f.w.confirmArtifact({...read,submissionId:'evil',versionId:'v1',payloadDigest:'b'.repeat(64)},agent).ok,false);
+  f.w.revokeReadGrant({roomId:f.roomId,grantId:g.grant.grantId},f.ctx);
+  assert.equal(f.w.authorizeRead(read,f.ctx).code,'workspace_read_denied');
+});
+test('mapping ticket is historical authority, active fence blocks root, KSwarm verifies durable record', (t)=>{
+  const f=fixture(t);const c=bind(f);
+  const serviceCtx={sessionId:'kswarm',requestSource:'system',actor:{kind:'system',service:'kswarm'},issuedAt:new Date().toISOString()};
+  assert.equal(f.w.beginMapping({roomId:f.roomId,expectedRevision:c.revision,projectId:'p1',operationId:'map1'},f.ctx).ok,true);
+  const begin={roomId:f.roomId,expectedRevision:c.revision,requestId:'change2',payloadDigest:'a'.repeat(64)};
+  assert.equal(f.w.beginChange(begin,f.ctx).code,'workspace_mapping_pending');
+  const r=f.w.issueMappingTicket({roomId:f.roomId,projectId:'p1',operationId:'map1',expectedProjectRevision:3,payloadDigest:'b'.repeat(64)},f.ctx);
+  assert.equal(r.ok,true,JSON.stringify(r));const q={roomId:f.roomId,ticketId:r.ticket.ticketId,projectId:'p1',operationId:'map1',payloadDigest:'b'.repeat(64)};
+  assert.equal(f.w.verifyMappingTicket(q,f.ctx).code,'room_actor_forbidden');
+  f.service.archiveRoom({roomId:f.roomId},f.ctx);
+  assert.equal(f.w.verifyMappingTicket(q,serviceCtx).ok,true);
+  assert.equal(f.w.mappingApplied({...q,mappingRevision:4},serviceCtx).ok,true);
+  assert.equal(f.w.beginChange(begin,f.ctx).code,'room_archived');
+});
+test('cancelled preparations consume generation, immutable snapshots reload across connection', (t)=>{
+  const f=fixture(t);let c=bind(f);
+  const b=f.w.beginChange({roomId:f.roomId,expectedRevision:c.revision,requestId:'b2',payloadDigest:'c'.repeat(64)},f.ctx);
+  assert.equal(b.config.generation,1);assert.equal(b.nextGeneration,2);
+  const cancelled=f.w.cancelChange({roomId:f.roomId,expectedRevision:b.config.revision,operationId:'b2'},f.ctx);
+  const retry=f.w.beginChange({roomId:f.roomId,expectedRevision:cancelled.config.revision,requestId:'b3',payloadDigest:'d'.repeat(64)},f.ctx);
+  assert.equal(retry.nextGeneration,3);
+  assert.equal(f.w.commitBinding({roomId:f.roomId,expectedRevision:retry.config.revision,operationId:'b3',workspaceId:'ws-1',bindingId:'binding-2',payloadDigest:'d'.repeat(64)},f.ctx).config.generation,3);
+});
+test('canonical digest fixed vector and invalid numeric values',()=>{
+  // Independently checked against openssl dgst -sha256 over literal UTF-8.
+  assert.equal(workspaceDigest('mapping',{z:1,a:['中文',true,null]}),'75c6687e857de74fa3b960abae9ddcfcbb3e3be4417b3dc35c376576eb33d0a0');
+  assert.throws(()=>workspaceDigest('mapping',{n:NaN}));
+});
+test('bound-room v1 discussion wake stays available, workspace wake rejects cancelled claim',async(t)=>{
+  const f=fixture(t);bind(f);const a={...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+  const msg=f.service.sendRoomMessage({roomId:f.roomId,text:'Discuss',mentions:[{kind:'agent',logicalAgentId:'a'}],responsePolicy:'mentioned',idempotencyKey:'v1-discuss'},f.ctx).message;
+  assert.equal(f.service.claimWake({roomMessageId:msg.messageId,logicalAgentId:'a'},a).code,'workspace_protocol_required');
+  const wake=f.w.claimWake({roomId:f.roomId,roomMessageId:msg.messageId,logicalAgentId:'a',discussionOnly:true},a);
+  assert.equal(wake.ok,true,JSON.stringify(wake));
+  assert.equal(f.service.listRoomMessagesPage({claimToken:wake.claimToken,roomId:f.roomId,limit:10}).ok,true);
+  const result=await f.service.completeWake({claimToken:wake.claimToken,reply:{text:'Discussion only',idempotencyKey:'v1-discuss-reply'}});
+  assert.equal(result.ok,true,JSON.stringify(result));
+  const another=f.service.sendRoomMessage({roomId:f.roomId,text:'discuss again',mentions:[{kind:'agent',logicalAgentId:'a'}],responsePolicy:'mentioned',idempotencyKey:'v1-discuss-2'},f.ctx).message;
+  const second=f.w.claimWake({roomId:f.roomId,roomMessageId:another.messageId,logicalAgentId:'a',discussionOnly:true},a);
+  assert.equal(second.ok,true);
+  f.service.archiveRoom({roomId:f.roomId},f.ctx);
+  assert.equal((await f.service.completeWake({claimToken:second.claimToken,reply:{text:'late'}})).code,'workspace_claim_revoked');
+  assert.equal(f.service.listRoomMessagesPage({claimToken:second.claimToken,roomId:f.roomId,limit:10}).code,'workspace_claim_revoked');
+});
+test('owner discussion cancellation advances epoch once, rejects agent and never fakes release',async(t)=>{
+  const f=fixture(t);bind(f);const a={...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+  const acquireInput={roomId:f.roomId,runId:'root',executorInstanceId:'root-ex',contextScope:{kind:'room_only'},capability:{contextVersion:1,resultVersion:1,releaseVersion:1,canSetCwd:true,canTrackChildren:true,canRelease:true}};
+  const root=f.w.acquireClaim(acquireInput,a).claim;
+  assert.equal(f.w.ackClaim({...root,actualCwd:'/test/root',cwdVerified:true},a).ok,true);
+  const prior=f.w.getState({roomId:f.roomId},f.ctx).config;
+  assert.equal(f.w.publishInstructions({roomId:f.roomId,expectedRevision:prior.revision,requestId:'during-root',publishedText:'new rules'},f.ctx).ok,true);
+  const child=f.w.acquireClaim({...acquireInput,runId:'child',executorInstanceId:'child-ex',parentClaimId:root.claimId},a).claim;
+  assert.equal(child.workspaceRevision,root.workspaceRevision);
+  assert.equal(child.instructionsRevision,root.instructionsRevision);
+  assert.equal(f.w.ackClaim({...child,actualCwd:'/test/root',cwdVerified:true},a).ok,true);
+  const msg=f.service.sendRoomMessage({roomId:f.roomId,text:'discuss',mentions:[{kind:'agent',logicalAgentId:'a'}],responsePolicy:'mentioned',idempotencyKey:'to-cancel'},f.ctx).message;
+  const wake=f.w.claimWake({roomId:f.roomId,roomMessageId:msg.messageId,logicalAgentId:'a',discussionOnly:true},a);
+  assert.equal(f.service.cancelDiscussion({roomId:f.roomId,requestId:'cancel1'},a).ok,false);
+  const cancelled=f.service.cancelDiscussion({roomId:f.roomId,requestId:'cancel1'},f.ctx);
+  assert.equal(cancelled.ok,true,JSON.stringify(cancelled));
+  for(const claim of f.w.getState({roomId:f.roomId},f.ctx).claims){assert.equal(claim.executionState,'running');assert.equal(claim.authorizationState,'cancel_requested');}
+  assert.equal(f.service.cancelDiscussion({roomId:f.roomId,requestId:'cancel1'},f.ctx).room.discussionEpoch,cancelled.room.discussionEpoch);
+  assert.equal((await f.service.completeWake({claimToken:wake.claimToken,reply:{text:'late'}})).code,'workspace_claim_revoked');
+});
+test('project takeover lost ACK replays only identical verified evidence in current host incarnation', (t)=>{
+  const f=fixture(t);const config=bind(f);
+  const k={sessionId:'kswarm',requestSource:'system',actor:{kind:'system',service:'kswarm'},issuedAt:new Date().toISOString()};
+  f.w.beginMapping({roomId:f.roomId,projectId:'p',operationId:'map',expectedRevision:config.revision},f.ctx);
+  const mapping=f.w.issueMappingTicket({roomId:f.roomId,projectId:'p',operationId:'map',expectedProjectRevision:1,payloadDigest:'a'.repeat(64)},f.ctx).ticket;
+  assert.equal(f.w.mappingApplied({...mapping,mappingRevision:2},k).ok,true);
+  const a={...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+  const acquired=f.w.acquireClaim({roomId:f.roomId,runId:'project-recovery',executorInstanceId:'project-executor',contextScope:{kind:'project',projectId:'p'},projectMappingRevision:2,capability:{contextVersion:1,resultVersion:1,releaseVersion:1,canSetCwd:true,canTrackChildren:true,canRelease:true}},a).claim;
+  assert.equal(f.w.ackClaim({...acquired,cwdVerified:true,actualCwd:'/test/project'},a).ok,true);
+  assert.equal(f.w.getState({roomId:f.roomId},f.ctx).claims.length,0,'project claim must stay outside Room projection');
+  const h=f.w.registerHost({startupId:'new-process'},f.ctx).host;
+  const current={...f.ctx,hostIncarnation:h.hostIncarnation};
+  const input={roomId:f.roomId,claimId:acquired.claimId,expectedHostIncarnation:acquired.hostIncarnation,recoveryEvidence:{verified:true,executorInstanceId:'project-executor',kind:'attached'}};
+  const first=f.w.takeoverClaim(input,current);assert.equal(first.ok,true,JSON.stringify(first));
+  assert.equal(first.claim.executionState,'running');assert.equal(first.claim.authorizationState,'orphaned');
+  const restarted=createRoomStore({dbPath:f.dbPath});restarted.migrate();t.after(()=>restarted.close());
+  const api=createRoomService({store:restarted}).workspace;
+  const repeated=api.takeoverClaim(input,current);
+  assert.equal(repeated.ok,true,JSON.stringify(repeated));
+  assert.equal(repeated.claim.roomSequence,first.claim.roomSequence,'retry must not mutate sequence');
+  assert.equal(api.takeoverClaim({...input,recoveryEvidence:{...input.recoveryEvidence,kind:'process-exit'}},current).ok,false);
+  assert.equal(api.takeoverClaim(input,f.ctx).code,'workspace_host_fenced');
+  assert.equal(api.takeoverClaim({...input,recoveryEvidence:{...input.recoveryEvidence,executorInstanceId:'wrong'}},current).ok,false);
+  const third=api.registerHost({startupId:'third-process'},current).host;
+  const thirdCtx={...current,hostIncarnation:third.hostIncarnation};
+  const recovered=api.recoverClaim({roomId:f.roomId,claimId:acquired.claimId},thirdCtx);
+  assert.equal(recovered.ok,true,JSON.stringify(recovered));
+  assert.equal(recovered.claim.hostIncarnation,h.hostIncarnation);
+  assert.equal(api.recoverClaim({roomId:f.roomId,claimId:acquired.claimId},current).ok,false);
+  const alien=api.registerHost({startupId:'alien-process'},{...f.ctx,hostPrincipal:'alien'}).host;
+  assert.equal(api.recoverClaim({roomId:f.roomId,claimId:acquired.claimId},{...f.ctx,hostPrincipal:'alien',hostIncarnation:alien.hostIncarnation}).ok,false);
+  assert.equal(api.recoverClaim({roomId:f.roomId,claimId:acquired.claimId},{...thirdCtx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'}}).ok,false);
+  const final=api.takeoverClaim({...input,expectedHostIncarnation:recovered.claim.hostIncarnation,recoveryEvidence:{...input.recoveryEvidence,kind:'process-exit'}},thirdCtx);
+  assert.equal(final.ok,true,JSON.stringify(final));assert.equal(final.claim.executionState,'released');
+  assert.equal(api.getState({roomId:f.roomId},thirdCtx).claims.length,0);
+});
+test('acquire freezes task identity and children inherit rather than replace it', (t)=>{
+  const f=fixture(t);bind(f);
+  const a={...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+  const input={roomId:f.roomId,runId:'task-root',executorInstanceId:'root-ex',taskId:'task-1',contextScope:{kind:'room_only'},capability:{contextVersion:1,resultVersion:1,releaseVersion:1,canSetCwd:true,canTrackChildren:true,canRelease:true}};
+  const root=f.w.acquireClaim(input,a).claim;assert.equal(root.taskId,'task-1');
+  assert.equal(f.w.recoverAdmission({roomId:f.roomId,request:{...input,logicalAgentId:'a'}},f.ctx).claim.claimId,root.claimId);
+  assert.equal(f.w.recoverAdmission({roomId:f.roomId,request:{...input,logicalAgentId:'a',executorInstanceId:'forged'}},f.ctx).ok,false);
+  assert.equal(f.w.recoverAdmission({roomId:f.roomId,request:{...input,logicalAgentId:'a',taskId:'another-task'}},f.ctx).ok,false);
+  assert.equal(f.w.recoverAdmission({roomId:f.roomId,request:{...input,logicalAgentId:'a'}},a).ok,false);
+  assert.equal(f.w.acquireClaim({...input,taskId:'task-2'},a).code,'workspace_idempotency_conflict');
+  assert.equal(f.w.acquireClaim({...input,runId:'invalid',taskId:''},a).ok,false);
+  assert.equal(f.w.ackClaim({...root,cwdVerified:true,actualCwd:'/test/root'},a).ok,true);
+  const childInput={...input,runId:'child',executorInstanceId:'child-ex',parentClaimId:root.claimId};delete childInput.taskId;
+  assert.equal(f.w.acquireClaim(childInput,a).claim.taskId,'task-1');
+  assert.equal(f.w.acquireClaim({...childInput,runId:'bad-child',taskId:'task-2'},a).ok,false);
+});
+test('mapping recovery reads only the exact historical operation and never grants a new ticket',t=>{
+  const f=fixture(t),config=bind(f),operationId='recover-map',projectId='recover-project',payloadDigest='c'.repeat(64),expectedProjectRevision=7;
+  assert.equal(f.w.beginMapping({roomId:f.roomId,expectedRevision:config.revision,operationId,projectId},f.ctx).ok,true);
+  const input={roomId:f.roomId,operationId,projectId,payloadDigest,expectedProjectRevision};
+  const operation=f.w.recoverMappingOperation(input,f.ctx);assert.equal(operation.ok,true);assert.equal(operation.mapping.ticketId,undefined);
+  assert.equal(f.w.recoverMappingTicket(input,f.ctx).ok,false);
+  const issued=f.w.issueMappingTicket(input,f.ctx);assert.equal(issued.ok,true);
+  f.service.archiveRoom({roomId:f.roomId},f.ctx);
+  assert.equal(f.w.recoverMappingTicket(input,f.ctx).ticket.ticketId,issued.ticket.ticketId);
+  for(const changed of [{payloadDigest:'d'.repeat(64)},{projectId:'other'},{operationId:'other'},{expectedProjectRevision:8}])assert.equal(f.w.recoverMappingTicket({...input,...changed},f.ctx).ok,false);
+  assert.equal(f.w.recoverMappingTicket(input,{...f.ctx,actor:{kind:'user',userId:'other'}}).ok,false);
+  const other=f.w.registerHost({startupId:'alien'},{...f.ctx,hostPrincipal:'alien'}).host;
+  assert.equal(f.w.recoverMappingTicket(input,{...f.ctx,hostPrincipal:'alien',hostIncarnation:other.hostIncarnation}).ok,false);
+  assert.equal(f.w.recoverMappingOperation({...input,operationId:'other'},f.ctx).ok,false);
+});
+test('confirmed decisions append immutable revoke versions and reject mixed project sources',t=>{
+  const f=fixture(t);bind(f);
+  const message=(text,contextScope)=>{const result=f.service.sendRoomMessage({roomId:f.roomId,text,contextScope,responsePolicy:'none',idempotencyKey:text},f.ctx);assert.equal(result.ok,true,JSON.stringify(result));return result.message;};
+  const shared=message('shared-source',{kind:'room_only'}),a=message('project-a-source',{kind:'project',projectId:'A'}),b=message('project-b-source',{kind:'project',projectId:'B'});
+  const input={roomId:f.roomId,decisionId:'decision-a',expectedRevision:0,contextScope:{kind:'project',projectId:'A'},text:'Decision A',sourceMessageIds:[shared.messageId,a.messageId]};
+  const first=f.w.confirmDecision(input,f.ctx);assert.equal(first.ok,true,JSON.stringify(first));assert.equal(first.decision.revision,1);
+  const immutable=JSON.stringify(first.decision);
+  const before=JSON.stringify(f.store.getRoomRow(f.roomId));
+  assert.equal(f.w.confirmDecision({...input,decisionId:'mixed',sourceMessageIds:[a.messageId,b.messageId]},f.ctx).code,'room_scope_mismatch');
+  assert.equal(JSON.stringify(f.store.getRoomRow(f.roomId)),before,'rejected mutation consumes no sequence');
+  assert.equal(f.w.confirmDecision({...input,expectedRevision:0,text:'stale'},f.ctx).code,'room_revision_conflict');
+  assert.equal(f.w.confirmDecision({...input,decisionId:'agent-forged'},{...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']}).code,'room_actor_forbidden');
+  const revoked=f.w.confirmDecision({...input,expectedRevision:1,revoked:true},f.ctx);assert.equal(revoked.ok,true);assert.equal(revoked.decision.revision,2);assert.equal(revoked.decision.revoked,true);assert.ok(revoked.decision.roomSequence>first.decision.roomSequence);
+  const old=f.store.db.prepare("SELECT value_json FROM room_workspace_records WHERE kind='decision-version' AND record_key=?").get('decision-a:1');
+  assert.equal(old.value_json,immutable);
+  const reopened=createRoomStore({dbPath:f.dbPath});reopened.migrate();t.after(()=>reopened.close());
+  const latest=JSON.parse(reopened.db.prepare("SELECT value_json FROM room_workspace_records WHERE kind='decision' AND record_key=?").get('decision-a').value_json);
+  assert.equal(latest.revision,2);assert.equal(latest.revoked,true);assert.deepEqual(latest.contextScope,{kind:'project',projectId:'A'});
+  // Explicit owner promotion to Room sharing is permitted, not an accidental
+  // cross-project decision. Only this selected confirmed text is shared.
+  assert.equal(f.w.confirmDecision({...input,decisionId:'shared-decision',contextScope:{kind:'room_only'},sourceMessageIds:[a.messageId]},f.ctx).ok,true);
+});
+test('unsigned mapping cancel lost ACK recovers exact historical cancellation after restoring prior state',t=>{
+  const f=fixture(t),config=bind(f),projectId='cancel-recovery-project';
+  for(const operationId of ['first-unsigned','second-unsigned']){
+    const input={roomId:f.roomId,projectId,operationId};
+    assert.equal(f.w.beginMapping({...input,expectedRevision:config.revision},f.ctx).ok,true);
+    // The server commits, but the caller loses this reply and retains pending.
+    assert.equal(f.w.cancelMapping(input,f.ctx).ok,true);
+    const reopened=createRoomStore({dbPath:f.dbPath});reopened.migrate();t.after(()=>reopened.close());
+    const workspace=createRoomService({store:reopened}).workspace;
+    const before=JSON.stringify(reopened.getRoomRow(f.roomId));
+    const recovered=workspace.recoverMappingOperation(input,f.ctx);
+    assert.equal(recovered.ok,true,JSON.stringify(recovered));
+    assert.equal(recovered.mapping.state,'cancelled');assert.equal(recovered.mapping.operationId,operationId);
+    assert.equal(recovered.mapping.ticketId,undefined);
+    assert.equal(workspace.beginMapping({...input,expectedRevision:config.revision},f.ctx).code,'workspace_operation_finished','a terminal operation cannot be reused as new authority');
+    assert.equal(JSON.stringify(reopened.getRoomRow(f.roomId)),before,'historical cancellation grants no new sequence/authority');
+    assert.equal(workspace.recoverMappingOperation({...input,operationId:'not-this-operation'},f.ctx).ok,false);
+    assert.equal(workspace.recoverMappingOperation(input,{...f.ctx,actor:{kind:'user',userId:'other'}}).ok,false);
+    assert.equal(workspace.recoverMappingOperation(input,{...f.ctx,hostPrincipal:'other-installation'}).ok,false);
+  }
+});

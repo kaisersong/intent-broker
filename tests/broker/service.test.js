@@ -896,11 +896,13 @@ test('websocket lifecycle updates presence and broadcasts online and offline cha
 });
 
 test('websocket heartbeat keeps realtime participants online across presence sweeps', async (t) => {
+  let presenceTime = 1_000;
   const broker = createBrokerService({
     dbPath: createTempDbPath(),
     presenceTimeoutMs: 50,
     presenceSweepIntervalMs: 10,
-    websocketHeartbeatIntervalMs: 10
+    websocketHeartbeatIntervalMs: 10,
+    presenceNow: () => presenceTime
   });
   const server = createServer({ broker });
   await server.listen(0, '127.0.0.1');
@@ -925,7 +927,22 @@ test('websocket heartbeat keeps realtime participants online across presence swe
   });
 
   await waitFor(() => broker.getPresence('adapter.yunzhijia')?.status === 'online');
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(broker.getPresence('adapter.yunzhijia').lastSeen, presenceTime);
+  broker.registerParticipant({ participantId: 'adapter.no-heartbeat', kind: 'adapter', roles: [], capabilities: [] });
+  broker.updatePresence('adapter.no-heartbeat', 'online');
+  let pings = 0;
+  socket.on('ping', () => { pings += 1; });
+  // Real ws ping/automatic pong still drives the production onHeartbeat callback.
+  // Only presence time is controlled: a busy shared-suite event loop must not
+  // accidentally turn a 150ms sleep into an unobserved >50ms stale interval.
+  for (let cycle = 0; cycle < 4; cycle += 1) {
+    const previousPings = pings;
+    presenceTime += 40;
+    await waitFor(() => pings > previousPings && broker.getPresence('adapter.yunzhijia')?.lastSeen === presenceTime, { intervalMs: 1 });
+    broker.sweepPresence();
+    assert.equal(broker.getPresence('adapter.yunzhijia')?.status, 'online');
+  }
+  assert.equal(broker.getPresence('adapter.no-heartbeat')?.status, 'offline', 'controlled time still expires a participant without heartbeat');
 
   const stillOnline = broker.getPresence('adapter.yunzhijia');
   assert.equal(stillOnline?.status, 'online');

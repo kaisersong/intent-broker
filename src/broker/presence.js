@@ -3,7 +3,7 @@
  * Tracks online status, last seen, and activity
  */
 
-export function createPresenceTracker({ timeoutMs = 60000 } = {}) {
+export function createPresenceTracker({ timeoutMs = 60000, now = Date.now } = {}) {
   const presenceMap = new Map();
 
   function materializePresence(presence) {
@@ -11,8 +11,7 @@ export function createPresenceTracker({ timeoutMs = 60000 } = {}) {
       return null;
     }
 
-    const now = Date.now();
-    const isStale = now - presence.lastSeen > timeoutMs;
+    const isStale = now() - presence.lastSeen > timeoutMs;
 
     return {
       ...presence,
@@ -23,11 +22,10 @@ export function createPresenceTracker({ timeoutMs = 60000 } = {}) {
 
   return {
     updatePresence(participantId, status = 'online', metadata = {}) {
-      const now = Date.now();
       presenceMap.set(participantId, {
         participantId,
         status,
-        lastSeen: now,
+        lastSeen: now(),
         metadata
       });
       return presenceMap.get(participantId);

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { URL } from 'node:url';
 
 export const INTENTS_MAX_BODY_BYTES = 16 * 1024;
@@ -74,6 +74,7 @@ export function createServer({
   roomService = null,
   roomDesktopToken = null,
   roomKSwarmToken = null,
+  roomHostPrincipal = null,
 } = {}) {
   const getHealth = healthProvider || (() => ({ ok: true }));
   const raw = http.createServer(async (req, res) => {
@@ -100,6 +101,10 @@ export function createServer({
         const kswarmAuthenticated = tokenMatches(token, roomKSwarmToken);
         if (!roomService || (!desktopAuthenticated && !kswarmAuthenticated)) {
           writeJson(res, 401, { error: 'room_authentication_required' });
+          return;
+        }
+        if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
+          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
           return;
         }
 
@@ -175,6 +180,54 @@ export function createServer({
         const action = segments[2];
         let result;
 
+        if (roomId && action === 'workspace' && roomService.workspace) {
+          const commands = {
+            'register-host':'registerHost', 'begin-change':'beginChange',
+            'commit-binding':'commitBinding', 'activate-binding':'activateBinding',
+            'activation-failed':'activationFailed', 'cancel-change':'cancelChange',
+            'publish-instructions':'publishInstructions', acquire:'acquireClaim',
+            ack:'ackClaim', release:'releaseClaim', cancel:'cancelClaim', takeover:'takeoverClaim',
+            heartbeat:'heartbeatClaim', releasing:'releasingClaim', orphan:'orphanClaim',
+            ticket:'issueCommitTicket', 'agent-ticket':'issueCommitTicket', projection:'projectEvent',
+            'confirm-artifact':'confirmArtifact', 'verify-commit-ticket':'verifyCommitTicket',
+            'recover-ticket':'recoverTicket', 'recover-claim':'recoverClaim', 'recover-admission':'recoverAdmission',
+            'recover-mapping-ticket':'recoverMappingTicket', 'recover-mapping-operation':'recoverMappingOperation',
+            'grant-read':'issueReadGrant', 'revoke-read':'revokeReadGrant', 'authorize-read':'authorizeRead',
+            'agent-authorize-read':'authorizeRead', 'confirm-decision':'confirmDecision',
+            'project-fence':'beginMapping', 'mapping-ticket':'issueMappingTicket',
+            'verify-mapping-ticket':'verifyMappingTicket', 'mapping-applied':'mappingApplied',
+            'verify-claim':'verifyClaim',
+            'claim-wake':'claimWake',
+            'abandon-wake':'abandonWake',
+            'recover-wake':'recoverWake',
+            'cancel-mapping':'cancelMapping', 'mapping-rejected':'mappingRejected',
+          };
+          const command=segments[3];
+          const serviceOnly=['verify-mapping-ticket','mapping-applied','verify-claim','verify-commit-ticket','mapping-rejected'];
+          if ((serviceOnly.includes(command) && !kswarmAuthenticated) || (!serviceOnly.includes(command) && !desktopAuthenticated)) {
+            writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;
+          }
+          const workspaceCtx={...ctx};
+          if(desktopAuthenticated){
+            // Credential-derived installation principal, never request body.
+            workspaceCtx.hostPrincipal=roomHostPrincipal??createHash('sha256').update('room-host-installation\n'+roomDesktopToken).digest('hex');
+            workspaceCtx.hostIncarnation=Number(req.headers['x-intent-broker-host-incarnation']);
+          }
+          if(req.method==='GET'&&!command){
+            result=roomService.workspace.getState({roomId,instructionsRevision:requestUrl.searchParams.has('instructionsRevision')?Number(requestUrl.searchParams.get('instructionsRevision')):undefined},workspaceCtx);
+          }else if(req.method==='POST'&&Object.hasOwn(commands,command)){
+            const body=await readJson(req,{maxBytes:1024*1024});
+            if(['acquire','ack','agent-ticket','agent-authorize-read','claim-wake'].includes(command)){
+              if(typeof body.logicalAgentId!=='string'||!body.logicalAgentId.trim()){writeJson(res,400,{ok:false,code:'room_actor_identity_mismatch'});return;}
+              // Only the credential-bearing main dispatcher can select an agent;
+              // service verifies active membership and ownership of every claim.
+              workspaceCtx.requestSource='agent';workspaceCtx.actor={kind:'agent',logicalAgentId:body.logicalAgentId};workspaceCtx.allowedLogicalAgentIds=[body.logicalAgentId];
+            }
+            result=roomService.workspace[commands[command]]({...body,roomId},workspaceCtx);
+          }else{writeJson(res,404,{error:'not_found'});return;}
+          writeJson(res,roomStatus(result),result);return;
+        }
+
         if (req.method === 'GET' && segments.length === 1) {
           result = roomService.listCollaborationRooms({}, ctx);
           writeJson(res, roomStatus(result), result);
@@ -231,6 +284,11 @@ export function createServer({
           writeJson(res, roomStatus(result, 201), result);
           return;
         }
+        if (req.method === 'POST' && roomId && action === 'discussion' && segments[3] === 'cancel') {
+          result = roomService.cancelDiscussion({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
         if (req.method === 'POST' && roomId && action === 'membership-leases') {
           result = roomService.acquireMembershipLease({ ...(await readJson(req)), roomId }, ctx);
           writeJson(res, roomStatus(result, 201), result);
@@ -264,7 +322,7 @@ export function createServer({
       }
 
       if (req.method === 'GET' && pathname === '/health') {
-        writeJson(res, 200, getHealth());
+        writeJson(res, 200, { ...getHealth(), ...(roomService?.workspace ? { protocols: { room_workspace_v1: { contextVersion: 1, resultVersion: 1, releaseVersion: 1 } } } : {}) });
         return;
       }
 

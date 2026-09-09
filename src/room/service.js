@@ -20,6 +20,7 @@ import {
   ROOM_MEMBERSHIP_LEASE_TTL_MS,
 } from './constants.js';
 import { verifyTrustedActorContext } from './trusted-context.js';
+import { createRoomWorkspaceService } from './workspace-service.js';
 
 function fail(code, extra = {}) {
   return { ok: false, code, ...extra };
@@ -50,6 +51,7 @@ export function createRoomService({
   wakeClaimGraceMs = ROOM_WAKE_CLAIM_GRACE_MS,
   now = () => new Date(),
 } = {}) {
+  const workspace = createRoomWorkspaceService({ store, now });
   function requireVerifiedCtx(ctx) {
     const verification = verifyTrustedActorContext(ctx);
     if (!verification.ok) return verification;
@@ -97,7 +99,7 @@ export function createRoomService({
   }
 
   function snapshotWithMembers(room) {
-    return { room, members: store.listMembers(room.roomId) };
+    return { room: { ...room, requiredProtocol: workspace.requiresProtocol(room.roomId) ? 'room_workspace_v1' : null }, members: store.listMembers(room.roomId) };
   }
 
   function contextCurrentUser() {
@@ -221,6 +223,7 @@ export function createRoomService({
         discussionEpoch: room.discussionEpoch + 1,
         updatedAt: isoNow(now()),
       });
+      workspace.onRoomMutation(roomId, 'archive');
       // cancel every not-yet-claimed wake obligation in the same settlement
       const messages = store.listMessages(roomId);
       for (const message of messages) {
@@ -375,6 +378,7 @@ export function createRoomService({
         }
       }
       store.updateRoom(roomId, { revision: room.revision + 1, updatedAt: timestamp });
+      workspace.onRoomMutation(roomId, 'member-change');
     });
 
     return { ok: true, room: store.getRoomRow(roomId), members: store.listMembers(roomId) };
@@ -658,7 +662,7 @@ export function createRoomService({
       if (memberError) return memberError;
     }
 
-    return { ok: true, room, members: store.listMembers(roomId), messages: store.listMessages(roomId) };
+    return { ok: true, ...snapshotWithMembers(room), requiredProtocol: workspace.requiresProtocol(roomId) ? 'room_workspace_v1' : null, messages: store.listMessages(roomId) };
   }
 
   function listCollaborationRooms(_input = {}, ctx = null) {
@@ -713,6 +717,7 @@ export function createRoomService({
    *     room_archived 立即拒绝，不做"lease 未到期就放行"的宽松判断）。
    */
   function listRoomMessagesPage({ claimToken, roomId, afterSequence, beforeSequence, limit } = {}) {
+    if (typeof claimToken === 'string') { const checked = workspace.validateWake(claimToken); if (!checked.ok) return checked; }
     if (typeof claimToken !== 'string' || !claimToken.includes('|')) {
       return fail('room_input_invalid', { field: 'claimToken' });
     }
@@ -750,8 +755,14 @@ export function createRoomService({
       return fail('room_delivery_conflict', { reason: 'stale_epoch' });
     }
 
-    const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit });
-    const bounds = store.getRoomSequenceBounds(roomId);
+    const sourceScope=sourceMessage.contextScope??{kind:'room_only'};
+    const scoped=store.listMessages(roomId).filter(message=>{
+      const scope=message.contextScope??{kind:'room_only'};
+      return scope.kind===sourceScope.kind&&(scope.kind!=='project'||scope.projectId===sourceScope.projectId);
+    });
+    const effectiveLimit=Number.isInteger(limit)&&limit>0?Math.min(limit,200):50;
+    const messages=scoped.filter(message=>(!Number.isInteger(afterSequence)||message.roomSequence>afterSequence)&&(!Number.isInteger(beforeSequence)||message.roomSequence<beforeSequence)).slice(0,effectiveLimit);
+    const bounds={totalMessages:scoped.length,minSequence:scoped[0]?.roomSequence??null,maxSequence:scoped.at(-1)?.roomSequence??null};
     const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
     const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
 
@@ -775,7 +786,10 @@ export function createRoomService({
     };
   }
 
-  function claimWake({ roomMessageId, logicalAgentId, hostParticipantId } = {}, ctx = null) {
+  const workspaceWakeAuthorization = Symbol('workspaceWakeAuthorization');
+  function claimWake({ roomMessageId, logicalAgentId, hostParticipantId } = {}, ctx = null, internalAuthorization = null) {
+    const sourceRoom = typeof roomMessageId === 'string' ? store.getMessageById(roomMessageId)?.roomId : null;
+    if (sourceRoom && workspace.requiresProtocol(sourceRoom) && internalAuthorization !== workspaceWakeAuthorization) return fail('workspace_protocol_required');
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
 
@@ -818,6 +832,8 @@ export function createRoomService({
     if (typeof claimToken !== 'string' || !claimToken.includes('|')) {
       return fail('room_input_invalid', { field: 'claimToken' });
     }
+    const workspaceCheck = workspace.validateWake(claimToken);
+    if (!workspaceCheck.ok) return workspaceCheck;
     const [roomMessageId, logicalAgentId, epoch, leaseUntil] = claimToken.split('|');
 
     const delivery = store.getDelivery(roomMessageId, `agent:${logicalAgentId}`);
@@ -881,7 +897,7 @@ export function createRoomService({
       sender: agentActor,
       kind: reply?.kind === 'pass' ? 'system' : 'text',
       text: reply?.kind === 'pass' ? undefined : reply?.text,
-      contextScope: undefined,
+      contextScope: sourceMessage.contextScope ?? { kind: 'room_only' },
       mentions: [],
       responsePolicy: 'none',
       idempotencyKey: `wake:${claimToken}`,
@@ -936,6 +952,30 @@ export function createRoomService({
   }
 
   // ---------------------------------------------------------------- discussion
+  function cancelDiscussion({ roomId, expectedRoomRevision, requestId } = {}, ctx = null) {
+    const ctxError = requireVerifiedCtx(ctx); if (ctxError) return ctxError;
+    if (ctx.requestSource !== 'user') return fail('room_actor_forbidden');
+    const current = requireRoom(roomId); if (current.ok === false) return current;
+    const ownerError = requireActiveOwner(roomId, ctx); if (ownerError) return ownerError;
+    if (typeof requestId !== 'string' || !requestId.trim()) return fail('room_input_invalid');
+    return store.withTransaction(() => {
+      const key = `${roomId}:${requestId}`;
+      const existing = store.db.prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND record_key=?').get('discussion-cancel', key);
+      if (existing) return { ok: true, ...snapshotWithMembers(store.getRoomRow(roomId)) };
+      if (expectedRoomRevision !== undefined && expectedRoomRevision !== current.revision) return fail('room_revision_conflict');
+      store.updateRoom(roomId, { revision: current.revision + 1, discussionEpoch: current.discussionEpoch + 1, updatedAt: isoNow(now()) });
+      for (const message of store.listMessages(roomId)) {
+        for (const delivery of store.listDeliveries(message.messageId)) {
+          if (delivery.wakeStatus === 'pending') store.updateDelivery(message.messageId, delivery.recipientKey, { wakeStatus: 'cancelled' });
+        }
+      }
+      workspace.onRoomMutation(roomId, 'discussion-cancel');
+      const roomSequence = store.nextRoomSequence(roomId);
+      store.db.prepare('INSERT INTO room_workspace_records(kind,record_key,room_id,value_json) VALUES(?,?,?,?)').run('discussion-cancel', key, roomId, JSON.stringify({ requestId, roomSequence, actor: ctx.actor, at: isoNow(now()) }));
+      return { ok: true, ...snapshotWithMembers(store.getRoomRow(roomId)), roomSequence };
+    });
+  }
+
   function startTeamDiscussion({ roomId, topic, expectedRoomRevision } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
@@ -966,7 +1006,44 @@ export function createRoomService({
     store.close();
   }
 
+  workspace.recoverWake = (input = {}, ctx = null) => {
+    const checked = workspace.authorizeWakeAbandon(input, ctx);
+    if (!checked.ok) return checked;
+    const grant = checked.authorization;
+    const source = store.getMessageById(grant.roomMessageId);
+    const delivery = store.getDelivery(grant.roomMessageId, `agent:${grant.logicalAgentId}`);
+    if (!delivery || delivery.claimToken !== input.claimToken) return fail('room_delivery_conflict');
+    return { ok: true, wake: { roomId: grant.roomId, roomMessageId: grant.roomMessageId, logicalAgentId: grant.logicalAgentId,
+      contextScope: source.contextScope ?? { kind: 'room_only' }, wakeStatus: delivery.wakeStatus } };
+  };
+  workspace.abandonWake = (input = {}, ctx = null) => {
+    const checked = workspace.authorizeWakeAbandon(input, ctx);
+    if (!checked.ok) return checked;
+    return store.withTransaction(() => {
+      const grant = checked.authorization;
+      const delivery = store.getDelivery(grant.roomMessageId, `agent:${grant.logicalAgentId}`);
+      if (!delivery || delivery.claimToken !== input.claimToken) return fail('room_delivery_conflict');
+      if (delivery.wakeStatus === 'failed') return { ok: true, wakeStatus: 'failed' };
+      if (delivery.wakeStatus === 'completed') return { ok: true, wakeStatus: 'completed' };
+      if (delivery.wakeStatus !== 'claimed') return fail('room_delivery_conflict');
+      store.updateDelivery(grant.roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
+      store.insertAudit({ roomId: grant.roomId, roomMessageId: grant.roomMessageId, logicalAgentId: grant.logicalAgentId,
+        outcome: 'execution_failed', detail: { reason: 'execution_failed' }, createdAt: nowDate(now()).toISOString() });
+      return { ok: true, wakeStatus: 'failed' };
+    });
+  };
+  workspace.claimWake = (input = {}, ctx = null) => {
+    const checked = workspace.authorizeWake(input, ctx);
+    if (!checked.ok) return checked;
+    return store.withTransaction(() => {
+      const result = claimWake(input, ctx, workspaceWakeAuthorization);
+      if (result.ok) workspace.recordWake(result.claimToken, checked.authorization);
+      return result;
+    });
+  };
   return {
+    workspace,
+    cancelDiscussion,
     createRoom,
     archiveRoom,
     settleArchiveGrace,

@@ -81,6 +81,7 @@ export function createBrokerService({
   presenceTimeoutMs = 600000,
   presenceSweepIntervalMs = 5000,
   websocketHeartbeatIntervalMs = 30000,
+  presenceNow = Date.now,
   offlineContextSyncEmitter = null,
   onTaskUnacked = null
 }) {
@@ -95,7 +96,7 @@ export function createBrokerService({
   const roomStore = createRoomStore({ dbPath });
   roomStore.migrate();
   const room = createRoomService({ store: roomStore });
-  const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs });
+  const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs, now: presenceNow });
   const wsNotifier = createWebSocketNotifier({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
   });
@@ -756,7 +757,7 @@ export function createBrokerService({
   }
 
   function sweepStalePresence() {
-    const now = Date.now();
+    const now = presenceNow();
     for (const item of presence.listPresence()) {
       const raw = presence.peekPresence(item.participantId);
       if (!raw) {

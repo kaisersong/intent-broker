@@ -245,6 +245,16 @@ export function getDefaultMigrations() {
         `);
       },
     },
+    {
+      version: 4,
+      id: 'room_workspace_v1',
+      up(db) {
+        db.exec(`CREATE TABLE room_workspace_records (
+          kind TEXT NOT NULL, record_key TEXT NOT NULL, room_id TEXT NOT NULL,
+          value_json TEXT NOT NULL, PRIMARY KEY(kind, record_key)
+        ); CREATE INDEX room_workspace_records_by_room ON room_workspace_records(room_id,kind);`);
+      },
+    },
   ];
 }
 
