@@ -5,7 +5,7 @@
  * tests. They must not be redefined ad hoc at call sites.
  */
 
-export const ROOM_SCHEMA_VERSION = 4;
+export const ROOM_SCHEMA_VERSION = 5;
 
 export const ROOM_TABLES = [
   'rooms',

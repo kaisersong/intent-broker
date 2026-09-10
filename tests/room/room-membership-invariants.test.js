@@ -301,3 +301,41 @@ test('removed agents can no longer read the transcript or be woken', async () =>
   );
   assert.equal(wake.ok, false);
 });
+
+ test('room aliases persist, remain room-local, clear, and reject unauthorized or ambiguous changes', () => {
+  const dbPath = createTempDbPath(); const store = createRoomStore({ dbPath }); store.migrate();
+  const service = createRoomService({ store });
+  const created = createRoom(service, ['agent-a', 'agent-b']); const roomId = created.room.roomId;
+  const other = createRoom(service, ['agent-a']);
+  const change = (aliasChanges, ctx = userCtx(), revision = undefined) => service.updateRoomMembers({ roomId, aliasChanges, expectedRoomRevision: revision }, ctx);
+  const before = store.getMember(roomId, { kind: 'agent', logicalAgentId: 'agent-a' }).membershipRevision;
+  assert.equal(change([{ logicalAgentId: 'agent-a', alias: '研究员' }], agentCtx('agent-a')).ok, false);
+  assert.equal(change([{ logicalAgentId: 'agent-a', alias: '研究员' }], userCtx({ actor: { kind: 'user', userId: 'stranger' } })).ok, false);
+  assert.equal(change([{ logicalAgentId: 'agent-a', alias: '研究员' }], userCtx(), created.room.revision).ok, true);
+  const member = store.getMember(roomId, { kind: 'agent', logicalAgentId: 'agent-a' });
+  assert.equal(member.alias, '研究员'); assert.equal(member.membershipRevision, before);
+  assert.equal(store.getMember(other.room.roomId, { kind: 'agent', logicalAgentId: 'agent-a' }).alias, undefined);
+  assert.equal(change([{ logicalAgentId: 'agent-b', alias: '研究员' }]).ok, false);
+  assert.equal(change([{ logicalAgentId: 'missing', alias: '新名字' }]).ok, false);
+  assert.equal(change([{ logicalAgentId: 'agent-a', alias: 'all' }]).ok, false);
+  assert.equal(change([{ logicalAgentId: 'agent-a', alias: 'a@b' }]).ok, false);
+  assert.equal(change([{ logicalAgentId: 'agent-a', alias: '过期' }], userCtx(), created.room.revision).ok, false);
+  store.close(); const reopened = createRoomStore({ dbPath }); reopened.migrate();
+  assert.equal(reopened.getMember(roomId, { kind: 'agent', logicalAgentId: 'agent-a' }).alias, '研究员');
+  assert.equal(createRoomService({ store: reopened }).updateRoomMembers({ roomId, aliasChanges: [{ logicalAgentId: 'agent-a', alias: '' }] }, userCtx()).ok, true);
+  assert.equal(reopened.getMember(roomId, { kind: 'agent', logicalAgentId: 'agent-a' }).alias, undefined); reopened.close();
+});
+
+test('scheduled wakes use a desktop system sender and reject agents or inactive targets', () => {
+  const service=createService(),created=createRoom(service,['agent-1']),roomId=created.room.roomId;
+  const input={roomId,targetAgentId:'agent-1',text:'Check progress',scheduleId:'schedule-1',idempotencyKey:'due-1'};
+  assert.equal(service.sendScheduledRoomWake(input,agentCtx('agent-1')).ok,false);
+  assert.equal(service.sendScheduledRoomWake({...input,targetAgentId:'stranger'},userCtx()).ok,false);
+  const result=service.sendScheduledRoomWake(input,userCtx());
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.deepEqual(result.message.sender,{kind:'system',service:'desktop'});
+  assert.equal(result.message.sourceRef.kind,'scheduled_task');
+  assert.equal(result.message.mentions[0].logicalAgentId,'agent-1');
+  const duplicate=service.sendScheduledRoomWake(input,userCtx());
+  assert.equal(duplicate.code,'room_message_duplicate');
+});

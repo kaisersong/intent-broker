@@ -243,6 +243,11 @@ export function createServer({
           writeJson(res, roomStatus(result), result);
           return;
         }
+        if (req.method === 'POST' && roomId && action === 'scheduled-wakes') {
+          if(!desktopAuthenticated){writeJson(res,403,{code:'room_actor_forbidden'});return;}
+          result=roomService.sendScheduledRoomWake({...await readJson(req),roomId},ctx);
+          writeJson(res,roomStatus(result,201),result);return;
+        }
         if (req.method === 'POST' && roomId && action === 'messages') {
           result = roomService.sendRoomMessage({ ...(await readJson(req)), roomId }, ctx);
           writeJson(res, roomStatus(result, 201), result);

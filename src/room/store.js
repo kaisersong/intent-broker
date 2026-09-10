@@ -53,6 +53,7 @@ function mapMemberRow(row) {
     membershipRevision: row.membership_revision,
     addedAt: row.added_at,
     removedAt: row.removed_at ?? undefined,
+    alias: row.alias ?? undefined,
   };
 }
 
@@ -255,6 +256,7 @@ export function getDefaultMigrations() {
         ); CREATE INDEX room_workspace_records_by_room ON room_workspace_records(room_id,kind);`);
       },
     },
+    { version: 5, id: 'room_member_alias', up(db) { db.exec('ALTER TABLE room_members ADD COLUMN alias TEXT'); } },
   ];
 }
 
@@ -388,13 +390,14 @@ export function createRoomStore({ dbPath, migrations } = {}) {
     if (!current) return null;
     const next = { ...current, ...patch };
     db.prepare(`
-      UPDATE room_members SET role = ?, status = ?, membership_revision = ?, removed_at = ?
+      UPDATE room_members SET role = ?, status = ?, membership_revision = ?, removed_at = ?, alias = ?
       WHERE room_id = ? AND subject_kind = ? AND subject_id = ?
     `).run(
       next.role,
       next.status,
       next.membershipRevision,
       next.removedAt ?? null,
+      next.alias ?? null,
       roomId,
       subject.kind === 'user' ? 'user' : 'agent',
       subject.kind === 'user' ? subject.userId : subject.logicalAgentId

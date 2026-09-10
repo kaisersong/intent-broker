@@ -271,7 +271,7 @@ export function createRoomService({
   }
 
   // ---------------------------------------------------------------- members
-  function updateRoomMembers({ roomId, expectedRoomRevision, addAgentIds = [], removeAgentIds = [], addUserIds = [], removeUserIds = [], roleChanges = [] } = {}, ctx = null) {
+  function updateRoomMembers({ roomId, expectedRoomRevision, addAgentIds = [], removeAgentIds = [], addUserIds = [], removeUserIds = [], roleChanges = [], aliasChanges = [] } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
 
@@ -321,6 +321,18 @@ export function createRoomService({
     const projectedAgentCount =
       existingAgentIds.size - [...removingAgents].filter((id) => existingAgentIds.has(id)).length
       + [...uniqueCombined].filter((id) => !existingAgentIds.has(id)).length;
+    if (!Array.isArray(aliasChanges) || aliasChanges.length > ROOM_MAX_ACTIVE_AGENT_MEMBERS) return fail('room_alias_invalid');
+    const projectedIds = new Set([...existingAgentIds, ...uniqueCombined].filter(id => !removingAgents.has(id)));
+    const aliases = new Map(activeAgents.filter(m => projectedIds.has(m.subject.logicalAgentId)).map(m => [m.subject.logicalAgentId, m.alias ?? '']));
+    const changed = new Set();
+    for (const change of aliasChanges) {
+      if (!change || typeof change.logicalAgentId !== 'string' || !projectedIds.has(change.logicalAgentId) || changed.has(change.logicalAgentId) || typeof change.alias !== 'string') return fail('room_alias_invalid');
+      const alias = change.alias.trim();
+      if (alias.length > 48 || /[@\p{Cc}\p{Cf}]/u.test(alias) || alias.toLowerCase() === 'all' || projectedIds.has(alias)) return fail('room_alias_invalid');
+      changed.add(change.logicalAgentId); aliases.set(change.logicalAgentId, alias);
+    }
+    const names = [...aliases.values()].filter(Boolean).map(alias => alias.toLowerCase());
+    if (new Set(names).size !== names.length) return fail('room_alias_duplicate');
     if (projectedAgentCount > ROOM_MAX_ACTIVE_AGENT_MEMBERS) {
       return fail('room_member_limit_exceeded', { limit: ROOM_MAX_ACTIVE_AGENT_MEMBERS });
     }
@@ -377,8 +389,9 @@ export function createRoomService({
           }
         }
       }
+      for (const logicalAgentId of changed) store.updateMember(roomId, { kind: 'agent', logicalAgentId }, { alias: aliases.get(logicalAgentId) || null });
       store.updateRoom(roomId, { revision: room.revision + 1, updatedAt: timestamp });
-      workspace.onRoomMutation(roomId, 'member-change');
+      if (addAgentIds.length || removeAgentIds.length || addUserIds.length || removeUserIds.length || roleChanges.length) workspace.onRoomMutation(roomId, 'member-change');
     });
 
     return { ok: true, room: store.getRoomRow(roomId), members: store.listMembers(roomId) };
@@ -505,6 +518,18 @@ export function createRoomService({
     });
   }
 
+  function sendScheduledRoomWake(input = {}, ctx = null) {
+    const error=requireVerifiedCtx(ctx);if(error)return error;
+    if(ctx.requestSource!=='user')return fail('room_actor_forbidden');
+    const memberError=requireActiveMember(input.roomId,ctx);if(memberError)return memberError;
+    const target=store.listMembers(input.roomId).find(member=>member.status==='active'&&member.subject.kind==='agent'&&member.subject.logicalAgentId===input.targetAgentId);
+    if(!target)return fail('room_actor_forbidden');
+    if(typeof input.scheduleId!=='string'||!input.scheduleId.trim()||typeof input.text!=='string'||!input.text.trim())return fail('room_input_invalid');
+    return sendRoomMessage({roomId:input.roomId,text:input.text,kind:'text',contextScope:{kind:'room_only'},
+      sourceRef:{kind:'scheduled_task',scheduleId:input.scheduleId},mentions:[{kind:'agent',logicalAgentId:input.targetAgentId}],
+      responsePolicy:'mentioned',idempotencyKey:input.idempotencyKey},
+      {...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'},scopes:['room-scheduled-wake-publisher']});
+  }
   function sendRoomMessage(input = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
@@ -518,7 +543,8 @@ export function createRoomService({
       const publisherAllowed = ctx.actor.kind === 'system'
         && ctx.actor.service === 'kswarm'
         && hasScope(ctx, 'room-project-event-publisher')
-        && kind === 'project_event';
+        && kind === 'project_event'
+        || ctx.actor.kind==='system'&&ctx.actor.service==='desktop'&&hasScope(ctx,'room-scheduled-wake-publisher')&&kind==='text'&&input.sourceRef?.kind==='scheduled_task';
       if (!publisherAllowed) return fail('room_actor_forbidden');
     } else {
       const memberError = requireActiveMember(room.roomId, ctx);
@@ -1051,6 +1077,7 @@ export function createRoomService({
     finalizeMemberRemovals,
     acquireMembershipLease,
     sendRoomMessage,
+    sendScheduledRoomWake,
     listRoomMessages,
     listRoomMessagesPage,
     getCollaborationRoom,
