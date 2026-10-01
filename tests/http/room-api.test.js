@@ -340,3 +340,17 @@ test('GET /rooms/:roomId/messages supports bounded pagination and rejects unauth
   assert.equal(anon.response.status, 401);
 });
 
+
+
+test('delete HTTP authenticates desktop principal and ignores forged actor/source', async t => {
+  const baseUrl = await startRoomServer(t);
+  const created = await request(baseUrl, '/rooms', {token: DESKTOP_TOKEN, method: 'POST', body: {title: 'Delete HTTP', memberAgentIds: [], clientRequestKey: 'delete-http'}});
+  const {roomId, revision} = created.payload.room;
+  const body = {expectedRoomRevision: revision, requestSource: 'user', actor: {kind: 'user', userId: 'user.local'}};
+  const denied = await request(baseUrl, `/rooms/${roomId}/delete`, {token: KSWARM_TOKEN, method: 'POST', body});
+  assert.equal(denied.payload.ok, false);
+  const removed = await request(baseUrl, `/rooms/${roomId}/delete`, {token: DESKTOP_TOKEN, method: 'POST', body: {...body, actor: {kind: 'user', userId: 'fake'}, requestSource: 'agent'}});
+  assert.equal(removed.payload.ok, true);
+  assert.equal((await request(baseUrl, `/rooms/${roomId}`, {token: DESKTOP_TOKEN})).payload.code, 'room_not_found');
+  assert.equal((await request(baseUrl, '/rooms', {token: DESKTOP_TOKEN})).payload.rooms.length, 0);
+});

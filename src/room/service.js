@@ -60,7 +60,7 @@ export function createRoomService({
 
   function getRoom(roomId) {
     const room = store.getRoomRow(roomId);
-    if (!room) return null;
+    if (!room || room.deletedAt) return null;
     return room;
   }
 
@@ -217,13 +217,20 @@ export function createRoomService({
       return fail('room_revision_conflict', { expectedRoomRevision, actualRoomRevision: room.revision });
     }
 
+    const disclosure = workspace.prepareArchiveDisclosure({roomId,expectedRoomRevision:room.revision},ctx);
+    if (!disclosure.ok) return disclosure;
+    if (disclosure.blocked) return fail('disclosure_revocation_pending',{mutationId:disclosure.mutationId});
+
     store.withTransaction(() => {
+      const current = store.getRoomRow(roomId);
+      if (current.status !== 'active' || current.revision !== room.revision) throw new Error('room_revision_conflict');
       store.updateRoom(roomId, {
         status: 'archiving',
         discussionEpoch: room.discussionEpoch + 1,
         updatedAt: isoNow(now()),
       });
       workspace.onRoomMutation(roomId, 'archive');
+      if (disclosure.mutationId) workspace.completeArchiveDisclosure({roomId,expectedRoomRevision:room.revision,mutationId:disclosure.mutationId},ctx);
       // cancel every not-yet-claimed wake obligation in the same settlement
       const messages = store.listMessages(roomId);
       for (const message of messages) {
@@ -268,6 +275,44 @@ export function createRoomService({
 
     store.updateRoom(roomId, { status: 'archived', archivedAt: isoNow(effectiveNow), updatedAt: isoNow(effectiveNow) });
     return { ok: true, room: store.getRoomRow(roomId) };
+  }
+
+  // User-owned logical deletion. Archive is the existing execution/disclosure
+  // fence; retain transcript/audit/project references without allowing access.
+  function deleteRoom({ roomId, expectedRoomRevision } = {}, ctx = null) {
+    const ctxError = requireVerifiedCtx(ctx);
+    if (ctxError) return ctxError;
+    if (ctx.requestSource !== 'user' || ctx.actor.kind !== 'user') return fail('room_actor_forbidden');
+    if (typeof roomId !== 'string' || !roomId.trim() || !Number.isSafeInteger(expectedRoomRevision) || expectedRoomRevision < 1) return fail('room_input_invalid');
+    const room = store.getRoomRow(roomId);
+    if (!room) return fail('room_not_found');
+    const ownerError = requireActiveOwner(roomId, ctx);
+    if (ownerError) return ownerError;
+    if (room.deletedAt) {
+      if (room.deletedBy?.userId !== ctx.actor.userId) return fail('room_actor_forbidden');
+      return [room.revision, room.revision - 1].includes(expectedRoomRevision)
+        ? { ok: true, roomId, deletedAt: room.deletedAt }
+        : fail('room_revision_conflict');
+    }
+    if (room.revision !== expectedRoomRevision) return fail('room_revision_conflict');
+    if (store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE (room_id=? OR room_id='') AND state='PREPARED' LIMIT 1").get(roomId)) return fail('room_delete_pending');
+    const archived = archiveRoom({roomId, expectedRoomRevision}, ctx);
+    if (!archived.ok) return archived;
+    const settled = settleArchiveGrace({roomId});
+    if (!settled.ok) return settled;
+    return store.withTransaction(() => {
+      const current = store.getRoomRow(roomId);
+      const owner = requireActiveOwner(roomId, ctx);
+      if (owner) return owner;
+      if (!current || current.deletedAt || current.revision !== expectedRoomRevision) return fail('room_revision_conflict');
+      const pendingClaims = store.db.prepare("SELECT 1 FROM room_workspace_records WHERE room_id=? AND kind='claim' AND json_extract(value_json,'$.executionState') IS NOT 'released' LIMIT 1").get(roomId);
+      const heldLease = store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE (room_id=? OR room_id='') AND state='PREPARED' LIMIT 1").get(roomId);
+      const pendingMutation = store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(roomId);
+      if (current.status !== 'archived' || store.listClaimedDeliveries(roomId).length || pendingClaims || heldLease || pendingMutation) return fail('room_delete_pending');
+      const deletedAt = isoNow(now());
+      store.updateRoom(roomId, {deletedAt, deletedBy: ctx.actor, revision: current.revision + 1});
+      return {ok: true, roomId, deletedAt};
+    });
   }
 
   // ---------------------------------------------------------------- members
@@ -337,8 +382,13 @@ export function createRoomService({
       return fail('room_member_limit_exceeded', { limit: ROOM_MAX_ACTIVE_AGENT_MEMBERS });
     }
 
+    const disclosureInput={roomId,expectedRoomRevision:room.revision,kind:'member-change',payload:{addAgentIds,removeAgentIds,addUserIds,removeUserIds,roleChanges,aliasChanges}};
+    const disclosure=workspace.prepareRoomDisclosureMutation(disclosureInput,ctx);
+    if(!disclosure.ok)return disclosure;
+    if(disclosure.blocked)return fail('disclosure_revocation_pending',{mutationId:disclosure.mutationId});
     const timestamp = isoNow(now());
     store.withTransaction(() => {
+      if(store.getRoomRow(roomId).revision!==room.revision)throw new Error('room_revision_conflict');
       for (const logicalAgentId of addAgentIds ?? []) {
         const subject = { kind: 'agent', logicalAgentId };
         const existing = store.getMember(roomId, subject);
@@ -392,6 +442,7 @@ export function createRoomService({
       for (const logicalAgentId of changed) store.updateMember(roomId, { kind: 'agent', logicalAgentId }, { alias: aliases.get(logicalAgentId) || null });
       store.updateRoom(roomId, { revision: room.revision + 1, updatedAt: timestamp });
       if (addAgentIds.length || removeAgentIds.length || addUserIds.length || removeUserIds.length || roleChanges.length) workspace.onRoomMutation(roomId, 'member-change');
+      if(disclosure.mutationId)workspace.completeRoomDisclosureMutation({...disclosureInput,mutationId:disclosure.mutationId},ctx);
     });
 
     return { ok: true, room: store.getRoomRow(roomId), members: store.listMembers(roomId) };
@@ -696,7 +747,7 @@ export function createRoomService({
     if (ctxError) return ctxError;
     if (ctx.requestSource !== 'user') return fail('room_actor_forbidden');
 
-    const rooms = store.listRoomRows().filter((room) => {
+    const rooms = store.listRoomSummaries().filter((room) => {
       const member = store.getMember(room.roomId, ctx.actor);
       return member && member.status === 'active';
     });
@@ -767,7 +818,7 @@ export function createRoomService({
     }
 
     const room = store.getRoomRow(sourceMessage.roomId);
-    if (!room || room.status !== 'active') {
+    if (!room || room.deletedAt || room.status !== 'active') {
       return fail('room_archived');
     }
 
@@ -827,7 +878,8 @@ export function createRoomService({
     if (!delivery) return fail('room_not_found', { roomMessageId });
 
     const message = store.getMessageById(roomMessageId);
-    const room = store.getRoomRow(message.roomId);
+    const room = getRoom(message.roomId);
+    if (!room) return fail('room_not_found');
 
     const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId });
     if (!member || member.status !== 'active') {
@@ -871,7 +923,8 @@ export function createRoomService({
     }
 
     const sourceMessage = store.getMessageById(roomMessageId);
-    const room = store.getRoomRow(sourceMessage.roomId);
+    const room = getRoom(sourceMessage.roomId);
+    if (!room) return fail('room_not_found');
     const effectiveNow = nowDate(nowOverride ?? now());
     const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId });
     const activeExecutionContext = room.status === 'active' && member?.status === 'active';
@@ -962,7 +1015,7 @@ export function createRoomService({
         const message = store.getMessageById(delivery.roomMessageId);
         if (!message) return null;
         const room = store.getRoomRow(message.roomId);
-        if (room && room.status !== 'active') return null;
+        if (!room || room.deletedAt || room.status !== 'active') return null;
         return { roomMessageId: delivery.roomMessageId, roomId: message.roomId, roomSequence: message.roomSequence };
       })
       .filter(Boolean);
@@ -984,7 +1037,15 @@ export function createRoomService({
     const current = requireRoom(roomId); if (current.ok === false) return current;
     const ownerError = requireActiveOwner(roomId, ctx); if (ownerError) return ownerError;
     if (typeof requestId !== 'string' || !requestId.trim()) return fail('room_input_invalid');
+    const previousCancellation=store.db.prepare('SELECT 1 FROM room_workspace_records WHERE kind=? AND record_key=?').get('discussion-cancel',`${roomId}:${requestId}`);
+    if(previousCancellation)return {ok:true,...snapshotWithMembers(current)};
+    if(expectedRoomRevision!==undefined&&expectedRoomRevision!==current.revision)return fail('room_revision_conflict');
+    const disclosureInput={roomId,expectedRoomRevision:current.revision,kind:'discussion-cancel',payload:{requestId}};
+    const disclosure=workspace.prepareRoomDisclosureMutation(disclosureInput,ctx);
+    if(!disclosure.ok)return disclosure;
+    if(disclosure.blocked)return fail('disclosure_revocation_pending',{mutationId:disclosure.mutationId});
     return store.withTransaction(() => {
+      if(store.getRoomRow(roomId).revision!==current.revision)throw new Error('room_revision_conflict');
       const key = `${roomId}:${requestId}`;
       const existing = store.db.prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND record_key=?').get('discussion-cancel', key);
       if (existing) return { ok: true, ...snapshotWithMembers(store.getRoomRow(roomId)) };
@@ -998,6 +1059,7 @@ export function createRoomService({
       workspace.onRoomMutation(roomId, 'discussion-cancel');
       const roomSequence = store.nextRoomSequence(roomId);
       store.db.prepare('INSERT INTO room_workspace_records(kind,record_key,room_id,value_json) VALUES(?,?,?,?)').run('discussion-cancel', key, roomId, JSON.stringify({ requestId, roomSequence, actor: ctx.actor, at: isoNow(now()) }));
+      if(disclosure.mutationId)workspace.completeRoomDisclosureMutation({...disclosureInput,mutationId:disclosure.mutationId},ctx);
       return { ok: true, ...snapshotWithMembers(store.getRoomRow(roomId)), roomSequence };
     });
   }
@@ -1018,7 +1080,7 @@ export function createRoomService({
   }
 
   function getDiscussionEpoch({ roomId } = {}) {
-    const room = store.getRoomRow(roomId);
+    const room = getRoom(roomId);
     return room?.discussionEpoch ?? 0;
   }
 
@@ -1072,6 +1134,7 @@ export function createRoomService({
     cancelDiscussion,
     createRoom,
     archiveRoom,
+    deleteRoom,
     settleArchiveGrace,
     updateRoomMembers,
     finalizeMemberRemovals,

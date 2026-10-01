@@ -64,6 +64,7 @@ function roomStatus(result, successStatus = 200) {
   if (result.code === 'room_authentication_required') return 401;
   if (result.code === 'room_actor_forbidden' || result.code === 'room_actor_identity_mismatch') return 403;
   if (result.code === 'room_not_found' || result.code === 'room_message_not_found') return 404;
+  if (result.code === 'room_delete_pending' || result.code === 'disclosure_revocation_pending') return 409;
   if (result.code === 'room_revision_conflict' || result.code === 'room_message_duplicate') return 409;
   return 400;
 }
@@ -271,6 +272,12 @@ export function createServer({
         }
         if (req.method === 'PUT' && roomId && action === 'members') {
           result = roomService.updateRoomMembers({ ...(await readJson(req)), roomId }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
+        if (req.method === 'POST' && roomId && action === 'delete') {
+          const input = await readJson(req);
+          result = roomService.deleteRoom({roomId, expectedRoomRevision: input?.expectedRoomRevision}, ctx);
           writeJson(res, roomStatus(result), result);
           return;
         }

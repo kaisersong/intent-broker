@@ -33,6 +33,9 @@ function mapRoomRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at ?? undefined,
+    deletedAt: row.deleted_at ?? undefined,
+    deletedBy: row.deleted_by_json ? JSON.parse(row.deleted_by_json) : undefined,
+    ...(row.last_activity_at ? { lastActivityAt: row.last_activity_at } : {}),
   };
 }
 
@@ -257,11 +260,74 @@ export function getDefaultMigrations() {
       },
     },
     { version: 5, id: 'room_member_alias', up(db) { db.exec('ALTER TABLE room_members ADD COLUMN alias TEXT'); } },
+    { version: 6, id: 'room_disclosure_write_floor', up(db) {
+      db.exec(`CREATE TABLE room_disclosure_leases (
+        attempt_id TEXT PRIMARY KEY,room_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('PREPARED','RELEASED','ABORTED')),
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json) AND length(CAST(payload_json AS BLOB))<=32768)
+      );CREATE INDEX room_disclosure_held ON room_disclosure_leases(room_id,state);
+      CREATE TABLE room_disclosure_mutations (
+        mutation_id TEXT PRIMARY KEY,room_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('PENDING','APPLIED','ABORTED')),
+        payload_json TEXT NOT NULL CHECK(json_valid(payload_json) AND length(CAST(payload_json AS BLOB))<=32768)
+      );`);
+      for(const table of ['rooms','room_members','room_messages','room_workspace_records']) {
+        for(const event of ['INSERT','UPDATE','DELETE']) {
+          const row=event==='DELETE'?'OLD':'NEW';
+          const roomPredicate=event==='UPDATE' ? "(OLD.room_id='' OR NEW.room_id='' OR room_id=OLD.room_id OR room_id=NEW.room_id)" : `(${row}.room_id='' OR room_id=${row}.room_id)`;
+          // Old writer connections do not register this function and fail closed.
+          // The new fixed function never grants a bypass while a lease is held.
+          // Claim heartbeats alone carry no changed authority; all other changes
+          // remain fenced until the original participant releases its lease.
+          const heartbeat=table==='room_workspace_records'&&event==='UPDATE'
+            ? " AND NOT(OLD.kind='claim' AND NEW.kind='claim' AND OLD.record_key=NEW.record_key AND OLD.room_id=NEW.room_id AND json_remove(OLD.value_json,'$.lastHeartbeatAt','$.updatedAt','$.roomSequence')=json_remove(NEW.value_json,'$.lastHeartbeatAt','$.updatedAt','$.roomSequence'))" : '';
+          db.exec(`CREATE TRIGGER disclosure_${table}_${event.toLowerCase()} BEFORE ${event} ON ${table}
+            WHEN EXISTS(SELECT 1 FROM room_disclosure_leases WHERE state='PREPARED' AND ${roomPredicate})${heartbeat}
+            BEGIN SELECT CASE WHEN solpi_disclosure_write_guard_v1()<>1 THEN RAISE(ABORT,'disclosure_lease_held') END; END`);
+        }
+      }
+    } },
+    { version: 7, id: 'room_soft_delete', up(db) {
+      db.exec('ALTER TABLE rooms ADD COLUMN deleted_at TEXT; ALTER TABLE rooms ADD COLUMN deleted_by_json TEXT');
+    } },
   ];
 }
 
-export function createRoomStore({ dbPath, migrations } = {}) {
+export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
+  // Each actual connection applies its own cap. This is a physical limit only;
+  // the installed owner separately acquires the shared profile reservation.
+  const databaseBytes = storageBudget?.databaseBytes;
+  if (storageBudget !== undefined && (!Number.isSafeInteger(databaseBytes) || databaseBytes < 512 || databaseBytes > 64 * 1024 * 1024)) {
+    throw new Error('room_storage_capacity_configuration');
+  }
   const db = new DatabaseSync(dbPath);
+  if (databaseBytes !== undefined) {
+    try {
+      const scalar = pragma => Object.values(db.prepare('PRAGMA ' + pragma).get())[0];
+      if (scalar('journal_mode = DELETE') !== 'delete') throw new Error('room_storage_journal_mode');
+      db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA temp_store = MEMORY');
+      if (scalar('synchronous') !== 2 || scalar('temp_store') !== 2) throw new Error('room_storage_configuration');
+      const pageSize = scalar('page_size');
+      if (!Number.isSafeInteger(pageSize) || pageSize < 512) throw new Error('room_storage_page_size');
+      const maximum = Math.floor(databaseBytes / pageSize);
+      if (maximum < 1 || scalar('page_count') > maximum || scalar('max_page_count = ' + maximum) !== maximum || scalar('max_page_count') !== maximum) {
+        throw new Error('room_storage_capacity');
+      }
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+  }
+  function rollback(error) {
+    // SQLITE_FULL can already have rolled the transaction back. Keep its actual
+    // error instead of replacing it with "no transaction is active".
+    if (db.isTransaction) {
+      try { db.exec('ROLLBACK'); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed'); }
+    }
+    throw error;
+  }
+  db.function('solpi_disclosure_write_guard_v1', () => 0);
   const steps = migrations ?? getDefaultMigrations();
 
   function ensureVersionTable() {
@@ -285,8 +351,7 @@ export function createRoomStore({ dbPath, migrations } = {}) {
         db.prepare('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);
         db.exec('COMMIT');
       } catch (error) {
-        db.exec('ROLLBACK');
-        throw error;
+        rollback(error);
       }
     }
     return { schemaVersion: getSchemaVersion() };
@@ -299,8 +364,7 @@ export function createRoomStore({ dbPath, migrations } = {}) {
       db.exec('COMMIT');
       return result;
     } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
+      rollback(error);
     }
   }
 
@@ -333,7 +397,7 @@ export function createRoomStore({ dbPath, migrations } = {}) {
     if (!current) return null;
     const next = { ...current, ...patch };
     db.prepare(`
-      UPDATE rooms SET title = ?, status = ?, revision = ?, discussion_epoch = ?, updated_at = ?, archived_at = ?
+      UPDATE rooms SET title = ?, status = ?, revision = ?, discussion_epoch = ?, updated_at = ?, archived_at = ?, deleted_at = ?, deleted_by_json = ?
       WHERE room_id = ?
     `).run(
       next.title,
@@ -342,13 +406,24 @@ export function createRoomStore({ dbPath, migrations } = {}) {
       next.discussionEpoch,
       next.updatedAt,
       next.archivedAt ?? null,
+      next.deletedAt ?? null,
+      next.deletedBy ? JSON.stringify(next.deletedBy) : null,
       roomId
     );
     return getRoomRow(roomId);
   }
 
   function listRoomRows() {
-    return db.prepare('SELECT * FROM rooms ORDER BY created_at').all().map(mapRoomRow);
+    return db.prepare('SELECT * FROM rooms WHERE deleted_at IS NULL ORDER BY created_at').all().map(mapRoomRow);
+  }
+
+  // User-visible summaries, one aggregate query; archive/read timestamps do
+  // not count as activity. Raw getRoomRow retains tombstones for audit/CAS.
+  function listRoomSummaries() {
+    return db.prepare(`SELECT r.*, COALESCE(m.last_activity_at, r.created_at) AS last_activity_at
+      FROM rooms r LEFT JOIN (SELECT room_id, MAX(created_at) AS last_activity_at
+      FROM room_messages GROUP BY room_id) m ON m.room_id = r.room_id
+      WHERE r.deleted_at IS NULL ORDER BY last_activity_at DESC, r.room_id ASC`).all().map(mapRoomRow);
   }
 
   // -- members ------------------------------------------------------------
@@ -742,6 +817,7 @@ export function createRoomStore({ dbPath, migrations } = {}) {
     getRoomRow,
     updateRoom,
     listRoomRows,
+    listRoomSummaries,
     insertMember,
     listMembers,
     getMember,
