@@ -1,0 +1,9 @@
+import test from 'node:test';import assert from 'node:assert/strict';
+import {createTempDbPath} from '../fixtures/temp-dir.js';import {createRoomStore} from '../../src/room/store.js';import {createRoomService} from '../../src/room/service.js';
+const user=(id='user.local')=>({sessionId:'s',requestSource:'user',actor:{kind:'user',userId:id},allowedLogicalAgentIds:[],issuedAt:new Date().toISOString()});
+function fixture(){const dbPath=createTempDbPath();const store=createRoomStore({dbPath});store.migrate();return {store,service:createRoomService({store})};}
+const input={title:'协作',description:'目标',memberAgentIds:['xiaok-worker'],clientRequestKey:'create-123'};
+test('reuses one durable room for a retried creation key after service restart',()=>{const f=fixture();const first=f.service.createRoom(input,user());assert.equal(first.ok,true);const second=createRoomService({store:f.store}).createRoom(input,user());assert.equal(second.room.roomId,first.room.roomId);assert.equal(second.reused,true);assert.equal(f.store.listRoomRows().length,1);});
+test('keeps key namespace separate for each authenticated owner',()=>{const f=fixture();assert.notEqual(f.service.createRoom(input,user()).room.roomId,f.service.createRoom(input,user('other')).room.roomId);});
+test('rejects changed definitions on the same key',()=>{const f=fixture();f.service.createRoom(input,user());assert.equal(f.service.createRoom({...input,title:'different'},user()).code,'room_create_request_conflict');assert.equal(f.store.listRoomRows().length,1);});
+test('agent cannot use a known creation key to obtain a user room',()=>{const f=fixture();f.service.createRoom(input,user());const result=f.service.createRoom(input,{sessionId:'a',requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},hostParticipantId:'xiaok-desktop',allowedLogicalAgentIds:['a'],issuedAt:new Date().toISOString()});assert.equal(result.code,'room_actor_forbidden');});

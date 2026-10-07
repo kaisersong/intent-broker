@@ -13,7 +13,7 @@
  *   send project_event:   system kswarm publisher scope only
  *   start team_once:      user yes | agent no | system no
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   ROOM_MAX_ACTIVE_AGENT_MEMBERS,
   ROOM_WAKE_CLAIM_GRACE_MS,
@@ -134,12 +134,27 @@ export function createRoomService({
       return fail('room_member_limit_exceeded', { limit: ROOM_MAX_ACTIVE_AGENT_MEMBERS });
     }
 
+    const key = typeof input.clientRequestKey === 'string' ? input.clientRequestKey.trim() : '';
+    if (input.clientRequestKey !== undefined && (!key || key.length > 256)) return fail('room_input_invalid', {field:'clientRequestKey'});
+    // Stable, actor-scoped identity makes retries survive a lost response and
+    // restart without granting access to another owner's creation operation.
+    const keyedRoomId = key ? 'room-' + createHash('sha256').update(JSON.stringify([ctx.requestSource,ctx.actor.kind==='user'?ctx.actor.userId:ctx.actor.service,key])).digest('hex').slice(0,32) : null;
+    if (keyedRoomId) {
+      const prior = store.getRoomRow(keyedRoomId);
+      if (prior) {
+        const priorAgents = activeMembers(prior.roomId).filter(member=>member.subject.kind==='agent').map(member=>member.subject.logicalAgentId).sort();
+        const sameMembers = JSON.stringify(priorAgents) === JSON.stringify([...uniqueAgents].sort());
+        if (prior.status!=='active' || prior.title!==title || (prior.description??'')!==(input.description??'') || !sameMembers) return fail('room_create_request_conflict');
+        return {ok:true,reused:true,...snapshotWithMembers(prior)};
+      }
+    }
+
     const origin = ctx.requestSource === 'system'
       ? (input.origin ?? 'system_recovery')
       : 'user_created';
     const timestamp = isoNow(now());
     const room = {
-      roomId: `room-${randomUUID()}`,
+      roomId: keyedRoomId ?? `room-${randomUUID()}`,
       title,
       description: input.description,
       status: 'active',
