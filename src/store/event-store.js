@@ -1,6 +1,14 @@
 import { DatabaseSync } from 'node:sqlite';
 import { initializeSchema } from './schema.js';
 
+function canonicalJson(value) {
+  const normalized = JSON.parse(JSON.stringify(value));
+  const sort = value => Array.isArray(value) ? value.map(sort)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, sort(value[key])])) : value;
+  return JSON.stringify(sort(normalized));
+}
+
 function mapEventRow(row) {
   return {
     eventId: row.event_id,
@@ -96,33 +104,34 @@ export function createEventStore({ dbPath }) {
 
   return {
     appendIntent({ intentId, kind, fromParticipantId, taskId, threadId, payload, recipients }) {
-      const insertEvent = db.prepare(`
-        INSERT INTO events (intent_id, kind, from_participant_id, task_id, thread_id, payload_json)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      let result;
+      const targets = [...new Set(recipients)].sort();
+      if (targets.some(id => typeof id !== 'string' || !id)) throw new Error('invalid_intent_recipient');
+      const content = canonicalJson({ kind, fromParticipantId, taskId: taskId ?? null,
+        threadId: threadId ?? null, payload: payload ?? {} });
+      const targetJson = JSON.stringify(targets);
+      db.exec('BEGIN IMMEDIATE');
       try {
-        result = insertEvent.run(intentId, kind, fromParticipantId, taskId, threadId, JSON.stringify(payload));
-      } catch (error) {
-        if (String(error.message).includes('UNIQUE constraint failed: events.intent_id')) {
-          const existingEvent = getEventByIntentId(intentId);
-          return {
-            ...existingEvent,
-            duplicate: true
-          };
+        let event = getEventByIntentId(intentId);
+        const duplicate = Boolean(event);
+        if (event) {
+          const receipt = db.prepare('SELECT content_json, recipients_json FROM intent_receipts WHERE event_id=?').get(event.eventId);
+          // Pre-migration events do not prove the original complete recipient set.
+          if (!receipt) throw new Error('intent_recipients_unconfirmed');
+          if (receipt.content_json !== content || receipt.recipients_json !== targetJson) throw new Error('intent_conflict');
+        } else {
+          const result = db.prepare(`INSERT INTO events (intent_id,kind,from_participant_id,task_id,thread_id,payload_json)
+            VALUES(?,?,?,?,?,?)`).run(intentId, kind, fromParticipantId, taskId ?? null, threadId ?? null, JSON.stringify(payload ?? {}));
+          const eventId = Number(result.lastInsertRowid);
+          db.prepare('INSERT INTO intent_receipts(event_id,content_json,recipients_json) VALUES(?,?,?)').run(eventId, content, targetJson);
+          event = getEventById(eventId);
         }
+        for (const id of targets) db.prepare('INSERT OR IGNORE INTO inbox_entries(participant_id,event_id) VALUES(?,?)').run(id, event.eventId);
+        db.exec('COMMIT');
+        return duplicate ? { ...event, duplicate: true } : event;
+      } catch (error) {
+        db.exec('ROLLBACK');
         throw error;
       }
-      const eventId = Number(result.lastInsertRowid);
-
-      for (const participantId of recipients) {
-        db.prepare(`
-          INSERT INTO inbox_entries (participant_id, event_id)
-          VALUES (?, ?)
-        `).run(participantId, eventId);
-      }
-
-      return getEventById(eventId);
     },
     readInbox(participantId, { after = 0, limit = 50 } = {}) {
       const items = db.prepare(`
@@ -138,18 +147,23 @@ export function createEventStore({ dbPath }) {
       return { items };
     },
     ackInbox(participantId, eventId) {
-      db.prepare(`
-        INSERT INTO participant_cursors (participant_id, cursor_event_id)
-        VALUES (?, ?)
-        ON CONFLICT(participant_id)
-        DO UPDATE SET cursor_event_id = excluded.cursor_event_id, updated_at = CURRENT_TIMESTAMP
-      `).run(participantId, eventId);
-      db.prepare(`
-        UPDATE inbox_entries
-        SET delivery_status = 'acked', acked_at = CURRENT_TIMESTAMP
-        WHERE participant_id = ? AND event_id <= ?
-      `).run(participantId, eventId);
-      return { participantId, eventId };
+      if (!Number.isSafeInteger(eventId) || eventId < 0) throw new Error('invalid_inbox_cursor');
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const current = db.prepare('SELECT cursor_event_id FROM participant_cursors WHERE participant_id=?').get(participantId)?.cursor_event_id ?? 0;
+        if (eventId > current && !db.prepare('SELECT 1 FROM inbox_entries WHERE participant_id=? AND event_id=? AND discarded_at IS NULL').get(participantId, eventId)) {
+          throw new Error('inbox_event_not_owned');
+        }
+        const next = Math.max(current, eventId);
+        db.prepare(`INSERT INTO participant_cursors(participant_id,cursor_event_id) VALUES(?,?)
+          ON CONFLICT(participant_id) DO UPDATE SET cursor_event_id=MAX(cursor_event_id,excluded.cursor_event_id), updated_at=CURRENT_TIMESTAMP`).run(participantId, next);
+        db.prepare(`UPDATE inbox_entries SET delivery_status='acked',acked_at=CURRENT_TIMESTAMP WHERE participant_id=? AND event_id<=?`).run(participantId, next);
+        db.exec('COMMIT');
+        return { participantId, eventId: next };
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
     },
     discardInbox(participantId) {
       db.prepare(`

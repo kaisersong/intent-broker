@@ -1,3 +1,4 @@
+import { activityServiceIdentity } from './activity-service-identity.js';
 import { mkdirSync, unlinkSync, existsSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, resolve, join } from 'node:path';
@@ -82,6 +83,7 @@ export async function startBrokerApp({
       const summary = channelHealth.summarize();
       return {
         ok: true,
+        service: activityServiceIdentity(),
         status: summary.degraded ? 'degraded' : 'healthy',
         degraded: summary.degraded,
         reasons: summary.reasons,

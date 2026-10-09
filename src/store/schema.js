@@ -11,6 +11,12 @@ export function initializeSchema(db) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS intent_receipts (
+      event_id INTEGER PRIMARY KEY REFERENCES events(event_id),
+      content_json TEXT NOT NULL,
+      recipients_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS inbox_entries (
       inbox_entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
       participant_id TEXT NOT NULL,
