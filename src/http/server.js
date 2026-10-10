@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { URL } from 'node:url';
+import { StringDecoder } from 'node:string_decoder';
 
 export const INTENTS_MAX_BODY_BYTES = 16 * 1024;
 
@@ -21,6 +22,7 @@ function readJson(req, { maxBytes = Infinity } = {}) {
     let raw = '';
     let bytes = 0;
     let rejected = false;
+    const decoder = new StringDecoder('utf8');
 
     req.on('data', (chunk) => {
       bytes += chunk.length;
@@ -31,12 +33,13 @@ function readJson(req, { maxBytes = Infinity } = {}) {
         }
         return;
       }
-      raw += chunk;
+      raw += decoder.write(chunk);
     });
     req.on('end', () => {
       if (rejected) {
         return;
       }
+      raw += decoder.end();
       if (!raw) {
         resolve({});
         return;
