@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { MIRRORED_ASK_USER_QUESTION_CONTEXT } from '../session-bridge/question-receipt.js';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -325,7 +326,7 @@ export async function runPreToolUseHook(
       await sendAsk(config, askUserQuestionRequest);
       return {
         preventContinuation: true,
-        additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
+        additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT,
         message: 'AskUserQuestion forwarded to Intent Broker'
       };
     }

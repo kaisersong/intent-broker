@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { MIRRORED_ASK_USER_QUESTION_CONTEXT } from '../../adapters/session-bridge/question-receipt.js';
 import assert from 'node:assert/strict';
 
 import {
@@ -27,8 +28,8 @@ test('buildClaudeCodeHookOutput wraps additional context for SessionStart', () =
 test('buildClaudeCodePreToolUseOutput wraps a deny directive for AskUserQuestion suppression', () => {
   const output = buildClaudeCodePreToolUseOutput({
     permissionDecision: 'deny',
-    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
-    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+    permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
+    additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT
   });
 
   assert.deepEqual(output, {
@@ -37,8 +38,8 @@ test('buildClaudeCodePreToolUseOutput wraps a deny directive for AskUserQuestion
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
-      additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+      permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
+      additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT
     }
   });
 });
@@ -109,8 +110,8 @@ test('pre-tool-use hook mirrors AskUserQuestion as a structured clarification re
 
   assert.deepEqual(result, {
     permissionDecision: 'deny',
-    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
-    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+    permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
+    additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT
   });
   assert.equal(saved.length, 1);
   assert.equal(asks.length, 1);
@@ -184,8 +185,8 @@ test('pre-tool-use hook mirrors the first supported AskUserQuestion entry from q
 
   assert.deepEqual(result, {
     permissionDecision: 'deny',
-    permissionDecisionReason: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.',
-    additionalContext: 'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.'
+    permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
+    additionalContext: MIRRORED_ASK_USER_QUESTION_CONTEXT
   });
   assert.equal(asks.length, 1);
   assert.equal(asks[0].config.participantId, 'claude-code-session-019d448e');

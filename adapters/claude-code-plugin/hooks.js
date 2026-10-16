@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { MIRRORED_ASK_USER_QUESTION_CONTEXT } from '../session-bridge/question-receipt.js';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -55,8 +56,6 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const cliPath = path.resolve(path.dirname(__filename), 'bin', 'claude-code-broker.js');
-const MIRRORED_ASK_USER_QUESTION_CONTEXT =
-  'AskUserQuestion has been mirrored to Intent Broker. Wait for the human response in HexDeck instead of opening the native terminal menu.';
 
 function configFromHookInput(
   input,

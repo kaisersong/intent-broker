@@ -1,0 +1,2 @@
+/** Delivery status only: no client identity is supplied by sendAsk. */
+export const MIRRORED_ASK_USER_QUESTION_CONTEXT = "AskUserQuestion has been submitted through Intent Broker. Wait for the user's response before proceeding; do not open a duplicate terminal prompt. Report this only as questions submitted and awaiting a reply. No receiving application has been identified; do not infer a product name or a new assistant identity.";
