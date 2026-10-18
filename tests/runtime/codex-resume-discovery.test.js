@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 
 import {
   attachDiscoveredCodexSession,
@@ -77,6 +78,142 @@ test('discoverCodexResumeSessions hides the Windows PowerShell process query', a
   assert.ok(calls[0].args.includes('-NoProfile'));
   assert.ok(calls[0].args.includes('-NonInteractive'));
   assert.equal(calls[0].options.windowsHide, true);
+  assert.equal(calls[0].options.timeout, 3000);
+  assert.equal(calls[0].options.maxBuffer, 2 * 1024 * 1024);
+  assert.equal(calls[0].options.killSignal, 'SIGKILL');
+  assert.match(calls[0].args.at(-1), /Get-CimInstance Win32_Process -Filter/);
+  assert.match(calls[0].args.at(-1), /Name = 'codex\.exe'/);
+});
+
+test('discovery failures back off, recover, and never overlap', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let now = 0;
+  let attempts = 0;
+  let blocked;
+  let release;
+  const runtime = createCodexResumeDiscoveryRuntime({
+    env: {}, intervalMs: 1000, now: () => now,
+    logger: { warn() {} },
+    discoverSessions: async () => {
+      attempts++;
+      if (attempts <= 2) throw new Error('query failed');
+      if (attempts === 3) await (blocked = new Promise((resolve) => { release = resolve; }));
+      return [];
+    },
+  });
+  t.after(() => runtime.stop());
+  const tick = async (ms) => { now += ms; t.mock.timers.tick(ms); await new Promise(setImmediate); };
+  await runtime.start();
+  await tick(4000); assert.equal(attempts, 1);
+  await tick(1000); assert.equal(attempts, 2);
+  await tick(9000); assert.equal(attempts, 2);
+  await tick(1000); assert.equal(attempts, 3);
+  await tick(5000); assert.equal(attempts, 3);
+  release(); await blocked; await new Promise(setImmediate);
+  await tick(1000); assert.equal(attempts, 4);
+});
+
+test('stop aborts discovery and discards late results without installing a timer', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let signal;
+  let release;
+  let queries = 0;
+  const attachments = [];
+  const runtime = createCodexResumeDiscoveryRuntime({
+    env: {}, intervalMs: 1000,
+    discoverSessions: async (options) => {
+      queries++;
+      signal = options?.signal;
+      return new Promise((resolve) => { release = resolve; });
+    },
+    attachSession: async (session) => attachments.push(session),
+  });
+  const starting = runtime.start();
+  await runtime.stop();
+  const aborted = signal?.aborted;
+  release([{ pid: 123, sessionId: 'late' }]);
+  await starting;
+  t.mock.timers.tick(10000); await new Promise(setImmediate);
+  assert.equal(aborted, true);
+  assert.deepEqual(attachments, []);
+  assert.equal(queries, 1);
+});
+
+test('starting an active discovery runtime twice does not duplicate its timer', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let queries = 0;
+  const runtime = createCodexResumeDiscoveryRuntime({
+    env: {}, intervalMs: 1000, discoverSessions: async () => { queries++; return []; },
+  });
+  t.after(() => runtime.stop());
+  await runtime.start(); await runtime.start();
+  t.mock.timers.tick(1000); await new Promise(setImmediate);
+  assert.equal(queries, 2);
+});
+
+test('a stopped start cannot install a second timer after a restart', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let queries = 0;
+  let release;
+  const runtime = createCodexResumeDiscoveryRuntime({
+    env: {}, intervalMs: 1000,
+    discoverSessions: async () => {
+      queries++;
+      return queries === 1 ? new Promise((resolve) => { release = resolve; }) : [];
+    },
+  });
+  t.after(() => runtime.stop());
+  const oldStart = runtime.start();
+  await runtime.stop(); await runtime.start();
+  release([]); await oldStart;
+  t.mock.timers.tick(1000); await new Promise(setImmediate);
+  assert.equal(queries, 2);
+  t.mock.timers.tick(1000); await new Promise(setImmediate);
+  assert.equal(queries, 3);
+});
+
+test('failure backoff saturates at a minute and invalid intervals use the normal default', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let now = 0;
+  let attempts = 0;
+  const runtime = createCodexResumeDiscoveryRuntime({
+    env: {}, intervalMs: 1000, now: () => now, logger: { warn() {} },
+    discoverSessions: async () => { attempts++; throw new Error('unavailable'); },
+  });
+  await runtime.start();
+  for (const [index, delay] of [5000, 10000, 20000, 40000, 60000, 60000].entries()) {
+    now += delay - 1000; t.mock.timers.tick(delay - 1000); await new Promise(setImmediate);
+    assert.equal(attempts, index + 1);
+    now += 1000; t.mock.timers.tick(1000); await new Promise(setImmediate);
+    assert.equal(attempts, index + 2);
+  }
+  await runtime.stop();
+  for (const intervalMs of [0, -1, NaN, Infinity, 2 ** 32]) {
+    let queries = 0;
+    const invalid = createCodexResumeDiscoveryRuntime({ env: {}, intervalMs,
+      discoverSessions: async () => { queries++; return []; } });
+    await invalid.start();
+    t.mock.timers.tick(1999); await new Promise(setImmediate); assert.equal(queries, 1);
+    t.mock.timers.tick(1); await new Promise(setImmediate); assert.equal(queries, 2);
+    await invalid.stop();
+  }
+});
+
+test('the production query timeout actually terminates an owned unresponsive child', async () => {
+  let child;
+  try {
+    await assert.rejects(discoverCodexResumeSessions({
+      platform: 'win32',
+      execFileImpl: (_command, _args, options) => new Promise((resolve, reject) => {
+        child = execFile(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options,
+          (error, stdout) => error ? reject(error) : resolve({ stdout }));
+      }),
+    }), (error) => error.killed === true);
+    assert.equal(child.killed, true);
+    assert.ok(child.exitCode !== null || child.signalCode !== null);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
 });
 
 test('createCodexResumeDiscoveryRuntime forwards code root and fallback cwd to attachments', async () => {

@@ -119,7 +119,8 @@ function shouldResetStaleAutoDispatchRuntime(runtimeState, mirrorState) {
 
 export async function discoverCodexResumeSessions({
   execFileImpl = execFileDefault,
-  platform = process.platform
+  platform = process.platform,
+  signal
 } = {}) {
   const processEntries = platform === 'win32'
     ? parseWindowsProcessList((await execFileImpl(
@@ -130,17 +131,23 @@ export async function discoverCodexResumeSessions({
         '-WindowStyle',
         'Hidden',
         '-Command',
-        'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
+        'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\' OR Name = \'codex.exe\'" | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
       ],
       {
         encoding: 'utf8',
-        maxBuffer: 10 * 1024 * 1024,
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: 3000,
+        killSignal: 'SIGKILL',
+        signal,
         windowsHide: true
       }
     )).stdout)
     : String((await execFileImpl('ps', ['-axo', 'pid=,command='], {
       encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: 3000,
+      killSignal: 'SIGKILL',
+      signal
     })).stdout || '')
       .split('\n')
       .map((rawLine) => parseProcessLine(rawLine))
@@ -281,20 +288,32 @@ export function createCodexResumeDiscoveryRuntime({
   logger = console,
   intervalMs = Number(env.INTENT_BROKER_CODEX_DISCOVERY_INTERVAL_MS || DEFAULT_INTERVAL_MS),
   discoverSessions = discoverCodexResumeSessions,
-  attachSession = attachDiscoveredCodexSession
+  attachSession = attachDiscoveredCodexSession,
+  now = Date.now
 } = {}) {
   let timer = null;
   let running = false;
+  let started = false;
+  let generation = 0;
+  let controller = null;
+  let failures = 0;
+  let retryAt = 0;
+  const interval = Number.isFinite(intervalMs) && intervalMs >= 250 && intervalMs <= 2 ** 31 - 1
+    ? intervalMs : DEFAULT_INTERVAL_MS;
 
   async function scanOnce() {
-    if (running) {
+    if (!started || running || now() < retryAt) {
       return;
     }
     running = true;
+    const owner = generation;
+    const abort = new AbortController();
+    controller = abort;
 
     try {
-      const sessions = await discoverSessions();
+      const sessions = await discoverSessions({ signal: abort.signal });
       for (const session of sessions) {
+        if (!started || owner !== generation) return;
         await attachSession({
           brokerUrl,
           repoRoot,
@@ -305,28 +324,40 @@ export function createCodexResumeDiscoveryRuntime({
           homeDir
         });
       }
+      if (started && owner === generation) { failures = 0; retryAt = 0; }
     } catch (error) {
+      if (!started || owner !== generation) return;
+      failures = Math.min(failures + 1, 16);
+      const base = Math.max(5000, interval);
+      retryAt = now() + Math.max(interval, Math.min(60_000, base * 2 ** (failures - 1)));
       const message = error instanceof Error ? error.message : String(error);
-      log(logger, 'warn', `intent-broker codex discovery: failed (${message})`);
+      log(logger, 'warn', `intent-broker codex discovery: unavailable; retry in ${retryAt - now()}ms (${message})`);
     } finally {
       running = false;
+      if (controller === abort) controller = null;
     }
   }
 
   return {
     async start() {
-      if (env.INTENT_BROKER_DISABLE_CODEX_DISCOVERY === '1') {
+      if (started || env.INTENT_BROKER_DISABLE_CODEX_DISCOVERY === '1') {
         return;
       }
-
+      started = true;
+      const owner = ++generation;
+      failures = 0; retryAt = 0;
       await scanOnce();
+      if (!started || owner !== generation) return;
       timer = setInterval(() => {
         void scanOnce();
-      }, intervalMs);
+      }, interval);
       timer.unref?.();
     },
 
     async stop() {
+      started = false;
+      generation++;
+      controller?.abort();
       if (timer) {
         clearInterval(timer);
         timer = null;

@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
     findBrokerProcesses,
+    defaultRunCommand,
     isBrokerControlEntrypoint,
     isBrokerCommand,
     restartBroker,
@@ -14,6 +15,13 @@ import {
     summarizeHeartbeat,
     stopBroker
 } from '../../scripts/broker-control.js';
+
+test('a failed native query never returns plausible partial ownership output', () => {
+  assert.throws(() => defaultRunCommand({
+    command: process.execPath,
+    args: ['-e', 'process.stdout.write(JSON.stringify([{ProcessId:123,CommandLine:"node src/cli.js"}])); process.exit(1)'],
+  }), /Process query failed/);
+});
 
 test('isBrokerControlEntrypoint handles Windows-style argv paths', () => {
   const moduleUrl = new URL('../../scripts/broker-control.js', import.meta.url).href;
@@ -31,6 +39,7 @@ test('isBrokerControlEntrypoint handles Windows-style argv paths', () => {
 test('isBrokerCommand matches the broker main process only', () => {
   assert.equal(isBrokerCommand('node --experimental-sqlite src/cli.js'), true);
   assert.equal(isBrokerCommand('/usr/local/bin/node /Users/song/projects/intent-broker/src/cli.js'), true);
+  assert.equal(isBrokerCommand('node "D:\\projects\\intent-broker\\src\\cli.js"'), true);
   assert.equal(isBrokerCommand('node adapters/codex-plugin/bin/codex-broker.js keepalive'), false);
   assert.equal(isBrokerCommand('node scripts/broker-control.js stop'), false);
 });
@@ -82,6 +91,12 @@ test('findBrokerProcesses uses hidden PowerShell process lookup on Windows', () 
         assert.ok(args.includes('-WindowStyle'));
         assert.ok(args.includes('Hidden'));
         assert.equal(options.windowsHide, true);
+        assert.equal(options.timeout, 3000);
+        assert.equal(options.maxBuffer, 2 * 1024 * 1024);
+        assert.equal(options.killSignal, 'SIGKILL');
+        assert.match(args.at(-1), /Get-CimInstance Win32_Process -Filter/);
+        assert.match(args.at(-1), /ProcessId = 47069/);
+        assert.doesNotMatch(args.at(-1), /Where-Object/);
         return JSON.stringify([
           { ProcessId: 47069, CommandLine: 'node --experimental-sqlite src/cli.js' },
           { ProcessId: 47070, CommandLine: 'node adapters/codex-plugin/bin/codex-broker.js keepalive' }

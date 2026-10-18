@@ -13,17 +13,20 @@ import {
 } from '../src/runtime/broker-runtime-state.js';
 
 export function isBrokerCommand(command = '') {
-  return String(command).includes('src/cli.js');
+  return String(command).replaceAll('\\', '/').includes('src/cli.js');
 }
 
-function defaultRunCommand({ command, args, options = {} }) {
+export function defaultRunCommand({ command, args, options = {} }) {
   try {
-    return execFileSync(command, args, { encoding: 'utf8', ...options });
+    return execFileSync(command, args, {
+      encoding: 'utf8', timeout: 3000, killSignal: 'SIGKILL',
+      maxBuffer: 2 * 1024 * 1024, windowsHide: true, ...options
+    });
   } catch (error) {
-    if (typeof error?.stdout === 'string') {
-      return error.stdout;
-    }
-    return '';
+    // A timed-out/truncated query is not evidence of process ownership.
+    if ((command === 'lsof' || command === 'ps') && error.status === 1
+      && !String(error.stdout || '').trim() && !String(error.stderr || '').trim()) return '';
+    throw new Error('Process query failed or exceeded its resource limit');
   }
 }
 
@@ -89,12 +92,10 @@ export function findBrokerProcesses({
       return [];
     }
 
-    const pidList = pids.join(',');
+    const filter = pids.map((pid) => `ProcessId = ${pid}`).join(' OR ');
     const command = [
       '$ErrorActionPreference = "Stop";',
-      `$pids = @(${pidList});`,
-      'Get-CimInstance Win32_Process |',
-      'Where-Object { $pids -contains $_.ProcessId } |',
+      `Get-CimInstance Win32_Process -Filter "${filter}" |`,
       'Select-Object ProcessId,CommandLine |',
       'ConvertTo-Json -Compress'
     ].join(' ');
@@ -104,6 +105,9 @@ export function findBrokerProcesses({
       args: ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command],
       options: {
         encoding: 'utf8',
+        timeout: 3000,
+        maxBuffer: 2 * 1024 * 1024,
+        killSignal: 'SIGKILL',
         windowsHide: true
       }
     })).filter((item) => isBrokerCommand(item.command));
