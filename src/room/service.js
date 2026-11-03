@@ -21,6 +21,7 @@ import {
 } from './constants.js';
 import { verifyTrustedActorContext } from './trusted-context.js';
 import { createRoomWorkspaceService } from './workspace-service.js';
+import { WAL_STORAGE_MODE } from '../store/sqlite-profile.js';
 
 function fail(code, extra = {}) {
   return { ok: false, code, ...extra };
@@ -693,49 +694,65 @@ export function createRoomService({
    * design §6.2：向后兼容扩展。afterSequence/beforeSequence/limit 是可选的
    * bounded query 参数；旧调用（仅 { roomId }）保持全量物化语义。
    */
+  function withAuditedHistoryRead(read) {
+    if (store.storageMode !== WAL_STORAGE_MODE) {
+      return read(input => store.recordRoomHistoryReadAudit(input));
+    }
+    let auditNow;
+    const result = store.withTransaction(() => read(input => {
+      auditNow = store.insertRoomHistoryReadAudit(input);
+    }), { waitForWriter: true });
+    // The read audit is durable before maintenance can delete or fail.
+    if (auditNow !== undefined) store.pruneStaleRoomHistoryReadAuditsIfDue(auditNow);
+    return result;
+  }
+
   function listRoomMessages({ roomId, afterSequence, beforeSequence, limit } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
 
-    const room = requireRoom(roomId);
-    if (room.ok === false) return room;
-
-    const memberError = requireActiveMember(roomId, ctx);
-    if (memberError) return memberError;
-
     const hasBounds = afterSequence !== undefined || beforeSequence !== undefined || limit !== undefined;
-    if (!hasBounds) {
-      return { ok: true, messages: store.listMessages(roomId) };
-    }
+    const read = (recordReadAudit) => {
+      const room = requireRoom(roomId);
+      if (room.ok === false) return room;
 
-    const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit });
-    const bounds = store.getRoomSequenceBounds(roomId);
-    const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
-    const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
-    // design §6.2："每次 agent history page read 由 intent-broker 写独立的
-    // room_history_read_audits 记录"。此前 recordRoomHistoryReadAudit 只有
-    // store 层单元测试覆盖，从未被这条真实分页读取路径调用——只在真正走
-    // bounded query（分页语义）时写入，不为无参数的旧全量读取产生噪音记录。
-    // actorParticipantId 复用与 sendRoomMessage 等既有 mutation 相同的
-    // actor→participant 映射规则（user:<userId> / agent:<logicalAgentId>），
-    // 不单独造一套身份编码。
-    store.recordRoomHistoryReadAudit({
-      roomId,
-      actorParticipantId: recipientKeyForActor(ctx.actor),
-      fromSequence,
-      toSequence,
-      requestedLimit: limit ?? null,
-      resultCount: messages.length,
-    });
-    return {
-      ok: true,
-      messages,
-      totalMessages: bounds.totalMessages,
-      fromSequence,
-      toSequence,
-      hasMoreBefore: messages.length > 0 && bounds.minSequence !== null && messages[0].roomSequence > bounds.minSequence,
-      hasMoreAfter: messages.length > 0 && bounds.maxSequence !== null && messages[messages.length - 1].roomSequence < bounds.maxSequence,
+      const memberError = requireActiveMember(roomId, ctx);
+      if (memberError) return memberError;
+
+      if (!hasBounds) {
+        return { ok: true, messages: store.listMessages(roomId) };
+      }
+
+      const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit });
+      const bounds = store.getRoomSequenceBounds(roomId);
+      const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
+      const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
+      // design §6.2："每次 agent history page read 由 intent-broker 写独立的
+      // room_history_read_audits 记录"。此前 recordRoomHistoryReadAudit 只有
+      // store 层单元测试覆盖，从未被这条真实分页读取路径调用——只在真正走
+      // bounded query（分页语义）时写入，不为无参数的旧全量读取产生噪音记录。
+      // actorParticipantId 复用与 sendRoomMessage 等既有 mutation 相同的
+      // actor→participant 映射规则（user:<userId> / agent:<logicalAgentId>），
+      // 不单独造一套身份编码。
+      recordReadAudit({
+        roomId,
+        actorParticipantId: recipientKeyForActor(ctx.actor),
+        fromSequence,
+        toSequence,
+        requestedLimit: limit ?? null,
+        resultCount: messages.length,
+      });
+      return {
+        ok: true,
+        messages,
+        totalMessages: bounds.totalMessages,
+        fromSequence,
+        toSequence,
+        hasMoreBefore: messages.length > 0 && bounds.minSequence !== null && messages[0].roomSequence > bounds.minSequence,
+        hasMoreAfter: messages.length > 0 && bounds.maxSequence !== null && messages[messages.length - 1].roomSequence < bounds.maxSequence,
+      };
     };
+    return hasBounds ? withAuditedHistoryRead(read) : read();
   }
 
   function getCollaborationRoom({ roomId } = {}, ctx = null) {
@@ -755,6 +772,24 @@ export function createRoomService({
     }
 
     return { ok: true, ...snapshotWithMembers(room), requiredProtocol: workspace.requiresProtocol(roomId) ? 'room_workspace_v1' : null, messages: store.listMessages(roomId) };
+  }
+
+  function getRoomAuthorizationContext({ roomId, roomMessageId } = {}, ctx = null) {
+    const ctxError = requireVerifiedCtx(ctx);
+    if (ctxError) return ctxError;
+    if (ctx.requestSource !== 'user' || ctx.actor.kind !== 'user') return fail('room_actor_forbidden');
+    const authority = store.getAuthorizationSubject(roomId, ctx.actor.userId);
+    if (!authority || authority.room.deletedAt) return fail('room_not_found');
+    // Preserve current member JSON failure behavior before checking its status.
+    // Source lookup still happens only after current membership succeeds.
+    if (authority.memberPresent) JSON.parse(authority.memberAddedByJson);
+    if (!authority.memberPresent || authority.memberStatus !== 'active') return fail('room_membership_required');
+    // Preserve the existing workspace minimum read/failure behavior without
+    // materializing other members or unrelated message display fields.
+    workspace.requiresProtocol(roomId);
+    const source = store.getAuthorizationMessage(roomId, roomMessageId);
+    if (!source) return fail('room_message_not_found');
+    return { ok: true, schema: 'room-authorization-context/v1', room: { roomId }, source };
   }
 
   function listCollaborationRooms(_input = {}, ctx = null) {
@@ -809,73 +844,70 @@ export function createRoomService({
    *     room_archived 立即拒绝，不做"lease 未到期就放行"的宽松判断）。
    */
   function listRoomMessagesPage({ claimToken, roomId, afterSequence, beforeSequence, limit } = {}) {
-    if (typeof claimToken === 'string') { const checked = workspace.validateWake(claimToken); if (!checked.ok) return checked; }
-    if (typeof claimToken !== 'string' || !claimToken.includes('|')) {
-      return fail('room_input_invalid', { field: 'claimToken' });
-    }
-    const [tokenRoomMessageId, tokenLogicalAgentId, tokenEpochRaw] = claimToken.split('|');
+    return withAuditedHistoryRead(recordReadAudit => {
+      if (typeof claimToken === 'string') { const checked = workspace.validateWake(claimToken); if (!checked.ok) return checked; }
+      if (typeof claimToken !== 'string' || !claimToken.includes('|')) {
+        return fail('room_input_invalid', { field: 'claimToken' });
+      }
+      const [tokenRoomMessageId, tokenLogicalAgentId, tokenEpochRaw] = claimToken.split('|');
 
-    const delivery = store.getDelivery(tokenRoomMessageId, `agent:${tokenLogicalAgentId}`);
-    if (!delivery || delivery.claimToken !== claimToken) {
-      return fail('room_delivery_conflict');
-    }
-    if (delivery.wakeStatus !== 'claimed') {
-      return fail('room_delivery_conflict', { wakeStatus: delivery.wakeStatus });
-    }
+      const delivery = store.getDelivery(tokenRoomMessageId, `agent:${tokenLogicalAgentId}`);
+      if (!delivery || delivery.claimToken !== claimToken) {
+        return fail('room_delivery_conflict');
+      }
+      if (delivery.wakeStatus !== 'claimed') {
+        return fail('room_delivery_conflict', { wakeStatus: delivery.wakeStatus });
+      }
 
-    const sourceMessage = store.getMessageById(tokenRoomMessageId);
-    if (!sourceMessage) return fail('room_message_not_found');
+      const sourceMessage = store.getMessageById(tokenRoomMessageId);
+      if (!sourceMessage) return fail('room_message_not_found');
 
-    // 防止用一个 Room 的 token 读取另一个 Room 的历史：token 派生的 roomId
-    // 必须与请求 roomId 完全一致，不做任何"信任请求方声明"的捷径。
-    if (sourceMessage.roomId !== roomId) {
-      return fail('room_actor_forbidden');
-    }
+      // 防止用一个 Room 的 token 读取另一个 Room 的历史：token 派生的 roomId
+      // 必须与请求 roomId 完全一致，不做任何"信任请求方声明"的捷径。
+      if (sourceMessage.roomId !== roomId) {
+        return fail('room_actor_forbidden');
+      }
 
-    const room = store.getRoomRow(sourceMessage.roomId);
-    if (!room || room.deletedAt || room.status !== 'active') {
-      return fail('room_archived');
-    }
+      const room = store.getRoomRow(sourceMessage.roomId);
+      if (!room || room.deletedAt || room.status !== 'active') {
+        return fail('room_archived');
+      }
 
-    const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId: tokenLogicalAgentId });
-    if (!member || member.status !== 'active') {
-      return fail('room_membership_required');
-    }
+      const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId: tokenLogicalAgentId });
+      if (!member || member.status !== 'active') {
+        return fail('room_membership_required');
+      }
 
-    const tokenEpoch = Number.parseInt(tokenEpochRaw, 10);
-    if (!Number.isFinite(tokenEpoch) || tokenEpoch !== room.discussionEpoch) {
-      return fail('room_delivery_conflict', { reason: 'stale_epoch' });
-    }
+      const tokenEpoch = Number.parseInt(tokenEpochRaw, 10);
+      if (!Number.isFinite(tokenEpoch) || tokenEpoch !== room.discussionEpoch) {
+        return fail('room_delivery_conflict', { reason: 'stale_epoch' });
+      }
 
-    const sourceScope=sourceMessage.contextScope??{kind:'room_only'};
-    const scoped=store.listMessages(roomId).filter(message=>{
-      const scope=message.contextScope??{kind:'room_only'};
-      return scope.kind===sourceScope.kind&&(scope.kind!=='project'||scope.projectId===sourceScope.projectId);
+      const { messages, bounds } = store.listScopedMessagesPage(
+        roomId, sourceMessage.contextScope, { afterSequence, beforeSequence, limit }
+      );
+      const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
+      const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
+
+      recordReadAudit({
+        roomId,
+        actorParticipantId: `agent:${tokenLogicalAgentId}`,
+        fromSequence,
+        toSequence,
+        requestedLimit: limit ?? null,
+        resultCount: messages.length,
+      });
+
+      return {
+        ok: true,
+        messages,
+        totalMessages: bounds.totalMessages,
+        fromSequence,
+        toSequence,
+        hasMoreBefore: messages.length > 0 && bounds.minSequence !== null && messages[0].roomSequence > bounds.minSequence,
+        hasMoreAfter: messages.length > 0 && bounds.maxSequence !== null && messages[messages.length - 1].roomSequence < bounds.maxSequence,
+      };
     });
-    const effectiveLimit=Number.isInteger(limit)&&limit>0?Math.min(limit,200):50;
-    const messages=scoped.filter(message=>(!Number.isInteger(afterSequence)||message.roomSequence>afterSequence)&&(!Number.isInteger(beforeSequence)||message.roomSequence<beforeSequence)).slice(0,effectiveLimit);
-    const bounds={totalMessages:scoped.length,minSequence:scoped[0]?.roomSequence??null,maxSequence:scoped.at(-1)?.roomSequence??null};
-    const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
-    const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
-
-    store.recordRoomHistoryReadAudit({
-      roomId,
-      actorParticipantId: `agent:${tokenLogicalAgentId}`,
-      fromSequence,
-      toSequence,
-      requestedLimit: limit ?? null,
-      resultCount: messages.length,
-    });
-
-    return {
-      ok: true,
-      messages,
-      totalMessages: bounds.totalMessages,
-      fromSequence,
-      toSequence,
-      hasMoreBefore: messages.length > 0 && bounds.minSequence !== null && messages[0].roomSequence > bounds.minSequence,
-      hasMoreAfter: messages.length > 0 && bounds.maxSequence !== null && messages[messages.length - 1].roomSequence < bounds.maxSequence,
-    };
   }
 
   const workspaceWakeAuthorization = Symbol('workspaceWakeAuthorization');
@@ -925,99 +957,108 @@ export function createRoomService({
     if (typeof claimToken !== 'string' || !claimToken.includes('|')) {
       return fail('room_input_invalid', { field: 'claimToken' });
     }
-    const workspaceCheck = workspace.validateWake(claimToken);
-    if (!workspaceCheck.ok) return workspaceCheck;
-    const [roomMessageId, logicalAgentId, epoch, leaseUntil] = claimToken.split('|');
+    const settle = (settlementTransaction) => {
+      const workspaceCheck = workspace.validateWake(claimToken);
+      if (!workspaceCheck.ok) return workspaceCheck;
+      const [roomMessageId, logicalAgentId, epoch, leaseUntil] = claimToken.split('|');
 
-    const delivery = store.getDelivery(roomMessageId, `agent:${logicalAgentId}`);
-    if (!delivery || delivery.claimToken !== claimToken) {
-      return fail('room_delivery_conflict');
-    }
-    if (delivery.wakeStatus !== 'claimed') {
-      return fail('room_delivery_conflict', { wakeStatus: delivery.wakeStatus });
-    }
-
-    const sourceMessage = store.getMessageById(roomMessageId);
-    const room = getRoom(sourceMessage.roomId);
-    if (!room) return fail('room_not_found');
-    const effectiveNow = nowDate(nowOverride ?? now());
-    const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId });
-    const activeExecutionContext = room.status === 'active' && member?.status === 'active';
-    const claimEpoch = Number.parseInt(epoch, 10);
-
-    if (activeExecutionContext && Number.isFinite(claimEpoch) && claimEpoch !== room.discussionEpoch) {
-      store.withTransaction(() => {
-        store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
-        store.insertAudit({
-          roomId: sourceMessage.roomId,
-          roomMessageId,
-          logicalAgentId,
-          outcome: 'stale_epoch',
-          detail: {
-            replyText: reply?.text ?? null,
-            claimEpoch,
-            currentEpoch: room.discussionEpoch,
-            reason: 'discussion_epoch_advanced',
-          },
-          createdAt: effectiveNow.toISOString(),
-        });
-      });
-      return fail('room_delivery_conflict', { settled: 'stale_epoch' });
-    }
-
-    if (!activeExecutionContext && new Date(leaseUntil).getTime() < effectiveNow.getTime()) {
-      // The fixed lease is a settlement grace deadline after archive/removal,
-      // not an execution timeout for an otherwise active room member.
-      store.withTransaction(() => {
-        store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
-        store.insertAudit({
-          roomId: sourceMessage.roomId,
-          roomMessageId,
-          logicalAgentId,
-          outcome: 'grace_expired',
-          detail: { replyText: reply?.text ?? null, reason: 'claim_lease_expired' },
-          createdAt: effectiveNow.toISOString(),
-        });
-      });
-      return fail('room_archived', { settled: 'grace_expired' });
-    }
-
-    const agentActor = { kind: 'agent', logicalAgentId };
-    const timestamp = effectiveNow.toISOString();
-    const replyMessage = {
-      messageId: `rm-${randomUUID()}`,
-      roomId: sourceMessage.roomId,
-      threadId: `thread-${sourceMessage.roomId}`,
-      sender: agentActor,
-      kind: reply?.kind === 'pass' ? 'system' : 'text',
-      text: reply?.kind === 'pass' ? undefined : reply?.text,
-      contextScope: sourceMessage.contextScope ?? { kind: 'room_only' },
-      mentions: [],
-      responsePolicy: 'none',
-      idempotencyKey: `wake:${claimToken}`,
-      roomSequence: 0,
-      discussionEpoch: Number.isFinite(claimEpoch) ? claimEpoch : room.discussionEpoch,
-      createdAt: timestamp,
-    };
-
-    store.withTransaction(() => {
-      replyMessage.roomSequence = store.nextRoomSequence(sourceMessage.roomId);
-      store.insertMessage(replyMessage);
-      for (const member of activeMembers(sourceMessage.roomId)) {
-        const recipientKey = recipientKeyForActor(member.subject);
-        if (!recipientKey) continue;
-        store.insertDelivery({
-          roomMessageId: replyMessage.messageId,
-          recipientKey,
-          logicalRecipientId: member.subject.kind === 'agent' ? member.subject.logicalAgentId : null,
-          visibilityStatus: 'pending',
-          wakeStatus: 'not_requested',
-        });
+      const delivery = store.getDelivery(roomMessageId, `agent:${logicalAgentId}`);
+      if (!delivery || delivery.claimToken !== claimToken) {
+        return fail('room_delivery_conflict');
       }
-      store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'completed' });
-    });
+      if (delivery.wakeStatus !== 'claimed') {
+        return fail('room_delivery_conflict', { wakeStatus: delivery.wakeStatus });
+      }
 
-    return { ok: true, message: replyMessage };
+      const sourceMessage = store.getMessageById(roomMessageId);
+      if (!sourceMessage) return fail('room_message_not_found');
+      const room = getRoom(sourceMessage.roomId);
+      if (!room) return fail('room_not_found');
+      const effectiveNow = nowDate(nowOverride ?? now());
+      const member = store.getMember(room.roomId, { kind: 'agent', logicalAgentId });
+      const activeExecutionContext = room.status === 'active' && member?.status === 'active';
+      const claimEpoch = Number.parseInt(epoch, 10);
+
+      if (activeExecutionContext && Number.isFinite(claimEpoch) && claimEpoch !== room.discussionEpoch) {
+        settlementTransaction(() => {
+          store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
+          store.insertAudit({
+            roomId: sourceMessage.roomId,
+            roomMessageId,
+            logicalAgentId,
+            outcome: 'stale_epoch',
+            detail: {
+              replyText: reply?.text ?? null,
+              claimEpoch,
+              currentEpoch: room.discussionEpoch,
+              reason: 'discussion_epoch_advanced',
+            },
+            createdAt: effectiveNow.toISOString(),
+          });
+        });
+        return fail('room_delivery_conflict', { settled: 'stale_epoch' });
+      }
+
+      if (!activeExecutionContext && new Date(leaseUntil).getTime() < effectiveNow.getTime()) {
+        // The fixed lease is a settlement grace deadline after archive/removal,
+        // not an execution timeout for an otherwise active room member.
+        settlementTransaction(() => {
+          store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'failed' });
+          store.insertAudit({
+            roomId: sourceMessage.roomId,
+            roomMessageId,
+            logicalAgentId,
+            outcome: 'grace_expired',
+            detail: { replyText: reply?.text ?? null, reason: 'claim_lease_expired' },
+            createdAt: effectiveNow.toISOString(),
+          });
+        });
+        return fail('room_archived', { settled: 'grace_expired' });
+      }
+
+      const agentActor = { kind: 'agent', logicalAgentId };
+      const timestamp = effectiveNow.toISOString();
+      const replyMessage = {
+        messageId: `rm-${randomUUID()}`,
+        roomId: sourceMessage.roomId,
+        threadId: `thread-${sourceMessage.roomId}`,
+        sender: agentActor,
+        kind: reply?.kind === 'pass' ? 'system' : 'text',
+        text: reply?.kind === 'pass' ? undefined : reply?.text,
+        contextScope: sourceMessage.contextScope ?? { kind: 'room_only' },
+        mentions: [],
+        responsePolicy: 'none',
+        idempotencyKey: `wake:${claimToken}`,
+        roomSequence: 0,
+        discussionEpoch: Number.isFinite(claimEpoch) ? claimEpoch : room.discussionEpoch,
+        createdAt: timestamp,
+      };
+
+      settlementTransaction(() => {
+        replyMessage.roomSequence = store.nextRoomSequence(sourceMessage.roomId);
+        store.insertMessage(replyMessage);
+        for (const member of activeMembers(sourceMessage.roomId)) {
+          const recipientKey = recipientKeyForActor(member.subject);
+          if (!recipientKey) continue;
+          store.insertDelivery({
+            roomMessageId: replyMessage.messageId,
+            recipientKey,
+            logicalRecipientId: member.subject.kind === 'agent' ? member.subject.logicalAgentId : null,
+            visibilityStatus: 'pending',
+            wakeStatus: 'not_requested',
+          });
+        }
+        store.updateDelivery(roomMessageId, delivery.recipientKey, { wakeStatus: 'completed' });
+      });
+
+      return { ok: true, message: replyMessage };
+    };
+    // A wait must precede every authority read; each settlement still commits
+    // its intentional failed-delivery audit or the complete reply atomically.
+    if (store.storageMode === WAL_STORAGE_MODE) {
+      return store.withTransaction(() => settle(fn => fn()), { waitForWriter: true });
+    }
+    return settle(fn => store.withTransaction(fn));
   }
 
   function listPendingWakeObligations({ logicalAgentId } = {}) {
@@ -1135,15 +1176,12 @@ export function createRoomService({
       return { ok: true, wakeStatus: 'failed' };
     });
   };
-  workspace.claimWake = (input = {}, ctx = null) => {
-    const checked = workspace.authorizeWake(input, ctx);
-    if (!checked.ok) return checked;
-    return store.withTransaction(() => {
+  workspace.claimWake = (input = {}, ctx = null) =>
+    workspace.withAuthorizedWakeClaim(input, ctx, authorization => {
       const result = claimWake(input, ctx, workspaceWakeAuthorization);
-      if (result.ok) workspace.recordWake(result.claimToken, checked.authorization);
+      if (result.ok) workspace.recordWake(result.claimToken, authorization);
       return result;
     });
-  };
   return {
     workspace,
     cancelDiscussion,
@@ -1159,6 +1197,7 @@ export function createRoomService({
     listRoomMessages,
     listRoomMessagesPage,
     getCollaborationRoom,
+    getRoomAuthorizationContext,
     listCollaborationRooms,
     markRoomSeen,
     getRecipientCursor,

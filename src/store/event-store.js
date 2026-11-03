@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import { openBrokerDatabase } from './sqlite-profile.js';
 import { initializeSchema } from './schema.js';
 
 function canonicalJson(value) {
@@ -80,9 +80,10 @@ function serializeContextSyncValue(key, value) {
   return value ?? null;
 }
 
-export function createEventStore({ dbPath }) {
-  const db = new DatabaseSync(dbPath);
-  initializeSchema(db);
+export function createEventStore({ dbPath, storageMode }) {
+  const db = openBrokerDatabase(dbPath, { storageMode });
+  try { initializeSchema(db); }
+  catch (error) { db.close(); throw error; }
 
   function getEventById(eventId) {
     const row = db.prepare(`
@@ -103,6 +104,7 @@ export function createEventStore({ dbPath }) {
   }
 
   return {
+    close() { if (db.isOpen) db.close(); },
     appendIntent({ intentId, kind, fromParticipantId, taskId, threadId, payload, recipients }) {
       const targets = [...new Set(recipients)].sort();
       if (targets.some(id => typeof id !== 'string' || !id)) throw new Error('invalid_intent_recipient');

@@ -896,12 +896,14 @@ test('websocket lifecycle updates presence and broadcasts online and offline cha
 });
 
 test('websocket heartbeat keeps realtime participants online across presence sweeps', async (t) => {
+  // Keep real ping/pong outside the 10ms Windows timer/SQLite write floor.
+  // Controlled presence time still proves expiry and all original assertions.
   let presenceTime = 1_000;
   const broker = createBrokerService({
     dbPath: createTempDbPath(),
     presenceTimeoutMs: 50,
     presenceSweepIntervalMs: 10,
-    websocketHeartbeatIntervalMs: 10,
+    websocketHeartbeatIntervalMs: 100,
     presenceNow: () => presenceTime
   });
   const server = createServer({ broker });
