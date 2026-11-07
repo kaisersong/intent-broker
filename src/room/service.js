@@ -21,6 +21,7 @@ import {
 } from './constants.js';
 import { verifyTrustedActorContext } from './trusted-context.js';
 import { createRoomWorkspaceService } from './workspace-service.js';
+import {createRoomAdmissionControl} from './admission-control.js';
 
 function fail(code, extra = {}) {
   return { ok: false, code, ...extra };
@@ -738,6 +739,36 @@ export function createRoomService({
     };
   }
 
+  /** Exact read-time source snapshot for a native user conversion intent.
+   * This is not a future mutation, publication, model or current-read grant. */
+  function readRoomConversionSource({roomId,messageId}={},ctx=null) {
+    const ctxError=requireVerifiedCtx(ctx);if(ctxError)return ctxError;
+    if(ctx.requestSource!=='user'||ctx.actor.kind!=='user')return fail('room_actor_forbidden');
+    const reference=value=>typeof value==='string'&&value.length>0&&value.length<=256&&value.trim()===value&&!value.includes('\0');
+    if(!reference(roomId)||!reference(messageId))return fail('room_input_invalid');
+    return store.withReadTransaction(()=>{
+      const room=requireRoom(roomId);if(room.ok===false)return room;
+      const memberError=requireActiveMember(roomId,ctx);if(memberError)return memberError;
+      const activeError=requireActiveRoom(room);if(activeError)return activeError;
+      // Original pending source narrowing blocks this new read immediately,
+      // even while old active rows await the existing disclosure settlement.
+      if(store.hasPendingSourceMutation(roomId))return fail('disclosure_revocation_pending');
+      const member=store.getMember(roomId,ctx.actor),message=store.getMessage(roomId,messageId);
+      if(!message)return fail('room_message_not_found');
+      const scope=message.contextScope;
+      if(!scope||typeof scope!=='object'||Array.isArray(scope)
+        || !(scope.kind==='room_only'&&Object.keys(scope).length===1
+          ||scope.kind==='project'&&reference(scope.projectId)&&Object.keys(scope).length===2))return fail('room_scope_mismatch');
+      if(!Number.isSafeInteger(room.revision)||room.revision<1||!Number.isSafeInteger(member.membershipRevision)||member.membershipRevision<1
+        ||!Number.isSafeInteger(message.roomSequence)||message.roomSequence<1||message.kind!=='text'
+        ||typeof message.text!=='string'||message.text.length>65536||Buffer.byteLength(message.text,'utf8')>65536)return fail('room_input_invalid');
+      let realmId;try{realmId=store.getSourceRealm();}catch{return fail('room_source_identity_unavailable');}
+      return {ok:true,protocol:'room_conversion_source_v1',realmId,actorUserId:ctx.actor.userId,roomId,roomRevision:room.revision,
+        membershipRevision:member.membershipRevision,messageId,messageSequence:message.roomSequence,text:message.text,
+        contextScope:scope.kind==='project'?{kind:'project',projectId:scope.projectId}:{kind:'room_only'}};
+    });
+  }
+
   function getCollaborationRoom({ roomId } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
@@ -1146,6 +1177,7 @@ export function createRoomService({
   };
   return {
     workspace,
+    ...createRoomAdmissionControl({store}),
     cancelDiscussion,
     createRoom,
     archiveRoom,
@@ -1159,6 +1191,7 @@ export function createRoomService({
     listRoomMessages,
     listRoomMessagesPage,
     getCollaborationRoom,
+    readRoomConversionSource,
     listCollaborationRooms,
     markRoomSeen,
     getRecipientCursor,

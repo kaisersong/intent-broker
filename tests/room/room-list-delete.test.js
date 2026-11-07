@@ -55,7 +55,7 @@ test('delete settles archive first and refuses live claimed wake', t => {
 test('v6 upgrade preserves room and v7 DDL failure rolls back columns and version', t => {
   const dbPath = createTempDbPath(); const old = createRoomStore({dbPath, migrations: getDefaultMigrations().filter(m => m.version <= 6)});
   old.migrate(); const room = createRoomService({store: old}).createRoom({title: 'legacy', memberAgentIds: [], clientRequestKey: 'legacy'}, user()).room;
-  old.close(); const upgraded = createRoomStore({dbPath}); t.after(() => upgraded.close()); assert.equal(upgraded.migrate().schemaVersion, 7);
+  old.close(); const upgraded = createRoomStore({dbPath}); t.after(() => upgraded.close()); assert.equal(upgraded.migrate().schemaVersion, 9);
   assert.equal(upgraded.getRoomRow(room.roomId).title, 'legacy'); assert.equal(upgraded.getRoomRow(room.roomId).deletedAt, undefined);
   const failedPath = createTempDbPath(); const seed = createRoomStore({dbPath: failedPath, migrations: getDefaultMigrations().filter(m => m.version <= 6)}); seed.migrate();
   seed.db.exec('ALTER TABLE rooms ADD COLUMN deleted_by_json TEXT'); seed.close();
