@@ -7,12 +7,14 @@ import {createRoomStore,getDefaultMigrations} from '../../src/room/store.js';
 const cap=1024*1024;
 function fixture(t){const root=mkdtempSync(join(tmpdir(),'room-cap-'));t.after(()=>rmSync(root,{recursive:true,force:true}));return join(root,'rooms.sqlite');}
 function scalar(db,pragma){return Object.values(db.prepare('PRAGMA '+pragma).get())[0];}
+function assertOutsideTransaction(db){if(typeof db.isTransaction==='boolean')assert.equal(db.isTransaction,false);db.exec('BEGIN');db.exec('ROLLBACK');}
+function originalFull(error){const first=error instanceof AggregateError?error.errors[0]:error;assert.match(String(first),/full/i);if(error instanceof AggregateError){assert.equal(error.errors.length,2);assert.ok(error.errors[1] instanceof Error);}return true;}
 function assertCap(store,path){const size=scalar(store.db,'page_size'),maximum=scalar(store.db,'max_page_count');assert.equal(maximum,Math.floor(cap/size));assert.ok(scalar(store.db,'page_count')*size<=cap);assert.ok(statSync(path).size<=cap);assert.equal(scalar(store.db,'journal_mode'),'delete');assert.equal(scalar(store.db,'synchronous'),2);assert.equal(scalar(store.db,'temp_store'),2);}
 test('applies the physical cap on every real open and preserves a failed transaction across reopen',t=>{
  const path=fixture(t);let store=createRoomStore({dbPath:path,storageBudget:{databaseBytes:cap}});t.after(()=>store.close());store.migrate();assertCap(store,path);
  store.withTransaction(()=>store.nextRoomSequence('room'));const previous=store.db.prepare('SELECT * FROM room_sequences').all();
- assert.throws(()=>store.withTransaction(()=>{store.nextRoomSequence('room');store.db.prepare("INSERT INTO room_workspace_records VALUES('capacity','overflow','room',?)").run('x'.repeat(2*cap));}),/full/i);
- assert.equal(store.db.isTransaction,false);assert.deepEqual(store.db.prepare('SELECT * FROM room_sequences').all(),previous);assert.equal(store.db.prepare("SELECT COUNT(*) n FROM room_workspace_records WHERE record_key='overflow'").get().n,0);assertCap(store,path);
+ assert.throws(()=>store.withTransaction(()=>{store.nextRoomSequence('room');store.db.prepare("INSERT INTO room_workspace_records VALUES('capacity','overflow','room',?)").run('x'.repeat(2*cap));}),originalFull);
+ assertOutsideTransaction(store.db);assert.deepEqual(store.db.prepare('SELECT * FROM room_sequences').all(),previous);assert.equal(store.db.prepare("SELECT COUNT(*) n FROM room_workspace_records WHERE record_key='overflow'").get().n,0);assertCap(store,path);
  store.close();store=createRoomStore({dbPath:path,storageBudget:{databaseBytes:cap}});assertCap(store,path);assert.deepEqual(store.db.prepare('SELECT * FROM room_sequences').all(),previous);
 });
 test('two actual store connections each enforce their cap for direct SQL writers',t=>{
@@ -23,7 +25,7 @@ test('two actual store connections each enforce their cap for direct SQL writers
 test('a full migration rolls back its actual step table and schema version',t=>{
  const path=fixture(t),steps=getDefaultMigrations(),version=Math.max(...steps.map(s=>s.version))+1;
  const store=createRoomStore({dbPath:path,storageBudget:{databaseBytes:cap},migrations:[...steps,{version,up(db){db.exec('CREATE TABLE capacity_migration(value BLOB)');db.prepare('INSERT INTO capacity_migration VALUES(?)').run(Buffer.alloc(2*cap));}}]});t.after(()=>store.close());
- assert.throws(()=>store.migrate(),/full/i);assert.equal(store.db.isTransaction,false);assert.equal(store.getSchemaVersion(),version-1);assert.equal(store.db.prepare("SELECT name FROM sqlite_master WHERE name='capacity_migration'").get(),undefined);assertCap(store,path);
+ assert.throws(()=>store.migrate(),originalFull);assertOutsideTransaction(store.db);assert.equal(store.getSchemaVersion(),version-1);assert.equal(store.db.prepare("SELECT name FROM sqlite_master WHERE name='capacity_migration'").get(),undefined);assertCap(store,path);
 });
 test('opening an existing larger database reports capacity without changing its rows',t=>{
  const path=fixture(t);let store=createRoomStore({dbPath:path});store.migrate();store.db.prepare("INSERT INTO room_workspace_records VALUES('capacity','retained','room',?)").run('x'.repeat(2*cap));store.close();
