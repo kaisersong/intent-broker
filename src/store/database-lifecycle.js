@@ -1,3 +1,4 @@
+import * as managed from './managed-database-lifecycle.js';
 import {DatabaseSync} from 'node:sqlite';
 import {resolve} from 'node:path';
 import {types} from 'node:util';
@@ -39,7 +40,8 @@ function inspectDatabase(row){
 }
 function known(row){if(row.unknown)return false;try{row.stock?.assertPhysicalKnown();return true;}catch{return false;}}
 function removeKnown(row){if(known(row)&&row.closeEntered&&!row.closeFailure){row.closed=true;held.delete(row);paths.get(row.pathKey)?.delete(row);return true;}return false;}
-function open(dbPath){
+function open(dbPath,purpose){
+ const protectedProof=managed.openManagedBrokerDatabase(dbPath,purpose);if(protectedProof)return protectedProof;
  const pathKey=typeof dbPath==='string'&&dbPath&&dbPath!==':memory:'?resolve(dbPath):Symbol('ephemeral-broker-db');
  const prior=paths.get(pathKey);if(prior)for(const r of prior){if(r.closeEntered)removeKnown(r);if(!r.closed&&(r.unknown||r.constructing||r.closeEntered||!known(r)))throw Error('broker_sqlite_previous_unknown');}
  const row={pathKey,dbPath,constructing:true,entered:false,db:null,raws:new Set(),failures:[],unknown:false,closeEntered:false,closed:false,stock:null,runtime:null};
@@ -55,18 +57,21 @@ function open(dbPath){
   throw raw;
  }
 }
-export const openBrokerEventDatabase=dbPath=>open(dbPath);
-export const openBrokerRoomDatabase=dbPath=>open(dbPath);
-export function inspectBrokerDatabaseConstruction(proof){const row=member(proof);inspectDatabase(row);if(!known(row))fail();row.runtime?.assertOrdinarySourceWriterRoute();}
+export const openBrokerEventDatabase=dbPath=>open(dbPath,'event');
+export const openBrokerRoomDatabase=dbPath=>open(dbPath,'room');
+export function inspectBrokerDatabaseConstruction(proof){if(managed.isManagedBrokerDatabase(proof))return managed.inspectManagedBrokerDatabase(proof);const row=member(proof);inspectDatabase(row);if(!known(row))fail();row.runtime?.assertOrdinarySourceWriterRoute();}
 export function completeBrokerDatabaseInitialization(proof){
+ if(managed.isManagedBrokerDatabase(proof))return managed.completeManagedBrokerDatabase(proof);
  inspectBrokerDatabaseConstruction(proof);const row=member(proof);
  if(row.runtime&&typeof row.dbPath==='string'&&row.dbPath&&row.dbPath!==':memory:')row.runtime.observeOrdinarySQLiteWriter(row.dbPath,'broker-room-sqlite-v1');
 }
 export function failBrokerDatabaseInitialization(proof,raw){
+ if(managed.isManagedBrokerDatabase(proof))return managed.failManagedBrokerDatabase(proof,raw);
  const row=member(proof);row.failures.push({raw});inventory(row,raw);
  try{closeBrokerDatabase(proof);}catch(cleanup){throw new AggregateError([raw,cleanup],'broker_sqlite_initialization_cleanup_failed',{cause:raw});}throw raw;
 }
 export function closeBrokerDatabase(proof){
+ if(managed.isManagedBrokerDatabase(proof))return managed.closeManagedBrokerDatabase(proof);
  const row=member(proof);if(row.closed)return;
  if(row.closeEntered){if(removeKnown(row))return;if(row.closeFailure)throw row.closeFailure.raw;fail();}
  row.closeEntered=true;
@@ -77,13 +82,15 @@ export function closeBrokerDatabase(proof){
  catch(raw){row.closeFailure={raw};row.failures.push({raw});row.unknown=true;inventory(row,raw);throw raw;}
  inspectDatabase(row);if(!removeKnown(row))fail();
 }
-export function getBrokerDatabase(proof){return member(proof).db;}
-export function bindBrokerDatabaseOwner(proof,owner){owners.set(owner,member(proof));}
+export function getBrokerDatabase(proof){return managed.isManagedBrokerDatabase(proof)?managed.getManagedBrokerDatabase(proof):member(proof).db;}
+export function bindBrokerDatabaseOwner(proof,owner){if(managed.isManagedBrokerDatabase(proof))return managed.bindManagedBrokerDatabaseOwner(proof,owner);owners.set(owner,member(proof));}
 export function readBrokerDatabaseFate(owner){
+ if(managed.hasManagedBrokerDatabaseOwner(owner))return managed.readManagedBrokerDatabaseFate(owner);
  const row=owners.get(owner);if(!row)throw Error('broker_sqlite_owner_required');
  return Object.freeze({kind:'broker_sqlite_fate_v1',inventoryAvailable:!!row.stock,constructionEntered:row.entered,handleReturned:!!row.db,closeEntered:row.closeEntered,closed:row.closed,physicalKnown:!!row.stock&&row.closed&&known(row),unknown:row.unknown,failurePresent:row.failures.length>0});
 }
 export async function waitBrokerDatabaseCloseKnown(owner){
+ if(managed.hasManagedBrokerDatabaseOwner(owner))return managed.waitManagedBrokerDatabaseCloseKnown(owner);
  const row=owners.get(owner);if(!row)throw Error('broker_sqlite_owner_required');
  if(!row.stock)throw Error('broker_source_runtime_unavailable');await row.stock.waitPhysicalKnown();if(!removeKnown(row))fail();
 }
@@ -91,5 +98,10 @@ export async function waitBrokerDatabaseCloseKnown(owner){
 // Negative/error custody only. The exact born Store is checked before the raw
 // error graph; this cannot mint a row, runtime, local guard or positive role.
 export function retainBrokerDatabaseFailure(owner,raw){
+ if(managed.hasManagedBrokerDatabaseOwner(owner))return managed.retainManagedBrokerDatabaseFailure(owner,raw);
  const row=owners.get(owner);if(!row)throw Error('broker_sqlite_owner_required');row.failures.push({raw});inventory(row,raw);
 }
+
+// Passive private-row implementation membership only, never a Source grant.
+export const usesManagedBrokerDatabase=managed.isManagedBrokerDatabase;
+export const runBrokerDatabaseTransaction=managed.runManagedBrokerDatabaseTransaction;

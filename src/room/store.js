@@ -16,7 +16,7 @@
  * Migrations are ordered and transactional: a failed step rolls back its
  * DDL and the recorded version together (no partial forward progress).
  */
-import {openBrokerRoomDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,inspectBrokerDatabaseConstruction} from '../store/database-lifecycle.js';
+import {openBrokerRoomDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,inspectBrokerDatabaseConstruction,usesManagedBrokerDatabase,runBrokerDatabaseTransaction} from '../store/database-lifecycle.js';
 import { randomUUID } from 'node:crypto';
 import { ROOM_SCHEMA_VERSION } from './constants.js';
 import {admissionControlMigration} from './admission-control.js';
@@ -365,10 +365,11 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     const current = getSchemaVersion();
     for (const step of steps) {
       if (step.version <= current) continue;
+      const action=()=>{step.up(db);db.prepare('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);};
+      if(usesManagedBrokerDatabase(lifecycle)){runBrokerDatabaseTransaction(lifecycle,'write',action);continue;}
       db.exec('BEGIN IMMEDIATE');
       try {
-        step.up(db);
-        db.prepare('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);
+        action();
         db.exec('COMMIT');
       } catch (error) {
         rollback(error);
@@ -390,6 +391,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   // Exact source reads share one SQLite snapshot, including other-process
   // membership changes. No audit, lazy identity initialization or writer lease.
   function withReadTransaction(fn) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'read',fn);
     if(db.isTransaction)return fn();
     db.exec('BEGIN');
     try {const result=fn();db.exec('COMMIT');return result;}
@@ -397,6 +399,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function withTransaction(fn) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'write',fn);
     db.exec('BEGIN IMMEDIATE');
     try {
       const result = fn();

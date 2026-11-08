@@ -1,4 +1,4 @@
-import {openBrokerEventDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure} from './database-lifecycle.js';
+import {openBrokerEventDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,usesManagedBrokerDatabase,runBrokerDatabaseTransaction} from './database-lifecycle.js';
 import { initializeSchema } from './schema.js';
 
 function canonicalJson(value) {
@@ -84,6 +84,17 @@ export function createEventStore({ dbPath }) {
   const lifecycle=openBrokerEventDatabase(dbPath),db=getBrokerDatabase(lifecycle);
   try{initializeSchema(db);completeBrokerDatabaseInitialization(lifecycle);}catch(raw){failBrokerDatabaseInitialization(lifecycle,raw);}
 
+  function withEventTransaction(action) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'event',action);
+    db.exec('BEGIN IMMEDIATE');
+    try {const result=action();db.exec('COMMIT');return result;}
+    catch(error){
+      retainBrokerDatabaseFailure(owner,error);
+      try{db.exec('ROLLBACK');}catch(cleanup){retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error,cleanup],'event_transaction_rollback_failed',{cause:error});}
+      throw error;
+    }
+  }
+
   function getEventById(eventId) {
     const row = db.prepare(`
       SELECT event_id, intent_id, kind, from_participant_id, task_id, thread_id, payload_json, created_at
@@ -110,8 +121,7 @@ export function createEventStore({ dbPath }) {
       const content = canonicalJson({ kind, fromParticipantId, taskId: taskId ?? null,
         threadId: threadId ?? null, payload: payload ?? {} });
       const targetJson = JSON.stringify(targets);
-      db.exec('BEGIN IMMEDIATE');
-      try {
+      return withEventTransaction(() => {
         let event = getEventByIntentId(intentId);
         const duplicate = Boolean(event);
         if (event) {
@@ -127,13 +137,8 @@ export function createEventStore({ dbPath }) {
           event = getEventById(eventId);
         }
         for (const id of targets) db.prepare('INSERT OR IGNORE INTO inbox_entries(participant_id,event_id) VALUES(?,?)').run(id, event.eventId);
-        db.exec('COMMIT');
         return duplicate ? { ...event, duplicate: true } : event;
-      } catch (error) {
-        retainBrokerDatabaseFailure(owner,error);
-        try{db.exec('ROLLBACK');}catch(cleanup){retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error,cleanup],'event_transaction_rollback_failed',{cause:error});}
-        throw error;
-      }
+      });
     },
     readInbox(participantId, { after = 0, limit = 50 } = {}) {
       const items = db.prepare(`
@@ -150,8 +155,7 @@ export function createEventStore({ dbPath }) {
     },
     ackInbox(participantId, eventId) {
       if (!Number.isSafeInteger(eventId) || eventId < 0) throw new Error('invalid_inbox_cursor');
-      db.exec('BEGIN IMMEDIATE');
-      try {
+      return withEventTransaction(() => {
         const current = db.prepare('SELECT cursor_event_id FROM participant_cursors WHERE participant_id=?').get(participantId)?.cursor_event_id ?? 0;
         if (eventId > current && !db.prepare('SELECT 1 FROM inbox_entries WHERE participant_id=? AND event_id=? AND discarded_at IS NULL').get(participantId, eventId)) {
           throw new Error('inbox_event_not_owned');
@@ -160,13 +164,8 @@ export function createEventStore({ dbPath }) {
         db.prepare(`INSERT INTO participant_cursors(participant_id,cursor_event_id) VALUES(?,?)
           ON CONFLICT(participant_id) DO UPDATE SET cursor_event_id=MAX(cursor_event_id,excluded.cursor_event_id), updated_at=CURRENT_TIMESTAMP`).run(participantId, next);
         db.prepare(`UPDATE inbox_entries SET delivery_status='acked',acked_at=CURRENT_TIMESTAMP WHERE participant_id=? AND event_id<=?`).run(participantId, next);
-        db.exec('COMMIT');
         return { participantId, eventId: next };
-      } catch (error) {
-        retainBrokerDatabaseFailure(owner,error);
-        try{db.exec('ROLLBACK');}catch(cleanup){retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error,cleanup],'event_transaction_rollback_failed',{cause:error});}
-        throw error;
-      }
+      });
     },
     discardInbox(participantId) {
       db.prepare(`
