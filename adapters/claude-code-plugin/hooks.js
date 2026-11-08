@@ -340,6 +340,7 @@ export async function runPreToolUseHook(
         try {
           const response = await waitForAskResponse({
             config, intentId: askUserQuestionRequest.intentId,
+            taskId: askUserQuestionRequest.taskId, threadId: askUserQuestionRequest.threadId,
             afterEventId: sent.eventId ?? sent.event?.eventId ?? 0,
             requestJson, pollMs, timeoutMs
           });
@@ -693,7 +694,8 @@ export async function runStopHook(
     const mirroredReply = await maybeMirrorPendingReply(config, {
       toolName: 'claude-code',
       sessionId: currentSessionId,
-      homeDir
+      homeDir,
+      sendProgress
     });
 
     if (
@@ -728,6 +730,8 @@ export async function runStopHook(
       status: 'idle',
       sessionId: currentSessionId,
       turnId: null,
+      taskId: null,
+      threadId: null,
       source: 'stop-hook',
       updatedAt: new Date().toISOString()
     });

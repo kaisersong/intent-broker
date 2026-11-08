@@ -10,6 +10,8 @@ async function sleep(ms) {
 export async function waitForAskResponse({
   config,
   intentId,
+  taskId = intentId,
+  threadId = taskId,
   afterEventId = 0,
   requestJson = requestJsonDefault,
   pollMs = DEFAULT_POLL_MS,
@@ -18,7 +20,8 @@ export async function waitForAskResponse({
   const deadline = Date.now() + timeoutMs;
   let after = Math.max(0, Number(afterEventId) - 1);
   // The intentId for ask_clarification is also the taskId
-  const askTaskId = intentId;
+  const askTaskId = taskId;
+  const askThreadId = threadId;
 
   while (Date.now() < deadline) {
     const replay = await requestJson(`${config.brokerUrl}/events/replay?after=${after}&limit=100`);
@@ -33,7 +36,7 @@ export async function waitForAskResponse({
         const eventThreadId = event.threadId || '';
 
         // taskId and threadId of answer should match the ask's intentId (which is also taskId)
-        if (eventTaskId === askTaskId || eventThreadId === askTaskId) {
+        if (eventTaskId === askTaskId && eventThreadId === askThreadId) {
           return event;
         }
       }
