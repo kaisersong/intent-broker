@@ -213,6 +213,7 @@ function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
     cwd: repoRoot,
     env: {
       ...process.env,
+      HOME: homeDir,
       PORT: String(port),
       INTENT_BROKER_DB: dbPath,
       INTENT_BROKER_CONFIG: configPath,
@@ -221,6 +222,7 @@ function spawnBroker({ repoRoot, port, dbPath, logDir, homeDir }) {
       INTENT_BROKER_DISABLE_CODEX_DISCOVERY: '1',
       INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS: '0',
       ...isolatedHomeEnv(homeDir)
+      INTENT_BROKER_SKIP_BRIDGE_SYNC: '1',
     }
   });
 

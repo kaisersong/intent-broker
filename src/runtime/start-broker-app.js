@@ -65,11 +65,13 @@ export async function startBrokerApp({
 
   mkdirSync(dirname(dbPath), { recursive: true });
 
+  if (env.INTENT_BROKER_SKIP_BRIDGE_SYNC !== '1') {
   await syncAgentBridges({
     repoRoot,
     cwd,
     logger
   });
+  }
 
   const enableEscalation = process.env.ENABLE_HUMAN_ESCALATION !== '0';
   const broker = createBroker({ dbPath, ...(config.server.storageMode !== undefined ? { storageMode: config.server.storageMode } : {}), onTaskUnacked: enableEscalation ? createHumanEscalation() : null });
