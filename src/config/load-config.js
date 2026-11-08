@@ -69,7 +69,8 @@ export function loadIntentBrokerConfig({
     server: {
       host: server.host || '127.0.0.1',
       port: Number(env.PORT || server.port || '4318'),
-      dbPath: env.INTENT_BROKER_DB || server.dbPath || './.tmp/intent-broker.db'
+      dbPath: env.INTENT_BROKER_DB || server.dbPath || './.tmp/intent-broker.db',
+      ...(server.storageMode !== undefined ? { storageMode: server.storageMode } : {})
     },
     channels: {
       ...(channels.yunzhijia ? { yunzhijia: resolveYunzhijiaConfig(channels.yunzhijia, env) } : {})

@@ -81,10 +81,10 @@ test('resolveCommandShimNodePath finds user-local Node for packaged macOS apps',
     nodePath: '/Users/kai/Applications/xiaok.app/Contents/MacOS/xiaok',
     platform: 'darwin',
     env: { HOME: '/Users/kai' },
-    exists: candidate => candidate === '/Users/kai/.local/node/bin/node'
+    exists: candidate => candidate.replaceAll('\\', '/') === '/Users/kai/.local/node/bin/node'
   });
 
-  assert.equal(nodePath, '/Users/kai/.local/node/bin/node');
+  assert.equal(nodePath.replaceAll('\\', '/'), '/Users/kai/.local/node/bin/node');
 });
 
 test('buildCommandShimContent wraps unified cli with node on Windows', () => {

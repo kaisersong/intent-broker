@@ -1,8 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 const instanceId = randomUUID();
 let identity;
+function executableHash() {
+  const fd=openSync(process.execPath,'r'),buffer=Buffer.allocUnsafe(1048576),hash=createHash('sha256');
+  try{let n;while((n=readSync(fd,buffer,0,buffer.length,null))>0)hash.update(buffer.subarray(0,n));return hash.digest('hex');}
+  finally{closeSync(fd);}
+}
 export function activityServiceIdentity() {
   if (identity) return identity;
   const entryPath = resolve(process.argv[1]);
@@ -16,5 +21,5 @@ export function activityServiceIdentity() {
     }
   };
   visit(sourceRoot);
-  return identity = { pid: process.pid, instanceId, entryPath, entryHash, sourceHash: hash.digest('hex') };
+  return identity = { pid: process.pid, instanceId, entryPath, entryHash, sourceHash: hash.digest('hex'), runtime: {node:process.versions.node,sqlite:process.versions.sqlite,execPath:process.execPath,executableSha256:executableHash()} };
 }

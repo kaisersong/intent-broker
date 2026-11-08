@@ -269,3 +269,24 @@ test('unsigned mapping cancel lost ACK recovers exact historical cancellation af
     assert.equal(workspace.recoverMappingOperation(input,{...f.ctx,hostPrincipal:'other-installation'}).ok,false);
   }
 });
+
+test('wake authority and publication share one transaction and failed grant leaves no partial claim',t=>{
+ const f=fixture(t);bind(f);
+ const agent={...f.ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:'a'},allowedLogicalAgentIds:['a']};
+ const message=key=>f.service.sendRoomMessage({roomId:f.roomId,text:'Discuss',mentions:[{kind:'agent',logicalAgentId:'a'}],responsePolicy:'mentioned',idempotencyKey:key},f.ctx).message;
+ const first=message('atomic-wake-1');
+ const transact=f.store.withTransaction,getMember=f.store.getMember;
+ let activeTransaction=0,serial=0;const reads=[];
+ f.store.withTransaction=fn=>transact(()=>{const previous=activeTransaction;activeTransaction=++serial;try{return fn();}finally{activeTransaction=previous;}});
+ f.store.getMember=(roomId,subject)=>{if(subject.kind==='agent')reads.push(activeTransaction);return getMember(roomId,subject);};
+ const wake=f.w.claimWake({roomId:f.roomId,roomMessageId:first.messageId,logicalAgentId:'a',discussionOnly:true},agent);
+ assert.equal(wake.ok,true,JSON.stringify(wake));
+ assert.ok(reads.length>=2);assert.equal(new Set(reads).size,1);assert.ok(reads.every(id=>id>0));
+ assert.equal(f.w.validateWake(wake.claimToken).ok,true);
+ const second=message('atomic-wake-2');
+ f.store.db.exec("CREATE TRIGGER deny_wake_grant BEFORE INSERT ON room_workspace_records WHEN NEW.kind='wake' BEGIN SELECT RAISE(ABORT,'blocked_wake_authority'); END");
+ assert.throws(()=>f.w.claimWake({roomId:f.roomId,roomMessageId:second.messageId,logicalAgentId:'a',discussionOnly:true},agent),/blocked_wake_authority/);
+ assert.equal(f.store.getDelivery(second.messageId,'agent:a').wakeStatus,'pending');
+ assert.equal(f.store.db.prepare("SELECT value_json FROM room_workspace_records WHERE kind='wake'").all().some(r=>JSON.parse(r.value_json).roomMessageId===second.messageId),false);
+ assert.equal(f.store.db.isTransaction,false);
+});

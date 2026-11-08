@@ -4,6 +4,14 @@ import {
   saveBrokerHeartbeat
 } from './runtime/broker-runtime-state.js';
 
+// Storage transitions are explicit owner commands, never an environment grant.
+// They run before heartbeat/service startup and never select a default profile.
+if (process.argv[2] === 'storage') {
+  const { runBrokerStorageCommand } = await import('./runtime/broker-storage-command.js');
+  console.log(JSON.stringify(await runBrokerStorageCommand(process.argv.slice(3))));
+  process.exit(0);
+}
+
 // Handle relay subcommand before broker startup
 if (process.argv[2] === 'relay') {
   const { runRelayCli } = await import('./relay/relay-cli.js');

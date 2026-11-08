@@ -78,6 +78,7 @@ function buildApprovalListItem(approval, originEvent) {
 
 export function createBrokerService({
   dbPath,
+  storageMode,
   presenceTimeoutMs = 600000,
   presenceSweepIntervalMs = 5000,
   websocketHeartbeatIntervalMs = 30000,
@@ -89,18 +90,25 @@ export function createBrokerService({
   const aliases = new Map();
   const logicalParticipants = new Map();
   const workStates = new Map();
-  const store = createEventStore({ dbPath });
+  const store = createEventStore({ dbPath, storageMode });
   // The broker owns the Room domain on the same durable SQLite file.
   // Room tables are separate from the generic event/inbox surface and are
   // never dual-written by generic intents (design §9.1).
-  const roomStore = createRoomStore({ dbPath });
-  roomStore.migrate();
-  const room = createRoomService({ store: roomStore });
+  let roomStore, room;
+  try {
+    roomStore = createRoomStore({ dbPath, storageMode });
+    roomStore.migrate();
+    room = createRoomService({ store: roomStore });
+  } catch (error) {
+    try { roomStore?.close(); } finally { store.close(); }
+    throw error;
+  }
   const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs, now: presenceNow });
   const wsNotifier = createWebSocketNotifier({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
   });
   let awayMode = false;
+  let closed = false;
 
   function parseEventTime(createdAt) {
     return new Date(createdAt + 'Z').getTime();
@@ -757,6 +765,9 @@ export function createBrokerService({
   }
 
   function sweepStalePresence() {
+    // Reuse the existing owned housekeeping timer; keep cold startup read-only.
+    // The page audit retains the due-maintenance fallback when timers are off.
+    roomStore.pruneStaleRoomHistoryReadAuditsIfDue();
     const now = presenceNow();
     for (const item of presence.listPresence()) {
       const raw = presence.peekPresence(item.participantId);
@@ -1117,18 +1128,21 @@ export function createBrokerService({
     attachWebSocket(httpServer) {
       wsNotifier.attachToServer(httpServer, {
         onConnect: ({ participantId, connectionCount }) => {
+          if (closed) return;
           setPresence(participantId, 'online', {
             transport: 'websocket',
             connectionCount
           });
         },
         onHeartbeat: ({ participantId, connectionCount }) => {
+          if (closed) return;
           setPresence(participantId, 'online', {
             transport: 'websocket',
             connectionCount
           });
         },
         onDisconnect: ({ participantId, connectionCount }) => {
+          if (closed) return;
           setPresence(participantId, 'offline', {
             transport: 'websocket',
             connectionCount
@@ -1193,6 +1207,8 @@ export function createBrokerService({
       }).map((approval) => buildApprovalListItem(approval, approvalEvents.get(approval.approvalId)));
     },
     close() {
+      if (closed) return;
+      closed = true;
       if (presenceSweepTimer) {
         clearInterval(presenceSweepTimer);
       }
@@ -1203,7 +1219,7 @@ export function createBrokerService({
       }
       watchdogTimers.clear();
       wsNotifier.close();
-      room.close();
+      try { room.close(); } finally { store.close(); }
     }
   };
 }

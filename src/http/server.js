@@ -242,6 +242,12 @@ export function createServer({
           writeJson(res, roomStatus(result, 201), result);
           return;
         }
+        if (req.method === 'GET' && roomId && action === 'authorization-context' && segments.length === 3) {
+          if (!desktopAuthenticated) { writeJson(res, 403, { code: 'room_actor_forbidden' }); return; }
+          result = roomService.getRoomAuthorizationContext({ roomId, roomMessageId: requestUrl.searchParams.get('roomMessageId') }, ctx);
+          writeJson(res, roomStatus(result), result);
+          return;
+        }
         if (req.method === 'GET' && roomId && !action) {
           result = roomService.getCollaborationRoom({ roomId }, ctx);
           writeJson(res, roomStatus(result), result);
