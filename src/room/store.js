@@ -16,7 +16,7 @@
  * Migrations are ordered and transactional: a failed step rolls back its
  * DDL and the recorded version together (no partial forward progress).
  */
-import { DatabaseSync } from 'node:sqlite';
+import {openBrokerRoomDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,inspectBrokerDatabaseConstruction} from '../store/database-lifecycle.js';
 import { randomUUID } from 'node:crypto';
 import { ROOM_SCHEMA_VERSION } from './constants.js';
 import {admissionControlMigration} from './admission-control.js';
@@ -319,7 +319,8 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   if (storageBudget !== undefined && (!Number.isSafeInteger(databaseBytes) || databaseBytes < 512 || databaseBytes > 64 * 1024 * 1024)) {
     throw new Error('room_storage_capacity_configuration');
   }
-  const db = new DatabaseSync(dbPath);
+  const lifecycle=openBrokerRoomDatabase(dbPath),db=getBrokerDatabase(lifecycle);
+  try {
   if (databaseBytes !== undefined) {
     try {
       const scalar = pragma => Object.values(db.prepare('PRAGMA ' + pragma).get())[0];
@@ -333,16 +334,16 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
         throw new Error('room_storage_capacity');
       }
     } catch (error) {
-      db.close();
       throw error;
     }
   }
   function rollback(error) {
+    retainBrokerDatabaseFailure(owner,error);
     // SQLITE_FULL can already have rolled the transaction back. Keep its actual
     // error instead of replacing it with "no transaction is active".
     if (db.isTransaction !== false) {
       try { db.exec('ROLLBACK'); }
-      catch (cleanup) { throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed'); }
+      catch (cleanup) { retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed',{cause:error}); }
     }
     throw error;
   }
@@ -373,7 +374,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
         rollback(error);
       }
     }
-    return { schemaVersion: getSchemaVersion() };
+    completeBrokerDatabaseInitialization(lifecycle);return { schemaVersion: getSchemaVersion() };
   }
 
   function getSourceRealm() {
@@ -842,10 +843,10 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function close() {
-    db.close();
+    closeBrokerDatabase(lifecycle);
   }
 
-  return {
+  const owner={
     db,
     migrate,
     getSchemaVersion,
@@ -887,4 +888,6 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     listAudit,
     close,
   };
+  inspectBrokerDatabaseConstruction(lifecycle);bindBrokerDatabaseOwner(lifecycle,owner);return owner;
+  }catch(raw){failBrokerDatabaseInitialization(lifecycle,raw);}
 }

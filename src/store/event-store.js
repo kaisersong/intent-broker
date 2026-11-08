@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite';
+import {openBrokerEventDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure} from './database-lifecycle.js';
 import { initializeSchema } from './schema.js';
 
 function canonicalJson(value) {
@@ -81,8 +81,8 @@ function serializeContextSyncValue(key, value) {
 }
 
 export function createEventStore({ dbPath }) {
-  const db = new DatabaseSync(dbPath);
-  initializeSchema(db);
+  const lifecycle=openBrokerEventDatabase(dbPath),db=getBrokerDatabase(lifecycle);
+  try{initializeSchema(db);completeBrokerDatabaseInitialization(lifecycle);}catch(raw){failBrokerDatabaseInitialization(lifecycle,raw);}
 
   function getEventById(eventId) {
     const row = db.prepare(`
@@ -102,7 +102,8 @@ export function createEventStore({ dbPath }) {
     return row ? mapEventRow(row) : null;
   }
 
-  return {
+  const owner={
+    close(){closeBrokerDatabase(lifecycle);},
     appendIntent({ intentId, kind, fromParticipantId, taskId, threadId, payload, recipients }) {
       const targets = [...new Set(recipients)].sort();
       if (targets.some(id => typeof id !== 'string' || !id)) throw new Error('invalid_intent_recipient');
@@ -129,7 +130,8 @@ export function createEventStore({ dbPath }) {
         db.exec('COMMIT');
         return duplicate ? { ...event, duplicate: true } : event;
       } catch (error) {
-        db.exec('ROLLBACK');
+        retainBrokerDatabaseFailure(owner,error);
+        try{db.exec('ROLLBACK');}catch(cleanup){retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error,cleanup],'event_transaction_rollback_failed',{cause:error});}
         throw error;
       }
     },
@@ -161,7 +163,8 @@ export function createEventStore({ dbPath }) {
         db.exec('COMMIT');
         return { participantId, eventId: next };
       } catch (error) {
-        db.exec('ROLLBACK');
+        retainBrokerDatabaseFailure(owner,error);
+        try{db.exec('ROLLBACK');}catch(cleanup){retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error,cleanup],'event_transaction_rollback_failed',{cause:error});}
         throw error;
       }
     },
@@ -438,4 +441,5 @@ export function createEventStore({ dbPath }) {
       return this.getContextSync(syncId);
     }
   };
+  bindBrokerDatabaseOwner(lifecycle,owner);return owner;
 }
