@@ -579,7 +579,14 @@ export function createServer({
 
   return {
     listen(port, host) {
-      return new Promise((resolve) => raw.listen(port, host, resolve));
+      return new Promise((resolve, reject) => {
+        const failed = error => { raw.removeListener('listening', ready); reject(error); };
+        const ready = () => { raw.removeListener('error', failed); resolve(); };
+        raw.once('error', failed);
+        raw.once('listening', ready);
+        try { raw.listen(port, host); }
+        catch (error) { raw.removeListener('error', failed); raw.removeListener('listening', ready); reject(error); }
+      });
     },
     close() {
       return new Promise((resolve, reject) => {
