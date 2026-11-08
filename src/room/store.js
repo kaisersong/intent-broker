@@ -16,8 +16,11 @@
  * Migrations are ordered and transactional: a failed step rolls back its
  * DDL and the recorded version together (no partial forward progress).
  */
-import { openBrokerDatabase, beginBrokerWriteTransaction, assertBrokerDatabaseUsable, WAL_STORAGE_MODE } from '../store/sqlite-profile.js';
+import { beginBrokerWriteTransaction, assertBrokerDatabaseUsable, WAL_STORAGE_MODE } from '../store/sqlite-profile.js';
+import {openBrokerRoomDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,inspectBrokerDatabaseConstruction,usesManagedBrokerDatabase,runBrokerDatabaseTransaction} from '../store/database-lifecycle.js';
+import { randomUUID } from 'node:crypto';
 import { ROOM_SCHEMA_VERSION } from './constants.js';
+import {admissionControlMigration} from './admission-control.js';
 
 function mapRoomRow(row) {
   if (!row) return null;
@@ -291,6 +294,23 @@ export function getDefaultMigrations() {
     { version: 7, id: 'room_soft_delete', up(db) {
       db.exec('ALTER TABLE rooms ADD COLUMN deleted_at TEXT; ALTER TABLE rooms ADD COLUMN deleted_by_json TEXT');
     } },
+    { version: 8, id: 'room_source_identity', up(db) {
+      // Stable source lineage belongs to this original database. It is neither
+      // a credential nor a writer/reader floor, and never resets on GET.
+      db.exec(`CREATE TABLE room_source_identity (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        realm_id TEXT NOT NULL CHECK(length(realm_id)=36)
+      )`);
+      db.prepare('INSERT INTO room_source_identity(singleton,realm_id) VALUES(1,?)').run(randomUUID());
+      db.exec(`CREATE TRIGGER room_source_identity_insert BEFORE INSERT ON room_source_identity
+        WHEN EXISTS(SELECT 1 FROM room_source_identity)
+        BEGIN SELECT RAISE(ABORT,'room_source_identity_immutable'); END;
+        CREATE TRIGGER room_source_identity_update BEFORE UPDATE ON room_source_identity
+        BEGIN SELECT RAISE(ABORT,'room_source_identity_immutable'); END;
+        CREATE TRIGGER room_source_identity_delete BEFORE DELETE ON room_source_identity
+        BEGIN SELECT RAISE(ABORT,'room_source_identity_immutable'); END;`);
+    } },
+    admissionControlMigration,
   ];
 }
 
@@ -301,7 +321,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget, storageMode
   if (storageBudget !== undefined && (!Number.isSafeInteger(databaseBytes) || databaseBytes < 512 || databaseBytes > 64 * 1024 * 1024)) {
     throw new Error('room_storage_capacity_configuration');
   }
-  const db = openBrokerDatabase(dbPath, { storageMode, protectedStorage: storageBudget !== undefined });
+  const lifecycle=openBrokerRoomDatabase(dbPath,{storageMode,protectedStorage:storageBudget!==undefined}),db=getBrokerDatabase(lifecycle);
   // Cache bytecode, never results or authority. Bind current values and execute
   // every time. Raw db.prepare remains unchanged for external iterators.
   const statements = new Map();
@@ -315,6 +335,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget, storageMode
     return statement;
   }
   let activeScope = null;
+  try {
   if (databaseBytes !== undefined) {
     try {
       const scalar = pragma => Object.values(prepareStatement('PRAGMA ' + pragma).get())[0];
@@ -328,16 +349,16 @@ export function createRoomStore({ dbPath, migrations, storageBudget, storageMode
         throw new Error('room_storage_capacity');
       }
     } catch (error) {
-      db.close();
       throw error;
     }
   }
   function rollback(error) {
+    retainBrokerDatabaseFailure(owner,error);
     // SQLITE_FULL can already have rolled the transaction back. Keep its actual
     // error instead of replacing it with "no transaction is active".
-    if (db.isTransaction) {
+    if (db.isTransaction !== false) {
       try { db.exec('ROLLBACK'); }
-      catch (cleanup) { throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed'); }
+      catch (cleanup) { retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed',{cause:error}); }
     }
     throw error;
   }
@@ -369,19 +390,41 @@ export function createRoomStore({ dbPath, migrations, storageBudget, storageMode
     const current = getSchemaVersion();
     for (const step of steps) {
       if (step.version <= current) continue;
+      const action=()=>{step.up(db);db.prepare('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);};
+      if(usesManagedBrokerDatabase(lifecycle)){runBrokerDatabaseTransaction(lifecycle,'write',action);continue;}
       db.exec('BEGIN IMMEDIATE');
       try {
-        step.up(db);
-        prepareStatement('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);
+        action();
         db.exec('COMMIT');
       } catch (error) {
         rollback(error);
       }
     }
-    return { schemaVersion: getSchemaVersion() };
+    completeBrokerDatabaseInitialization(lifecycle);return { schemaVersion: getSchemaVersion() };
+  }
+
+  function getSourceRealm() {
+    const version=db.prepare('SELECT MAX(version) AS version FROM room_schema_version').get()?.version;
+    const rows=db.prepare('SELECT singleton,realm_id FROM room_source_identity').all();
+    if((version!==8 && version!==9) || rows.length!==1 || rows[0].singleton!==1
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(rows[0].realm_id))throw Error('room_source_identity_unavailable');
+    return rows[0].realm_id;
+  }
+  function hasPendingSourceMutation(roomId) {
+    return Boolean(db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(roomId));
+  }
+  // Exact source reads share one SQLite snapshot, including other-process
+  // membership changes. No audit, lazy identity initialization or writer lease.
+  function withReadTransaction(fn) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'read',fn);
+    if(db.isTransaction)return fn();
+    db.exec('BEGIN');
+    try {const result=fn();db.exec('COMMIT');return result;}
+    catch(error){rollback(error);}
   }
 
   function withTransaction(fn,{waitForWriter=false}={}) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'write',fn);
     beginBrokerWriteTransaction(db,{waitForWriter:storageMode===WAL_STORAGE_MODE&&waitForWriter});
     try {
       const result = fn();
@@ -920,16 +963,19 @@ export function createRoomStore({ dbPath, migrations, storageBudget, storageMode
 
   function close() {
     statements.clear();
-    if (db.isOpen) db.close();
+    closeBrokerDatabase(lifecycle);
   }
 
-  return {
+  const owner={
     db,
     // Explicit configured profile; never inferred from mutable PRAGMAs or env.
     get storageMode() { return storageMode===WAL_STORAGE_MODE?WAL_STORAGE_MODE:'delete'; },
     prepareStatement,
     migrate,
     getSchemaVersion,
+    getSourceRealm,
+    hasPendingSourceMutation,
+    withReadTransaction,
     getDefaultMigrations: () => steps,
     withTransaction,
     insertRoom,
@@ -969,4 +1015,6 @@ export function createRoomStore({ dbPath, migrations, storageBudget, storageMode
     listAudit,
     close,
   };
+  inspectBrokerDatabaseConstruction(lifecycle);bindBrokerDatabaseOwner(lifecycle,owner);return owner;
+  }catch(raw){failBrokerDatabaseInitialization(lifecycle,raw);}
 }

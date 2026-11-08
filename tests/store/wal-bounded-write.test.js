@@ -13,6 +13,7 @@ import {createRoomStore} from '../../src/room/store.js';
 import {createRoomService} from '../../src/room/service.js';
 const wal={skip:!policy.isSupportedWalRuntime()&&'requires qualified Node24/SQLite3.53'};
 const scalar=(db,p)=>Object.values(db.prepare('PRAGMA '+p).get())[0];
+function assertOutsideTransaction(db){if(typeof db.isTransaction==='boolean')assert.equal(db.isTransaction,false);db.exec('BEGIN');db.exec('ROLLBACK');}
 async function fixture(t,{mode='wal-full-v1'}={}){
  const root=realpathSync(mkdtempSync(join(tmpdir(),'intent-broker-wal-lock-'))),path=join(root,'broker.db'),holders=[];
  let store=createRoomStore({dbPath:path});store.migrate();
@@ -223,12 +224,12 @@ function settlementCounts(f){
  return {messages:f.store.db.prepare('SELECT count(*) n FROM room_messages').get().n,audits:f.store.listAudit(f.roomId).length,deliveries:f.store.db.prepare('SELECT count(*) n FROM room_message_deliveries').get().n};
 }
 function watchSettlement(f){
- const original=f.store.db.exec,reads=[],begins=[];
+ const original=f.store.db.exec,originalOwn=Object.getOwnPropertyDescriptor(f.store.db,'exec'),reads=[],begins=[];
  f.store.db.exec=function(sql){if(/^\s*BEGIN/i.test(sql))begins.push(sql);return Reflect.apply(original,this,[sql]);};
  for(const name of ['getRoomRow','getDelivery','getMember','getMessageById']){
   const fn=f.store[name];f.store[name]=function(...args){reads.push({name,transaction:f.store.db.isTransaction,timeout:scalar(f.store.db,'busy_timeout')});return Reflect.apply(fn,this,args);};
  }
- return {reads,begins,restore(){f.store.db.exec=original;}};
+ return {reads,begins,restore(){if(originalOwn)Object.defineProperty(f.store.db,'exec',originalOwn);else delete f.store.db.exec;}};
 }
 test('WAL complete owns ONE IMMEDIATE acquisition and rereads every authority with timeout0 after child release',wal,async t=>{
  const f=await fixture(t),claimToken=claimForCompletion(f),before=settlementCounts(f),h=await f.hold({release:'attempt-file'}),watch=watchSettlement(f);
@@ -285,7 +286,7 @@ for(const mode of ['delete','wal-full-v1'])test('complete missing source refuses
  // no fabricated authorization, settlement or persistence implementation.
  f.store.getMessageById=()=>null;
  try{assert.equal((await f.service.completeWake({claimToken,reply:{text:'missing'}})).code,'room_message_not_found');}finally{f.store.getMessageById=original;}
- assert.deepEqual(settlementCounts(f),before);assert.equal(f.store.db.isTransaction,false);assert.equal(scalar(f.store.db,'busy_timeout'),0);
+ assert.deepEqual(settlementCounts(f),before);assertOutsideTransaction(f.store.db);assert.equal(scalar(f.store.db,'busy_timeout'),0);
 });
 test('DELETE complete preserves early conflict reads without acquiring a blocked write lock',async t=>{
  const f=await fixture(t,{mode:'delete'}),h=await f.hold(),watch=watchSettlement(f);
@@ -359,3 +360,4 @@ test('DELETE audited page keeps authority reads outside transaction and original
  const f=await fixture(t,{mode:'delete'}),claimToken=claimForCompletion(f),watch=watchSettlement(f);
  const page=f.service.listRoomMessagesPage(historyInput(f,claimToken));watch.restore();assert.equal(page.ok,true);assert.ok(watch.reads.length>0);assert.ok(watch.reads.every(r=>!r.transaction));assert.deepEqual(watch.begins,['BEGIN']);assert.equal(f.store.listRoomHistoryReadAudits(f.roomId).length,1);
 });
+

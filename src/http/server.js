@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {serveAdmissionControl,readAdmissionControlFailure} from '../room/admission-control.js';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { URL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
@@ -107,6 +108,19 @@ export function createServer({
           writeJson(res, 401, { error: 'room_authentication_required' });
           return;
         }
+        if (pathname === '/rooms/admission-control' || pathname.startsWith('/rooms/admission-control/')) {
+          if (!desktopAuthenticated) { writeJson(res,403,{code:'room_actor_forbidden'});return; }
+          const action=pathname.slice('/rooms/admission-control/'.length);
+          if(req.method!=='POST'||!['baseline','apply','read'].includes(action)){writeJson(res,404,{error:'not_found'});return;}
+          try {
+            const reply=serveAdmissionControl(roomService,action,await readJson(req,{maxBytes:INTENTS_MAX_BODY_BYTES}),roomDesktopToken);
+            writeJson(res,reply.body.ok?200:409,reply);
+          } catch(error) {
+            const code=readAdmissionControlFailure(error);if(code){writeJson(res,400,{error:code});return;}
+            throw error;
+          }
+          return;
+        }
         if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
           writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
           return;
@@ -183,6 +197,16 @@ export function createServer({
         const roomId = segments[1];
         const action = segments[2];
         let result;
+
+        // Reserve all longer message paths before the legacy action-only
+        // history/send branches. A suffix must never widen to full history.
+        if(roomId&&action==='messages'&&segments.length>3){
+          if(segments.length!==5||segments[4]!=='conversion-source'){writeJson(res,404,{error:'not_found'});return;}
+          if(!desktopAuthenticated){writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;}
+          if(req.method!=='GET'){writeJson(res,405,{ok:false,code:'method_not_allowed'});return;}
+          result=roomService.readRoomConversionSource({roomId,messageId:segments[3]},ctx);
+          writeJson(res,result.code==='room_source_identity_unavailable'?503:roomStatus(result),result);return;
+        }
 
         if (roomId && action === 'workspace' && roomService.workspace) {
           const commands = {
@@ -561,7 +585,14 @@ export function createServer({
 
   return {
     listen(port, host) {
-      return new Promise((resolve) => raw.listen(port, host, resolve));
+      return new Promise((resolve, reject) => {
+        const failed = error => { raw.removeListener('listening', ready); reject(error); };
+        const ready = () => { raw.removeListener('error', failed); resolve(); };
+        raw.once('error', failed);
+        raw.once('listening', ready);
+        try { raw.listen(port, host); }
+        catch (error) { raw.removeListener('error', failed); raw.removeListener('listening', ready); reject(error); }
+      });
     },
     close() {
       return new Promise((resolve, reject) => {

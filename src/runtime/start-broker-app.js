@@ -1,3 +1,4 @@
+import { readBrokerProtectedSQLiteResource } from '../store/protected-sqlite-resource.js';
 import { activityServiceIdentity } from './activity-service-identity.js';
 import { mkdirSync, unlinkSync, existsSync } from 'node:fs';
 import net from 'node:net';
@@ -43,7 +44,19 @@ function asBrokerParticipantRegistration(config) {
   };
 }
 
-export async function startBrokerApp({
+const defineOwned = Object.defineProperty;
+const callInventory = Symbol('original-broker-app-calls');
+function exposeOriginalCalls(promise, calls) {
+  defineOwned(promise, callInventory, { value: calls });
+  return promise;
+}
+// Expose the original SDK raw calls to the existing outer custody, without a
+// second walker/owner/provider. Append-only own slots cannot be erased by users.
+export function startBrokerApp(options) {
+  const calls = [];
+  return exposeOriginalCalls(startOwnedBrokerApp(options, calls), calls);
+}
+async function startOwnedBrokerApp({
   cwd = process.cwd(),
   env = process.env,
   logger = console,
@@ -58,25 +71,62 @@ export async function startBrokerApp({
     env.INTENT_BROKER_PERSISTED_SESSION_REFRESH_INTERVAL_MS || 5000
   ),
   socketPath = resolveDefaultSocketPath({ env })
-} = {}) {
+} = {}, originalCalls) {
+  const record = raw => {
+    if (raw !== undefined) defineOwned(originalCalls, String(originalCalls.length), { value: raw, enumerable: true });
+    return raw;
+  };
+  let broker, server, socketServer, channels, codexResumeDiscovery, relay;
+  let persistedSessionRefreshTimer, closeState;
+  // This remains the original app's one resource owner, including partial birth.
+  function closeAll() {
+    if (closeState) return closeState.promise;
+    let accept, reject;
+    const promise = new Promise((yes, no) => { accept = yes; reject = no; });
+    exposeOriginalCalls(promise, originalCalls);
+    closeState = { promise }; // Publish before any negative SDK may reenter.
+    const close = async () => {
+      const failures = [];
+      const attempt = async work => { try { await record(work()); } catch (raw) { record(raw); failures.push(raw); } };
+      if (persistedSessionRefreshTimer) {
+        await attempt(() => clearInterval(persistedSessionRefreshTimer));
+        persistedSessionRefreshTimer = null;
+      }
+      if (relay) await attempt(() => relay.stop());
+      if (codexResumeDiscovery) await attempt(() => codexResumeDiscovery.stop?.());
+      if (channels) await attempt(() => channels.stopAll());
+      if (broker) await attempt(() => broker.close?.());
+      if (socketServer) {
+        await attempt(() => new Promise((yes, no) => socketServer.close(raw => raw ? no(raw) : yes())));
+        await attempt(() => { if (socketPath && existsSync(socketPath)) unlinkSync(socketPath); });
+      }
+      if (server) await attempt(() => server.close());
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, 'broker_app_close_failed', { cause: failures[0] });
+    };
+    close().then(accept, reject);
+    return promise;
+  }
+  try {
   const repoRoot = env.INTENT_BROKER_REPO_ROOT || MODULE_CODE_ROOT;
   const config = loadConfig({ cwd, env });
   const dbPath = resolve(cwd, config.server.dbPath);
 
-  mkdirSync(dirname(dbPath), { recursive: true });
+  // Managed diagnostic paths never select or create files for the Native DB.
+  if (!readBrokerProtectedSQLiteResource()?.namespace) mkdirSync(dirname(dbPath), { recursive: true });
 
   if (env.INTENT_BROKER_SKIP_BRIDGE_SYNC !== '1') {
-  await syncAgentBridges({
+  await record(syncAgentBridges({
     repoRoot,
     cwd,
     logger
-  });
-  }
+  }));
 
-  const enableEscalation = process.env.ENABLE_HUMAN_ESCALATION !== '0';
-  const broker = createBroker({ dbPath, ...(config.server.storageMode !== undefined ? { storageMode: config.server.storageMode } : {}), onTaskUnacked: enableEscalation ? createHumanEscalation() : null });
+  }
+  const enableEscalation = env.ENABLE_HUMAN_ESCALATION !== '0';
+  broker = createBroker({ dbPath, ...(config.server.storageMode !== undefined ? { storageMode: config.server.storageMode } : {}), onTaskUnacked: enableEscalation ? createHumanEscalation() : null });
   const channelHealth = createChannelHealthRegistry();
-  const server = createHttpServer({
+  server = createHttpServer({
     broker,
     roomService: broker.room,
     roomDesktopToken: env.INTENT_BROKER_DESKTOP_TOKEN,
@@ -95,10 +145,9 @@ export async function startBrokerApp({
     }
   });
 
-  await server.listen(config.server.port, config.server.host);
+  await record(server.listen(config.server.port, config.server.host));
   broker.attachWebSocket(server.raw());
 
-  let socketServer = null;
   if (socketPath) {
     mkdirSync(dirname(socketPath), { recursive: true });
     if (existsSync(socketPath)) {
@@ -107,7 +156,13 @@ export async function startBrokerApp({
     socketServer = net.createServer((conn) => {
       server.raw().emit('connection', conn);
     });
-    await new Promise((res) => socketServer.listen(socketPath, res));
+    await new Promise((yes, no) => {
+      const failed = raw => { socketServer.removeListener('listening', ready); no(raw); };
+      const ready = () => { socketServer.removeListener('error', failed); yes(); };
+      socketServer.once('error', failed);
+      socketServer.once('listening', ready);
+      socketServer.listen(socketPath);
+    });
   }
 
   const brokerUrl = `http://${config.server.host}:${server.address().port}`;
@@ -120,12 +175,12 @@ export async function startBrokerApp({
     logger: refreshLogger,
     registerParticipant: registerParticipantLocally
   });
-  await refreshSessions();
-  const channels = createChannelsRuntime({
+  await record(refreshSessions());
+  channels = createChannelsRuntime({
     brokerUrl,
     channels: config.channels
   });
-  const codexResumeDiscovery = createCodexResumeDiscoveryRuntime({
+  codexResumeDiscovery = createCodexResumeDiscoveryRuntime({
     brokerUrl,
     repoRoot,
     fallbackCwd: cwd,
@@ -133,17 +188,8 @@ export async function startBrokerApp({
     logger
   });
 
-  let relay = null;
-
-  try {
-    await channels.startAll();
-    await codexResumeDiscovery.start();
-  } catch (error) {
-    await codexResumeDiscovery.stop?.();
-    await server.close();
-    broker.close?.();
-    throw error;
-  }
+  await record(channels.startAll());
+  await record(codexResumeDiscovery.start());
 
   if (config.relay?.enabled && config.relay?.url && config.relay?.roomSecret) {
     const brokerId = config.relay.brokerId || randomUUID();
@@ -153,13 +199,13 @@ export async function startBrokerApp({
       brokerId,
       logger,
     });
-    relay.start().catch((err) => {
+    record(record(relay.start()).catch((err) => {
       logger.warn?.(`[relay-adapter] start failed: ${err.message}`);
-    });
+    }));
     logger.log(`intent-broker relay: connecting to ${config.relay.url}`);
   }
 
-  const persistedSessionRefreshTimer = persistedSessionRefreshIntervalMs > 0
+  persistedSessionRefreshTimer = persistedSessionRefreshIntervalMs > 0
     ? setInterval(() => {
       void refreshSessions({ warn: logger?.warn?.bind?.(logger) }).catch((error) => {
         logger?.warn?.(
@@ -189,21 +235,11 @@ export async function startBrokerApp({
     server,
     channels,
     config,
-    async close() {
-      if (persistedSessionRefreshTimer) {
-        clearInterval(persistedSessionRefreshTimer);
-      }
-      await relay?.stop();
-      await codexResumeDiscovery.stop?.();
-      await channels.stopAll();
-      broker.close?.();
-      if (socketServer) {
-        await new Promise((res) => socketServer.close(res));
-        if (socketPath && existsSync(socketPath)) {
-          unlinkSync(socketPath);
-        }
-      }
-      await server.close();
-    }
+    close: closeAll
   };
+  } catch (raw) {
+    try { await closeAll(); }
+    catch (cleanup) { throw new AggregateError([raw, cleanup], 'broker_app_startup_cleanup_failed', { cause: raw }); }
+    throw raw;
+  }
 }

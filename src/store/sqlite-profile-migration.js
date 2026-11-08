@@ -1,4 +1,5 @@
-import { DatabaseSync, backup } from 'node:sqlite';
+import * as sqliteSdk from 'node:sqlite';
+const {DatabaseSync,backup}=sqliteSdk;
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, fstatSync, rmdirSync, unlinkSync, writeSync } from 'node:fs';
 import { join, dirname } from 'node:path';

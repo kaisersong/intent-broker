@@ -6,7 +6,7 @@ import { isSupportedWalRuntime } from '../../src/store/sqlite-profile.js';
 import { createTempDbPath } from '../fixtures/temp-dir.js';
 
 function fixture(t) {
-  const store=createRoomStore({dbPath:createTempDbPath()});store.migrate();t.after(()=>store.close());
+  const store=createRoomStore({dbPath:createTempDbPath()});store.migrate();const originalOwnPrepare=Object.getOwnPropertyDescriptor(store.db,'prepare');t.after(()=>{if(originalOwnPrepare)Object.defineProperty(store.db,'prepare',originalOwnPrepare);else delete store.db.prepare;store.close();});
   const insert=store.db.prepare(`INSERT INTO room_messages (room_message_id,room_id,thread_id,sender_json,kind,text,context_scope_json,mentions_json,response_policy,idempotency_key,room_sequence,discussion_epoch,created_at) VALUES (?,?,'main','{"kind":"user","userId":"u"}','text',?,?,'[]','none',?,?,1,'2026-10-30T00:00:00Z')`);
   for(let n=1;n<=100;n++)insert.run('m'+n,'r','body'+n,JSON.stringify(n%10===0?{kind:'project',projectId:'p'}:{kind:'room_only'}),'i'+n,n);
   return store;

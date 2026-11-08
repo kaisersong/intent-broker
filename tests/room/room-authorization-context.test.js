@@ -12,7 +12,8 @@ const system = { sessionId: 'halo-system', requestSource: 'system', actor: { kin
 function fixture(t) {
   const store = createRoomStore({ dbPath: createTempDbPath() });
   store.migrate();
-  t.after(() => store.close());
+  const originalOwnPrepare=Object.getOwnPropertyDescriptor(store.db,'prepare');
+  t.after(() => {if(originalOwnPrepare)Object.defineProperty(store.db,'prepare',originalOwnPrepare);else delete store.db.prepare;store.close();});
   const service = createRoomService({ store });
   const room = service.createRoom({ title: 'PRIVATE_TITLE', memberAgentIds: ['agent-a'], clientRequestKey: 'halo-room' }, user()).room;
   const other = service.createRoom({ title: 'other', memberAgentIds: ['agent-a'], clientRequestKey: 'halo-other' }, user()).room;

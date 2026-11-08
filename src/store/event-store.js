@@ -1,4 +1,4 @@
-import { openBrokerDatabase } from './sqlite-profile.js';
+import {openBrokerEventDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,usesManagedBrokerDatabase,runBrokerDatabaseTransaction} from './database-lifecycle.js';
 import { initializeSchema } from './schema.js';
 
 function canonicalJson(value) {
@@ -81,9 +81,19 @@ function serializeContextSyncValue(key, value) {
 }
 
 export function createEventStore({ dbPath, storageMode }) {
-  const db = openBrokerDatabase(dbPath, { storageMode });
-  try { initializeSchema(db); }
-  catch (error) { db.close(); throw error; }
+  const lifecycle=openBrokerEventDatabase(dbPath,{storageMode}),db=getBrokerDatabase(lifecycle);
+  try{initializeSchema(db);completeBrokerDatabaseInitialization(lifecycle);}catch(raw){failBrokerDatabaseInitialization(lifecycle,raw);}
+
+  function withEventTransaction(action) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'event',action);
+    db.exec('BEGIN IMMEDIATE');
+    try {const result=action();db.exec('COMMIT');return result;}
+    catch(error){
+      retainBrokerDatabaseFailure(owner,error);
+      try{db.exec('ROLLBACK');}catch(cleanup){retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error,cleanup],'event_transaction_rollback_failed',{cause:error});}
+      throw error;
+    }
+  }
 
   function getEventById(eventId) {
     const row = db.prepare(`
@@ -103,16 +113,15 @@ export function createEventStore({ dbPath, storageMode }) {
     return row ? mapEventRow(row) : null;
   }
 
-  return {
-    close() { if (db.isOpen) db.close(); },
+  const owner={
+    close(){closeBrokerDatabase(lifecycle);},
     appendIntent({ intentId, kind, fromParticipantId, taskId, threadId, payload, recipients }) {
       const targets = [...new Set(recipients)].sort();
       if (targets.some(id => typeof id !== 'string' || !id)) throw new Error('invalid_intent_recipient');
       const content = canonicalJson({ kind, fromParticipantId, taskId: taskId ?? null,
         threadId: threadId ?? null, payload: payload ?? {} });
       const targetJson = JSON.stringify(targets);
-      db.exec('BEGIN IMMEDIATE');
-      try {
+      return withEventTransaction(() => {
         let event = getEventByIntentId(intentId);
         const duplicate = Boolean(event);
         if (event) {
@@ -128,12 +137,8 @@ export function createEventStore({ dbPath, storageMode }) {
           event = getEventById(eventId);
         }
         for (const id of targets) db.prepare('INSERT OR IGNORE INTO inbox_entries(participant_id,event_id) VALUES(?,?)').run(id, event.eventId);
-        db.exec('COMMIT');
         return duplicate ? { ...event, duplicate: true } : event;
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw error;
-      }
+      });
     },
     readInbox(participantId, { after = 0, limit = 50 } = {}) {
       const items = db.prepare(`
@@ -150,8 +155,7 @@ export function createEventStore({ dbPath, storageMode }) {
     },
     ackInbox(participantId, eventId) {
       if (!Number.isSafeInteger(eventId) || eventId < 0) throw new Error('invalid_inbox_cursor');
-      db.exec('BEGIN IMMEDIATE');
-      try {
+      return withEventTransaction(() => {
         const current = db.prepare('SELECT cursor_event_id FROM participant_cursors WHERE participant_id=?').get(participantId)?.cursor_event_id ?? 0;
         if (eventId > current && !db.prepare('SELECT 1 FROM inbox_entries WHERE participant_id=? AND event_id=? AND discarded_at IS NULL').get(participantId, eventId)) {
           throw new Error('inbox_event_not_owned');
@@ -160,12 +164,8 @@ export function createEventStore({ dbPath, storageMode }) {
         db.prepare(`INSERT INTO participant_cursors(participant_id,cursor_event_id) VALUES(?,?)
           ON CONFLICT(participant_id) DO UPDATE SET cursor_event_id=MAX(cursor_event_id,excluded.cursor_event_id), updated_at=CURRENT_TIMESTAMP`).run(participantId, next);
         db.prepare(`UPDATE inbox_entries SET delivery_status='acked',acked_at=CURRENT_TIMESTAMP WHERE participant_id=? AND event_id<=?`).run(participantId, next);
-        db.exec('COMMIT');
         return { participantId, eventId: next };
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw error;
-      }
+      });
     },
     discardInbox(participantId) {
       db.prepare(`
@@ -440,4 +440,5 @@ export function createEventStore({ dbPath, storageMode }) {
       return this.getContextSync(syncId);
     }
   };
+  bindBrokerDatabaseOwner(lifecycle,owner);return owner;
 }
