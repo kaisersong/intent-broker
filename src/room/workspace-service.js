@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { verifyTrustedActorContext } from './trusted-context.js';
+import {conversationState} from './conversation-state.js';
 
 export const WORKSPACE_PROTOCOL = 'room_workspace_v1';
 export function canonicalWorkspaceJSON(value) {
@@ -132,6 +133,7 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
   };
   const finishSourceMutation=mutation=>{if(mutation.mutationId)store.db.prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutation.mutationId);};
   const api = {
+    ...conversationState({store,room,member,get,put,action,time,reject,hash:value=>workspaceDigest('conversation-input',value)}),
     // Internal host API only until authenticated participant/egress transport is
     // installed. These durable held facts are not an OS fence or signed receipt.
     prepareRoomDisclosureMutation: action((input,ctx)=>{

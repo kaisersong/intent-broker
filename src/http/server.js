@@ -111,7 +111,7 @@ export function createServer({
           return;
         }
         if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
-          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
+          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','conversation-context','execution-claims','commit-tickets','physical-release','read-grants']});
           return;
         }
 
@@ -213,6 +213,7 @@ export function createServer({
 
         if (roomId && action === 'workspace' && roomService.workspace) {
           const commands = {
+            'conversation':'updateConversationData','agent-conversation':'updateConversationData',
             'register-host':'registerHost', 'begin-change':'beginChange',
             'commit-binding':'commitBinding', 'activate-binding':'activateBinding',
             'activation-failed':'activationFailed', 'cancel-change':'cancelChange',
@@ -244,16 +245,19 @@ export function createServer({
             workspaceCtx.hostPrincipal=roomHostPrincipal??createHash('sha256').update('room-host-installation\n'+roomDesktopToken).digest('hex');
             workspaceCtx.hostIncarnation=Number(req.headers['x-intent-broker-host-incarnation']);
           }
-          if(req.method==='GET'&&!command){
+          if(req.method==='GET'&&['conversation','message','search'].includes(command)){
+            const methods={conversation:'getConversationData',message:'getConversationMessage',search:'searchConversation'};result=roomService.workspace[methods[command]]({roomId,messageId:requestUrl.searchParams.get('messageId'),query:requestUrl.searchParams.get('query'),before:requestUrl.searchParams.has('before')?Number(requestUrl.searchParams.get('before')):undefined},workspaceCtx);
+          }else if(req.method==='GET'&&!command){
             result=roomService.workspace.getState({roomId,instructionsRevision:requestUrl.searchParams.has('instructionsRevision')?Number(requestUrl.searchParams.get('instructionsRevision')):undefined},workspaceCtx);
           }else if(req.method==='POST'&&Object.hasOwn(commands,command)){
             const body=await readJson(req,{maxBytes:1024*1024});
-            if(['acquire','ack','agent-ticket','agent-authorize-read','claim-wake'].includes(command)){
+            if(['acquire','ack','agent-ticket','agent-authorize-read','claim-wake','agent-conversation'].includes(command)){
               if(typeof body.logicalAgentId!=='string'||!body.logicalAgentId.trim()){writeJson(res,400,{ok:false,code:'room_actor_identity_mismatch'});return;}
               // Only the credential-bearing main dispatcher can select an agent;
               // service verifies active membership and ownership of every claim.
               workspaceCtx.requestSource='agent';workspaceCtx.actor={kind:'agent',logicalAgentId:body.logicalAgentId};workspaceCtx.allowedLogicalAgentIds=[body.logicalAgentId];
             }
+            if(command==='agent-conversation'){if(!broker?.aimp||!body.admission){writeJson(res,403,{ok:false,code:'aimp_session_required'});return;}const check=broker.aimp.checkExecution({...body.admission,roomId},workspaceCtx);if(!check.ok){writeJson(res,roomStatus(check),check);return;}delete body.admission;}
             result=roomService.workspace[commands[command]]({...body,roomId},workspaceCtx);
           }else{writeJson(res,404,{error:'not_found'});return;}
           writeJson(res,roomStatus(result),result);return;

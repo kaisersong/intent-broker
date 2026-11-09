@@ -1,0 +1,35 @@
+/** Conversation data lives with the Room owner. It is context, never execution authority. */
+export function conversationState({store,room,member,get,put,action,time,reject,hash}){
+ const rows=(kind,roomId,limit=100)=>store.db.prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND room_id=? ORDER BY rowid DESC LIMIT ?').all(kind,roomId,limit).map(r=>JSON.parse(r.value_json));
+ const library=roomId=>store.db.prepare("SELECT value_json FROM room_workspace_records WHERE kind='conversation-library' AND room_id=? AND json_extract(value_json,'$.removed')=0 ORDER BY rowid DESC LIMIT 101").all(roomId).map(r=>JSON.parse(r.value_json));
+ const shared=roomId=>get('conversation-shared',roomId)??{roomId,revision:0,text:'',sourceMessageIds:[]};
+ const message=(roomId,id)=>{const m=store.getMessageById(id);if(!m||m.roomId!==roomId||m.contextScope?.kind!=='room_only')reject('room_scope_mismatch');return m;};
+ const cleanText=(v,max=8192)=>{if(typeof v!=='string'||v.length>max||v.includes('\0'))reject('conversation_input_invalid');return v;};
+ const identity=v=>{if(typeof v!=='string'||!/^[A-Za-z0-9_.:-]{1,256}$/.test(v))reject('conversation_input_invalid');return v;};
+ return {
+  getConversationData:action((input,ctx)=>{room(input.roomId,false);member(input.roomId,ctx);return {shared:shared(input.roomId),history:rows('conversation-shared-version',input.roomId,30),messageState:store.db.prepare("SELECT value_json FROM room_workspace_records WHERE kind='conversation-message' AND room_id=? AND (json_extract(value_json,'$.pinned')=1 OR json_array_length(json_extract(value_json,'$.reactions'))>0) ORDER BY json_extract(value_json,'$.updatedAt') DESC LIMIT 500").all(input.roomId).map(r=>JSON.parse(r.value_json)),library:library(input.roomId)};}),
+  getConversationMessage:action((input,ctx)=>{room(input.roomId,false);member(input.roomId,ctx);return {message:message(input.roomId,input.messageId)};}),
+  searchConversation:action((input,ctx)=>{room(input.roomId,false);member(input.roomId,ctx);const q=cleanText(input.query,256).trim();if(!q)return {messages:[],hasMore:false};const before=Number.isSafeInteger(input.before)&&input.before>0?input.before:Number.MAX_SAFE_INTEGER;const found=store.db.prepare("SELECT room_message_id FROM room_messages WHERE room_id=? AND room_sequence<? AND kind='text' AND json_extract(context_scope_json,'$.kind')='room_only' AND instr(lower(text),lower(?))>0 ORDER BY room_sequence DESC LIMIT 51").all(input.roomId,before,q);return {messages:found.slice(0,50).map(r=>store.getMessageById(r.room_message_id)),hasMore:found.length>50};}),
+  updateConversationData:action((input,ctx)=>{
+   room(input.roomId);member(input.roomId,ctx);const allowed=['roomId','operation','requestId','expectedRevision','text','sourceMessageIds','messageId','value','emoji','file','fileId','logicalAgentId'];if(Object.keys(input).some(k=>!allowed.includes(k)))reject('conversation_input_invalid');identity(input.requestId);
+   if(ctx.requestSource==='agent'&&input.operation!=='shared.replace')reject('room_actor_forbidden');if(!['user','agent'].includes(ctx.requestSource))reject('room_actor_forbidden');
+   const payload={...input};delete payload.logicalAgentId;const digest=hash({actor:ctx.actor,input:payload}),receiptKey=input.roomId+':'+input.requestId,prior=get('conversation-receipt',receiptKey);
+   if(prior){if(prior.digest!==digest)reject('conversation_idempotency_conflict');return {...prior.result,reused:true};}
+   let result;
+   if(input.operation==='shared.replace'){
+    const text=cleanText(input.text),current=shared(input.roomId);if(input.expectedRevision!==current.revision)reject('conversation_revision_conflict');
+    const ids=input.sourceMessageIds??[];if(!Array.isArray(ids)||ids.length>20||ids.some(id=>typeof id!=='string')||(ctx.requestSource==='agent'&&!ids.length))reject('conversation_input_invalid');ids.forEach(id=>message(input.roomId,id));
+    const next={roomId:input.roomId,text,revision:current.revision+1,sourceMessageIds:ids,updatedBy:ctx.actor,updatedAt:time(),requestId:input.requestId};put('conversation-shared-version',input.roomId+':'+next.revision,input.roomId,next);put('conversation-shared',input.roomId,input.roomId,next);result={shared:next};
+   }else if(input.operation==='message.pin'||input.operation==='message.react'){
+    message(input.roomId,input.messageId);const key=input.roomId+':'+input.messageId+':'+ctx.actor.userId,current=get('conversation-message',key)??{roomId:input.roomId,messageId:input.messageId,actor:ctx.actor,pinned:false,reactions:[]};if(typeof input.value!=='boolean')reject('conversation_input_invalid');
+    if(input.operation==='message.pin')current.pinned=input.value;else {const emoji=cleanText(input.emoji,16);if(!['👍','❤️','✅','🎉','👀','🤔'].includes(emoji))reject('conversation_input_invalid');current.reactions=input.value?[...new Set([...current.reactions,emoji])]:current.reactions.filter(e=>e!==emoji);}
+    if((current.pinned||current.reactions.length)&&!get('conversation-message',key)?.pinned&&!get('conversation-message',key)?.reactions?.length){const count=store.db.prepare("SELECT count(*) AS n FROM room_workspace_records WHERE kind='conversation-message' AND room_id=? AND (json_extract(value_json,'$.pinned')=1 OR json_array_length(json_extract(value_json,'$.reactions'))>0)").get(input.roomId).n;if(count>=500)reject('conversation_message_state_limit');}current.updatedAt=time();put('conversation-message',key,input.roomId,current);result={messageState:current};
+   }else if(input.operation==='library.register'){
+    member(input.roomId,ctx,true);const f=input.file;if(!f||Object.keys(f).some(k=>!['fileId','name','bytes','sha256','hostId','extension'].includes(k))||!/^[a-f0-9]{64}$/.test(f.fileId??'')||!/^[a-f0-9]{64}$/.test(f.sha256??'')||!Number.isSafeInteger(f.bytes)||f.bytes<0||f.bytes>64*1024*1024)reject('conversation_input_invalid');cleanText(f.name,256);identity(f.hostId);if(typeof f.extension!=='string'||!/^[a-z0-9]{1,12}$/.test(f.extension))reject('conversation_input_invalid');const previous=get('conversation-library',input.roomId+':'+f.fileId);if(previous&&!previous.removed){if(previous.sha256!==f.sha256||previous.name!==f.name||previous.hostId!==f.hostId)reject('conversation_idempotency_conflict');result={file:previous,reused:true};}else{if(library(input.roomId).length>=100)reject('conversation_library_limit');const entry={...f,createdBy:ctx.actor,createdAt:time(),removed:false};put('conversation-library',input.roomId+':'+f.fileId,input.roomId,entry);result={file:entry};}
+   }else if(input.operation==='library.remove'){
+    member(input.roomId,ctx,true);if(!/^[a-f0-9]{64}$/.test(input.fileId??''))reject('conversation_input_invalid');const key=input.roomId+':'+input.fileId,f=get('conversation-library',key);if(!f)reject('conversation_file_not_found');put('conversation-library',key,input.roomId,{...f,removed:true,removedAt:time()});result={fileId:f.fileId,removed:true};
+   }else reject('conversation_input_invalid');
+   put('conversation-receipt',receiptKey,input.roomId,{digest,result,at:time()});return result;
+  }),
+ };
+}
