@@ -635,6 +635,10 @@ export function createRoomService({
       return fail('room_actor_identity_mismatch');
     }
 
+    // Bind disclosure to the exact membership/title revision checked by the caller.
+    // Synchronous owner mutation: no membership edit can interleave before INSERT.
+    if(input.expectedRoomRevision!==undefined&&(!Number.isSafeInteger(input.expectedRoomRevision)||input.expectedRoomRevision!==room.revision))return fail('room_revision_conflict');
+
     const existing = store.getMessageByIdempotency(room.roomId, idempotencyKey);
     if (existing) {
       // backfill any obligation lost to a torn write (INSERT OR IGNORE)

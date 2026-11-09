@@ -111,7 +111,7 @@ export function createServer({
           return;
         }
         if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
-          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
+          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['message-revision-cas','workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
           return;
         }
 

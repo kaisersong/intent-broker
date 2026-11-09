@@ -248,7 +248,7 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
   chat(input,ctx){
    const allowed=checkExecution(input,ctx);if(!allowed.ok)return allowed;
    if(typeof input.text!=='string'||!input.text.trim()||input.text.length>32768)return failed('aimp_input_invalid');
-   return roomService.sendRoomMessage({roomId:input.roomId,threadId:allowed.task.threadId,kind:'text',text:input.text,idempotencyKey:'aimp-reply:'+input.taskRef,
+   return roomService.sendRoomMessage({roomId:input.roomId,expectedRoomRevision:input.expectedRoomRevision,threadId:allowed.task.threadId,kind:'text',text:input.text,idempotencyKey:'aimp-reply:'+input.taskRef,
     responsePolicy:'none',contextScope:{kind:'room_only'},sourceRef:{kind:'aimp_reply',taskRef:input.taskRef,model:input.model??'unknown',usage:input.usage??null}},ctx);
   },
   verifyDelivery(input,ctx){
