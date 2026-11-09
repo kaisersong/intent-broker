@@ -200,7 +200,7 @@ export function createServer({
             if(['actor','requestSource','from','source_level','sig','sequencing'].some(key=>Object.hasOwn(input,key))){writeJson(res,403,{ok:false,code:'aimp_identity_payload_forbidden'});return;}
             let actor=ctx;
             if(['agent-event','begin-execution','execution-check','effect','heartbeat','chat'].includes(operation)){
-              if(!Number.isSafeInteger(input.expectedRoomRevision)||typeof input.logicalAgentId!=='string'||!input.logicalAgentId.trim()){writeJson(res,403,{ok:false,code:'room_actor_identity_mismatch'});return;}
+              if(typeof input.logicalAgentId!=='string'||!input.logicalAgentId.trim()){writeJson(res,403,{ok:false,code:'room_actor_identity_mismatch'});return;}
               actor={...ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:input.logicalAgentId},allowedLogicalAgentIds:[input.logicalAgentId]};
               delete input.logicalAgentId;
             }
