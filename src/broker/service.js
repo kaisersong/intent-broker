@@ -104,6 +104,7 @@ export function createBrokerService({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
   });
   let awayMode = false;
+  let closing = false;
 
   function parseEventTime(createdAt) {
     return new Date(createdAt + 'Z').getTime();
@@ -734,6 +735,8 @@ export function createBrokerService({
   }
 
   function setPresence(participantId, status, metadata = {}) {
+    // WebSocket close callbacks can arrive after transport shutdown.
+    if (closing) return presence.peekPresence(participantId);
     const previousEffectiveStatus = presence.getPresence(participantId)?.status ?? 'offline';
     const previousStoredStatus = presence.peekPresence(participantId)?.status ?? 'offline';
     const previousStatus = status === 'offline' ? previousStoredStatus : previousEffectiveStatus;
@@ -1197,6 +1200,8 @@ export function createBrokerService({
       }).map((approval) => buildApprovalListItem(approval, approvalEvents.get(approval.approvalId)));
     },
     close() {
+      if (closing) return;
+      closing = true;
       if (presenceSweepTimer) {
         clearInterval(presenceSweepTimer);
       }
