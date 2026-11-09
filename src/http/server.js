@@ -2,6 +2,7 @@ import http from 'node:http';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { URL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
+import {parseAimpJson} from '../aimp/json.js';
 
 export const INTENTS_MAX_BODY_BYTES = 16 * 1024;
 
@@ -17,12 +18,13 @@ function httpError(statusCode, code) {
   return error;
 }
 
-function readJson(req, { maxBytes = Infinity } = {}) {
+function readJson(req, { maxBytes = Infinity, strict = false } = {}) {
   return new Promise((resolve, reject) => {
     let raw = '';
     let bytes = 0;
     let rejected = false;
     const decoder = new StringDecoder('utf8');
+    const chunks=[];
 
     req.on('data', (chunk) => {
       bytes += chunk.length;
@@ -33,20 +35,21 @@ function readJson(req, { maxBytes = Infinity } = {}) {
         }
         return;
       }
-      raw += decoder.write(chunk);
+      if(strict)chunks.push(chunk);else raw += decoder.write(chunk);
     });
     req.on('end', () => {
       if (rejected) {
         return;
       }
-      raw += decoder.end();
+      if(!strict)raw += decoder.end();
+      else {try{raw=new TextDecoder('utf8',{fatal:true}).decode(Buffer.concat(chunks));}catch{reject(httpError(400,'invalid_utf8'));return;}}
       if (!raw) {
         resolve({});
         return;
       }
 
       try {
-        resolve(JSON.parse(raw));
+        resolve(strict?parseAimpJson(raw):JSON.parse(raw));
       } catch (error) {
         reject(error);
       }
@@ -184,6 +187,30 @@ export function createServer({
         const action = segments[2];
         let result;
 
+        if (roomId && action === 'aimp') {
+          if (!desktopAuthenticated || !broker?.aimp) { writeJson(res,503,{ok:false,code:'aimp_unavailable'}); return; }
+          const operation=segments[3];
+          if(req.method==='GET') {
+            if(operation==='session')result=broker.aimp.getSession(roomId,ctx);
+            else if(operation==='tasks')result=broker.aimp.listTasks(roomId,ctx);
+            else if(operation==='status')result=broker.aimp.status();
+            else {writeJson(res,404,{ok:false,code:'not_found'});return;}
+          }else if(req.method==='POST') {
+            const input=await readJson(req,{maxBytes:256*1024,strict:true});
+            if(['actor','requestSource','from','source_level','sig','sequencing'].some(key=>Object.hasOwn(input,key))){writeJson(res,403,{ok:false,code:'aimp_identity_payload_forbidden'});return;}
+            let actor=ctx;
+            if(['agent-event','begin-execution','execution-check','effect','heartbeat','chat'].includes(operation)){
+              if(typeof input.logicalAgentId!=='string'||!input.logicalAgentId.trim()){writeJson(res,403,{ok:false,code:'room_actor_identity_mismatch'});return;}
+              actor={...ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:input.logicalAgentId},allowedLogicalAgentIds:[input.logicalAgentId]};
+              delete input.logicalAgentId;
+            }
+            const commands={configure:'configure',event:'submit','agent-event':'submit','begin-execution':'beginExecution','execution-check':'checkExecution',effect:'effect',heartbeat:'heartbeat',chat:'chat','verify-delivery':'verifyDelivery'};
+            if(!Object.hasOwn(commands,operation)){writeJson(res,404,{ok:false,code:'not_found'});return;}
+            result=broker.aimp[commands[operation]]({...input,roomId},actor);
+          }else{writeJson(res,404,{ok:false,code:'not_found'});return;}
+          writeJson(res,roomStatus(result),result);return;
+        }
+
         if (roomId && action === 'workspace' && roomService.workspace) {
           const commands = {
             'register-host':'registerHost', 'begin-change':'beginChange',
@@ -247,6 +274,9 @@ export function createServer({
           writeJson(res, roomStatus(result), result);
           return;
         }
+        if (req.method === 'GET' && roomId && action === 'membership') {
+          result=roomService.getRoomMembership({roomId},ctx);writeJson(res,roomStatus(result),result);return;
+        }
         if (req.method === 'POST' && roomId && action === 'scheduled-wakes') {
           if(!desktopAuthenticated){writeJson(res,403,{code:'room_actor_forbidden'});return;}
           result=roomService.sendScheduledRoomWake({...await readJson(req),roomId},ctx);
@@ -266,6 +296,7 @@ export function createServer({
           const limitRaw = requestUrl.searchParams.get('limit');
           result = roomService.listRoomMessages({
             roomId,
+            direction:requestUrl.searchParams.get('direction')??'forward',
             ...(afterSequenceRaw !== null ? { afterSequence: Number(afterSequenceRaw) } : {}),
             ...(beforeSequenceRaw !== null ? { beforeSequence: Number(beforeSequenceRaw) } : {}),
             ...(limitRaw !== null ? { limit: Number(limitRaw) } : {}),

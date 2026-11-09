@@ -6,6 +6,7 @@ import { createWebSocketNotifier } from './websocket.js';
 import { isReservedRoomIntent, ROOM_INTENT_REJECTION_CODE } from '../room/reserved-namespace.js';
 import { createRoomStore } from '../room/store.js';
 import { createRoomService } from '../room/service.js';
+import { createAimpService } from '../aimp/service.js';
 
 const KNOWN_RECIPIENT_MODES = new Set(['participant', 'role', 'capability', 'broadcast']);
 
@@ -83,7 +84,8 @@ export function createBrokerService({
   websocketHeartbeatIntervalMs = 30000,
   presenceNow = Date.now,
   offlineContextSyncEmitter = null,
-  onTaskUnacked = null
+  onTaskUnacked = null,
+  aimpEnabled = false,
 }) {
   const participants = new Map();
   const aliases = new Map();
@@ -96,6 +98,7 @@ export function createBrokerService({
   const roomStore = createRoomStore({ dbPath });
   roomStore.migrate();
   const room = createRoomService({ store: roomStore });
+  const aimp = aimpEnabled ? createAimpService({ dbPath, roomService: room }) : null;
   const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs, now: presenceNow });
   const wsNotifier = createWebSocketNotifier({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
@@ -797,7 +800,7 @@ export function createBrokerService({
   }
 
   const presenceSweepTimer = presenceSweepIntervalMs > 0
-    ? setInterval(sweepStalePresence, presenceSweepIntervalMs)
+    ? setInterval(() => { sweepStalePresence(); try { aimp?.sweep(); aimp?.publish(); } catch { console.warn('aimp_maintenance_failed'); } }, presenceSweepIntervalMs)
     : null;
   presenceSweepTimer?.unref?.();
 
@@ -840,6 +843,7 @@ export function createBrokerService({
 
   return {
     room,
+    aimp,
     registerParticipant(participant) {
       const isFromRelay = participant.metadata?.fromRelay === true;
       const existing = participants.get(participant.participantId);
@@ -1203,6 +1207,7 @@ export function createBrokerService({
       }
       watchdogTimers.clear();
       wsNotifier.close();
+      aimp?.close();
       room.close();
     }
   };

@@ -693,7 +693,7 @@ export function createRoomService({
    * design §6.2：向后兼容扩展。afterSequence/beforeSequence/limit 是可选的
    * bounded query 参数；旧调用（仅 { roomId }）保持全量物化语义。
    */
-  function listRoomMessages({ roomId, afterSequence, beforeSequence, limit } = {}, ctx = null) {
+  function listRoomMessages({ roomId, afterSequence, beforeSequence, limit, direction = 'forward' } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
 
@@ -708,7 +708,8 @@ export function createRoomService({
       return { ok: true, messages: store.listMessages(roomId) };
     }
 
-    const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit });
+    if(!['forward','backward'].includes(direction))return fail('room_history_direction_invalid');
+    const messages = store.listMessages(roomId, { afterSequence, beforeSequence, limit, direction });
     const bounds = store.getRoomSequenceBounds(roomId);
     const fromSequence = messages.length > 0 ? messages[0].roomSequence : null;
     const toSequence = messages.length > 0 ? messages[messages.length - 1].roomSequence : null;
@@ -1146,6 +1147,12 @@ export function createRoomService({
   };
   return {
     workspace,
+    getRoomMembership({roomId}={},ctx=null){
+      const invalid=requireVerifiedCtx(ctx);if(invalid)return invalid;
+      const room=requireRoom(roomId);if(room.ok===false)return room;
+      const memberError=ctx.actor.kind==='system'&&hasScope(ctx,'room-read')?null:requireActiveMember(roomId,ctx);
+      return memberError??{ok:true,...snapshotWithMembers(room)};
+    },
     cancelDiscussion,
     createRoom,
     archiveRoom,

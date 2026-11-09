@@ -72,7 +72,7 @@ export async function startBrokerApp({
   });
 
   const enableEscalation = process.env.ENABLE_HUMAN_ESCALATION !== '0';
-  const broker = createBroker({ dbPath, onTaskUnacked: enableEscalation ? createHumanEscalation() : null });
+  const broker = createBroker({ dbPath, onTaskUnacked: enableEscalation ? createHumanEscalation() : null, aimpEnabled: env.INTENT_BROKER_AIMP_ENABLED !== '0' });
   const channelHealth = createChannelHealthRegistry();
   const server = createHttpServer({
     broker,

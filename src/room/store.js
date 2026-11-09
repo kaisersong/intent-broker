@@ -541,7 +541,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
    * limit 非整数/越界（<=0 或 >MAX_LIST_MESSAGES_LIMIT）直接拒绝调用方传入的
    * 值并回落到默认值，不静默放大——调用方若传入非法 limit，视为未指定。
    */
-  function listMessages(roomId, { afterSequence, beforeSequence, limit } = {}) {
+  function listMessages(roomId, { afterSequence, beforeSequence, limit, direction = 'forward' } = {}) {
     const hasBounds = afterSequence !== undefined || beforeSequence !== undefined || limit !== undefined;
     if (!hasBounds) {
       return db.prepare('SELECT * FROM room_messages WHERE room_id = ? ORDER BY room_sequence').all(roomId).map(mapMessageRow);
@@ -561,9 +561,9 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     params.push(effectiveLimit);
 
     const rows = db.prepare(
-      `SELECT * FROM room_messages WHERE ${conditions.join(' AND ')} ORDER BY room_sequence LIMIT ?`
+      `SELECT * FROM room_messages WHERE ${conditions.join(' AND ')} ORDER BY room_sequence ${direction==='backward'?'DESC':'ASC'} LIMIT ?`
     ).all(...params);
-    return rows.map(mapMessageRow);
+    return (direction==='backward'?rows.reverse():rows).map(mapMessageRow);
   }
 
   function normalizeListMessagesLimit(limit) {
