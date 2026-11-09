@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {sendBotPrivateMessage} from '../room/bot-private.js';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { URL } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
@@ -111,7 +112,7 @@ export function createServer({
           return;
         }
         if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
-          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','conversation-context','execution-claims','commit-tickets','physical-release','read-grants']});
+          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','conversation-context','bot-private-messages','execution-claims','commit-tickets','physical-release','read-grants']});
           return;
         }
 
@@ -289,6 +290,11 @@ export function createServer({
         if(req.method==='PUT'&&roomId&&action==='metadata'){
           if(!desktopAuthenticated){writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;}
           const input=await readJson(req,{strict:true});if(Object.keys(input).some(k=>!['title','description','expectedRoomRevision'].includes(k))){writeJson(res,400,{ok:false,code:'room_input_invalid'});return;}result=roomService.updateRoomMetadata({...input,roomId},ctx);writeJson(res,roomStatus(result),result);return;
+        }
+        if(req.method==='POST'&&roomId&&action==='bot-messages'){
+          if(!desktopAuthenticated||!broker?.aimp){writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;}
+          const input=await readJson(req,{strict:true,maxBytes:256*1024});
+          const result=sendBotPrivateMessage({roomService,aimp:broker.aimp,roomId,input,ctx});writeJson(res,roomStatus(result,201),result);return;
         }
         if(req.method==='POST'&&roomId&&action==='agent-messages'){
           if(!desktopAuthenticated){writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;}
