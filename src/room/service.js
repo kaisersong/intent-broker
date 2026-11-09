@@ -212,6 +212,19 @@ export function createRoomService({
   }
 
   // ---------------------------------------------------------------- archive
+  function updateRoomMetadata({roomId,title,description,expectedRoomRevision}={},ctx=null){
+    const invalid=requireVerifiedCtx(ctx);if(invalid)return invalid;
+    const room=requireRoom(roomId);if(room.ok===false)return room;
+    const ownerError=requireActiveOwner(roomId,ctx);if(ownerError)return ownerError;
+    if(ctx.requestSource!=='user')return fail('room_actor_forbidden');
+    const inactive=requireActiveRoom(room);if(inactive)return inactive;
+    if(typeof title!=='string'||!title.trim()||title.length>120||typeof description!=='string'||description.length>8192||!Number.isSafeInteger(expectedRoomRevision))return fail('room_input_invalid');
+    if(room.title===title.trim()&&(room.description??'')===description)return {ok:true,reused:true,...snapshotWithMembers(room)};
+    if(room.revision!==expectedRoomRevision)return fail('room_revision_conflict');
+    store.withTransaction(()=>{const current=store.getRoomRow(roomId);if(current.revision!==expectedRoomRevision||current.status!=='active')throw Error('room_revision_conflict');store.updateRoom(roomId,{title:title.trim(),description,revision:room.revision+1,updatedAt:isoNow(now())});});
+    return {ok:true,...snapshotWithMembers(store.getRoomRow(roomId))};
+  }
+
   function archiveRoom({ roomId, expectedRoomRevision } = {}, ctx = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
@@ -1160,6 +1173,7 @@ export function createRoomService({
     cancelDiscussion,
     createRoom,
     archiveRoom,
+    updateRoomMetadata,
     deleteRoom,
     settleArchiveGrace,
     updateRoomMembers,

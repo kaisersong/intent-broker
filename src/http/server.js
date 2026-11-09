@@ -111,7 +111,7 @@ export function createServer({
           return;
         }
         if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
-          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['message-revision-cas','workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
+          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','execution-claims','commit-tickets','physical-release','read-grants']});
           return;
         }
 
@@ -200,7 +200,7 @@ export function createServer({
             if(['actor','requestSource','from','source_level','sig','sequencing'].some(key=>Object.hasOwn(input,key))){writeJson(res,403,{ok:false,code:'aimp_identity_payload_forbidden'});return;}
             let actor=ctx;
             if(['agent-event','begin-execution','execution-check','effect','heartbeat','chat'].includes(operation)){
-              if(typeof input.logicalAgentId!=='string'||!input.logicalAgentId.trim()){writeJson(res,403,{ok:false,code:'room_actor_identity_mismatch'});return;}
+              if(!Number.isSafeInteger(input.expectedRoomRevision)||typeof input.logicalAgentId!=='string'||!input.logicalAgentId.trim()){writeJson(res,403,{ok:false,code:'room_actor_identity_mismatch'});return;}
               actor={...ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId:input.logicalAgentId},allowedLogicalAgentIds:[input.logicalAgentId]};
               delete input.logicalAgentId;
             }
@@ -281,6 +281,17 @@ export function createServer({
           if(!desktopAuthenticated){writeJson(res,403,{code:'room_actor_forbidden'});return;}
           result=roomService.sendScheduledRoomWake({...await readJson(req),roomId},ctx);
           writeJson(res,roomStatus(result,201),result);return;
+        }
+        if(req.method==='PUT'&&roomId&&action==='metadata'){
+          if(!desktopAuthenticated){writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;}
+          const input=await readJson(req,{strict:true});if(Object.keys(input).some(k=>!['title','description','expectedRoomRevision'].includes(k))){writeJson(res,400,{ok:false,code:'room_input_invalid'});return;}result=roomService.updateRoomMetadata({...input,roomId},ctx);writeJson(res,roomStatus(result),result);return;
+        }
+        if(req.method==='POST'&&roomId&&action==='agent-messages'){
+          if(!desktopAuthenticated){writeJson(res,403,{ok:false,code:'room_actor_forbidden'});return;}
+          const input=await readJson(req,{strict:true,maxBytes:256*1024});
+          if(!Number.isSafeInteger(input.expectedRoomRevision)||typeof input.logicalAgentId!=='string'||!input.logicalAgentId.trim()||Object.keys(input).some(k=>!['logicalAgentId','text','threadId','replyToMessageId','idempotencyKey','expectedRoomRevision','sourceRef'].includes(k))||input.sourceRef?.kind!=='external_agent_reply'){writeJson(res,403,{ok:false,code:'room_actor_identity_mismatch'});return;}
+          const {logicalAgentId,...message}=input,agentContext={...ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId},allowedLogicalAgentIds:[logicalAgentId]};
+          result=roomService.sendRoomMessage({...message,sourceRef:{...message.sourceRef,verifiedExecution:false},roomId,kind:'text',responsePolicy:'none',contextScope:{kind:'room_only'}},agentContext);writeJson(res,roomStatus(result,201),result);return;
         }
         if (req.method === 'POST' && roomId && action === 'messages') {
           result = roomService.sendRoomMessage({ ...(await readJson(req)), roomId }, ctx);

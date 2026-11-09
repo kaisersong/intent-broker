@@ -354,3 +354,17 @@ test('delete HTTP authenticates desktop principal and ignores forged actor/sourc
   assert.equal((await request(baseUrl, `/rooms/${roomId}`, {token: DESKTOP_TOKEN})).payload.code, 'room_not_found');
   assert.equal((await request(baseUrl, '/rooms', {token: DESKTOP_TOKEN})).payload.rooms.length, 0);
 });
+
+test('KTeam metadata CAS and external Agent replies are owner transport operations with stable receipts', async t => {
+ const baseUrl=await startRoomServer(t),created=await request(baseUrl,'/rooms',{token:DESKTOP_TOKEN,method:'POST',body:{title:'产品团队组建',description:'尚未设定目标',memberAgentIds:['product-bot'],clientRequestKey:'kteam-metadata-test'}}),roomId=created.payload.room.roomId;
+ const update={title:'产品团队',description:'以实际资料为准',expectedRoomRevision:created.payload.room.revision};
+ assert.equal((await request(baseUrl,`/rooms/${roomId}/metadata`,{token:KSWARM_TOKEN,method:'PUT',body:update})).response.status,403);
+ const renamed=await request(baseUrl,`/rooms/${roomId}/metadata`,{token:DESKTOP_TOKEN,method:'PUT',body:update});assert.equal(renamed.payload.room.title,'产品团队');assert.equal(renamed.payload.room.description,update.description);
+ assert.equal((await request(baseUrl,`/rooms/${roomId}/metadata`,{token:DESKTOP_TOKEN,method:'PUT',body:{...update,title:'陈旧群名'}})).payload.code,'room_revision_conflict');
+ const origin=await request(baseUrl,`/rooms/${roomId}/messages`,{token:DESKTOP_TOKEN,method:'POST',body:{text:'根据资料核对目标',idempotencyKey:'kteam-origin'}});
+ const reply={logicalAgentId:'product-bot',text:'原Agent的答复',threadId:origin.payload.message.threadId,replyToMessageId:origin.payload.message.messageId,idempotencyKey:'kteam-original-reply',expectedRoomRevision:renamed.payload.room.revision,sourceRef:{kind:'external_agent_reply',replyKey:'kteam-original-reply',verifiedExecution:false}};
+ assert.equal((await request(baseUrl,`/rooms/${roomId}/agent-messages`,{token:KSWARM_TOKEN,method:'POST',body:reply})).response.status,403);
+ const outsider=await request(baseUrl,`/rooms/${roomId}/agent-messages`,{token:DESKTOP_TOKEN,method:'POST',body:{...reply,logicalAgentId:'outsider'}});assert.notEqual(outsider.payload.ok,true);
+ const sent=await request(baseUrl,`/rooms/${roomId}/agent-messages`,{token:DESKTOP_TOKEN,method:'POST',body:reply});assert.equal(sent.payload.ok,true,JSON.stringify(sent.payload));assert.equal(sent.payload.message.sender.logicalAgentId,'product-bot');
+ const retry=await request(baseUrl,`/rooms/${roomId}/agent-messages`,{token:DESKTOP_TOKEN,method:'POST',body:reply});assert.equal(retry.payload.message.messageId,sent.payload.message.messageId);
+});

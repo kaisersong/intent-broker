@@ -397,10 +397,11 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     if (!current) return null;
     const next = { ...current, ...patch };
     db.prepare(`
-      UPDATE rooms SET title = ?, status = ?, revision = ?, discussion_epoch = ?, updated_at = ?, archived_at = ?, deleted_at = ?, deleted_by_json = ?
+      UPDATE rooms SET title = ?, description = ?, status = ?, revision = ?, discussion_epoch = ?, updated_at = ?, archived_at = ?, deleted_at = ?, deleted_by_json = ?
       WHERE room_id = ?
     `).run(
       next.title,
+      next.description ?? null,
       next.status,
       next.revision,
       next.discussionEpoch,
