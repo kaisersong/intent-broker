@@ -16,8 +16,11 @@
  * Migrations are ordered and transactional: a failed step rolls back its
  * DDL and the recorded version together (no partial forward progress).
  */
-import { DatabaseSync } from 'node:sqlite';
+import { beginBrokerWriteTransaction, assertBrokerDatabaseUsable, WAL_STORAGE_MODE } from '../store/sqlite-profile.js';
+import {openBrokerRoomDatabase,completeBrokerDatabaseInitialization,failBrokerDatabaseInitialization,closeBrokerDatabase,bindBrokerDatabaseOwner,getBrokerDatabase,retainBrokerDatabaseFailure,inspectBrokerDatabaseConstruction,usesManagedBrokerDatabase,runBrokerDatabaseTransaction} from '../store/database-lifecycle.js';
+import { randomUUID } from 'node:crypto';
 import { ROOM_SCHEMA_VERSION } from './constants.js';
+import {admissionControlMigration} from './admission-control.js';
 
 function mapRoomRow(row) {
   if (!row) return null;
@@ -70,8 +73,9 @@ function mapMessageRow(row) {
     kind: row.kind,
     text: row.text ?? undefined,
     replyToMessageId: row.reply_to_message_id ?? undefined,
-    contextScope: JSON.parse(row.context_scope_json),
-    mentions: JSON.parse(row.mentions_json),
+    contextScope: row.context_scope_json === '{"kind":"room_only"}'
+      ? { kind: 'room_only' } : JSON.parse(row.context_scope_json),
+    mentions: row.mentions_json === '[]' ? [] : JSON.parse(row.mentions_json),
     responsePolicy: row.response_policy,
     sourceRef: row.source_ref_json ? JSON.parse(row.source_ref_json) : undefined,
     idempotencyKey: row.idempotency_key,
@@ -290,20 +294,51 @@ export function getDefaultMigrations() {
     { version: 7, id: 'room_soft_delete', up(db) {
       db.exec('ALTER TABLE rooms ADD COLUMN deleted_at TEXT; ALTER TABLE rooms ADD COLUMN deleted_by_json TEXT');
     } },
+    { version: 8, id: 'room_source_identity', up(db) {
+      // Stable source lineage belongs to this original database. It is neither
+      // a credential nor a writer/reader floor, and never resets on GET.
+      db.exec(`CREATE TABLE room_source_identity (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        realm_id TEXT NOT NULL CHECK(length(realm_id)=36)
+      )`);
+      db.prepare('INSERT INTO room_source_identity(singleton,realm_id) VALUES(1,?)').run(randomUUID());
+      db.exec(`CREATE TRIGGER room_source_identity_insert BEFORE INSERT ON room_source_identity
+        WHEN EXISTS(SELECT 1 FROM room_source_identity)
+        BEGIN SELECT RAISE(ABORT,'room_source_identity_immutable'); END;
+        CREATE TRIGGER room_source_identity_update BEFORE UPDATE ON room_source_identity
+        BEGIN SELECT RAISE(ABORT,'room_source_identity_immutable'); END;
+        CREATE TRIGGER room_source_identity_delete BEFORE DELETE ON room_source_identity
+        BEGIN SELECT RAISE(ABORT,'room_source_identity_immutable'); END;`);
+    } },
+    admissionControlMigration,
   ];
 }
 
-export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
+export function createRoomStore({ dbPath, migrations, storageBudget, storageMode } = {}) {
   // Each actual connection applies its own cap. This is a physical limit only;
   // the installed owner separately acquires the shared profile reservation.
   const databaseBytes = storageBudget?.databaseBytes;
   if (storageBudget !== undefined && (!Number.isSafeInteger(databaseBytes) || databaseBytes < 512 || databaseBytes > 64 * 1024 * 1024)) {
     throw new Error('room_storage_capacity_configuration');
   }
-  const db = new DatabaseSync(dbPath);
+  const lifecycle=openBrokerRoomDatabase(dbPath,{storageMode,protectedStorage:storageBudget!==undefined}),db=getBrokerDatabase(lifecycle);
+  // Cache bytecode, never results or authority. Bind current values and execute
+  // every time. Raw db.prepare remains unchanged for external iterators.
+  const statements = new Map();
+  function prepareStatement(sql) {
+    assertBrokerDatabaseUsable(db);
+    let statement = statements.get(sql);
+    if (statement) statements.delete(sql);
+    else statement = db.prepare(sql);
+    statements.set(sql, statement);
+    if (statements.size > 128) statements.delete(statements.keys().next().value);
+    return statement;
+  }
+  let activeScope = null;
+  try {
   if (databaseBytes !== undefined) {
     try {
-      const scalar = pragma => Object.values(db.prepare('PRAGMA ' + pragma).get())[0];
+      const scalar = pragma => Object.values(prepareStatement('PRAGMA ' + pragma).get())[0];
       if (scalar('journal_mode = DELETE') !== 'delete') throw new Error('room_storage_journal_mode');
       db.exec('PRAGMA synchronous = FULL; PRAGMA fullfsync = ON; PRAGMA temp_store = MEMORY');
       if (scalar('synchronous') !== 2 || scalar('temp_store') !== 2) throw new Error('room_storage_configuration');
@@ -314,29 +349,39 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
         throw new Error('room_storage_capacity');
       }
     } catch (error) {
-      db.close();
       throw error;
     }
   }
   function rollback(error) {
+    retainBrokerDatabaseFailure(owner,error);
     // SQLITE_FULL can already have rolled the transaction back. Keep its actual
     // error instead of replacing it with "no transaction is active".
-    if (db.isTransaction) {
+    if (db.isTransaction !== false) {
       try { db.exec('ROLLBACK'); }
-      catch (cleanup) { throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed'); }
+      catch (cleanup) { retainBrokerDatabaseFailure(owner,cleanup);throw new AggregateError([error, cleanup], 'room_transaction_rollback_failed',{cause:error}); }
     }
     throw error;
   }
   db.function('solpi_disclosure_write_guard_v1', () => 0);
+  // Match the existing JS scope predicate, including JSON.parse duplicate-key
+  // behavior. Only scope JSON is decoded while scanning; message bodies and
+  // other JSON fields are materialized for the returned page only.
+  db.function('solpi_room_scope_matches_v1', (candidateJson, sourceJson) => {
+    const candidate = JSON.parse(candidateJson) ?? { kind: 'room_only' };
+    const source = activeScope?.json === sourceJson ? activeScope.value : (JSON.parse(sourceJson) ?? { kind: 'room_only' });
+    return Number(candidate.kind === source.kind &&
+      (candidate.kind !== 'project' || candidate.projectId === source.projectId));
+  });
   const steps = migrations ?? getDefaultMigrations();
 
   function ensureVersionTable() {
+    assertBrokerDatabaseUsable(db);
     db.exec('CREATE TABLE IF NOT EXISTS room_schema_version (version INTEGER NOT NULL)');
   }
 
   function getSchemaVersion() {
     ensureVersionTable();
-    const row = db.prepare('SELECT MAX(version) AS version FROM room_schema_version').get();
+    const row = prepareStatement('SELECT MAX(version) AS version FROM room_schema_version').get();
     return row?.version ?? 0;
   }
 
@@ -345,20 +390,42 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     const current = getSchemaVersion();
     for (const step of steps) {
       if (step.version <= current) continue;
+      const action=()=>{step.up(db);db.prepare('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);};
+      if(usesManagedBrokerDatabase(lifecycle)){runBrokerDatabaseTransaction(lifecycle,'write',action);continue;}
       db.exec('BEGIN IMMEDIATE');
       try {
-        step.up(db);
-        db.prepare('INSERT INTO room_schema_version (version) VALUES (?)').run(step.version);
+        action();
         db.exec('COMMIT');
       } catch (error) {
         rollback(error);
       }
     }
-    return { schemaVersion: getSchemaVersion() };
+    completeBrokerDatabaseInitialization(lifecycle);return { schemaVersion: getSchemaVersion() };
   }
 
-  function withTransaction(fn) {
-    db.exec('BEGIN IMMEDIATE');
+  function getSourceRealm() {
+    const version=db.prepare('SELECT MAX(version) AS version FROM room_schema_version').get()?.version;
+    const rows=db.prepare('SELECT singleton,realm_id FROM room_source_identity').all();
+    if((version!==8 && version!==9) || rows.length!==1 || rows[0].singleton!==1
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(rows[0].realm_id))throw Error('room_source_identity_unavailable');
+    return rows[0].realm_id;
+  }
+  function hasPendingSourceMutation(roomId) {
+    return Boolean(db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(roomId));
+  }
+  // Exact source reads share one SQLite snapshot, including other-process
+  // membership changes. No audit, lazy identity initialization or writer lease.
+  function withReadTransaction(fn) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'read',fn);
+    if(db.isTransaction)return fn();
+    db.exec('BEGIN');
+    try {const result=fn();db.exec('COMMIT');return result;}
+    catch(error){rollback(error);}
+  }
+
+  function withTransaction(fn,{waitForWriter=false}={}) {
+    if(usesManagedBrokerDatabase(lifecycle))return runBrokerDatabaseTransaction(lifecycle,'write',fn);
+    beginBrokerWriteTransaction(db,{waitForWriter:storageMode===WAL_STORAGE_MODE&&waitForWriter});
     try {
       const result = fn();
       db.exec('COMMIT');
@@ -370,7 +437,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- rooms ------------------------------------------------------------
   function insertRoom(room) {
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO rooms (room_id, title, description, status, origin, created_by_json, revision, discussion_epoch, created_at, updated_at, archived_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -389,38 +456,44 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function getRoomRow(roomId) {
-    return mapRoomRow(db.prepare('SELECT * FROM rooms WHERE room_id = ?').get(roomId));
+    return mapRoomRow(prepareStatement('SELECT * FROM rooms WHERE room_id = ?').get(roomId));
   }
 
   function updateRoom(roomId, patch) {
-    const current = getRoomRow(roomId);
-    if (!current) return null;
-    const next = { ...current, ...patch };
-    db.prepare(`
-      UPDATE rooms SET title = ?, status = ?, revision = ?, discussion_epoch = ?, updated_at = ?, archived_at = ?, deleted_at = ?, deleted_by_json = ?
-      WHERE room_id = ?
-    `).run(
-      next.title,
-      next.status,
-      next.revision,
-      next.discussionEpoch,
-      next.updatedAt,
-      next.archivedAt ?? null,
-      next.deletedAt ?? null,
-      next.deletedBy ? JSON.stringify(next.deletedBy) : null,
-      roomId
-    );
-    return getRoomRow(roomId);
+    const update = () => {
+      const current = getRoomRow(roomId);
+      if (!current) return null;
+      const next = { ...current, ...patch };
+      prepareStatement(`
+        UPDATE rooms SET title = ?, status = ?, revision = ?, discussion_epoch = ?, updated_at = ?, archived_at = ?, deleted_at = ?, deleted_by_json = ?
+        WHERE room_id = ?
+      `).run(
+        next.title,
+        next.status,
+        next.revision,
+        next.discussionEpoch,
+        next.updatedAt,
+        next.archivedAt ?? null,
+        next.deletedAt ?? null,
+        next.deletedBy ? JSON.stringify(next.deletedBy) : null,
+        roomId
+      );
+      return getRoomRow(roomId);
+    };
+    // Only a standalone managed WAL edit acquires here. Caller transactions
+    // retain their existing snapshot and cleanup ownership.
+    if(storageMode===WAL_STORAGE_MODE&&!db.isTransaction)return withTransaction(update,{waitForWriter:true});
+    return update();
   }
 
   function listRoomRows() {
-    return db.prepare('SELECT * FROM rooms WHERE deleted_at IS NULL ORDER BY created_at').all().map(mapRoomRow);
+    return prepareStatement('SELECT * FROM rooms WHERE deleted_at IS NULL ORDER BY created_at').all().map(mapRoomRow);
   }
 
   // User-visible summaries, one aggregate query; archive/read timestamps do
   // not count as activity. Raw getRoomRow retains tombstones for audit/CAS.
   function listRoomSummaries() {
-    return db.prepare(`SELECT r.*, COALESCE(m.last_activity_at, r.created_at) AS last_activity_at
+    return prepareStatement(`SELECT r.*, COALESCE(m.last_activity_at, r.created_at) AS last_activity_at
       FROM rooms r LEFT JOIN (SELECT room_id, MAX(created_at) AS last_activity_at
       FROM room_messages GROUP BY room_id) m ON m.room_id = r.room_id
       WHERE r.deleted_at IS NULL ORDER BY last_activity_at DESC, r.room_id ASC`).all().map(mapRoomRow);
@@ -429,7 +502,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   // -- members ------------------------------------------------------------
   function insertMember(member) {
     const subject = member.subject;
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO room_members (room_id, subject_kind, subject_id, role, status, added_by_json, membership_revision, added_at, removed_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -446,11 +519,11 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function listMembers(roomId) {
-    return db.prepare('SELECT * FROM room_members WHERE room_id = ? ORDER BY added_at').all(roomId).map(mapMemberRow);
+    return prepareStatement('SELECT * FROM room_members WHERE room_id = ? ORDER BY added_at').all(roomId).map(mapMemberRow);
   }
 
   function getMember(roomId, subject) {
-    const row = db.prepare(
+    const row = prepareStatement(
       'SELECT * FROM room_members WHERE room_id = ? AND subject_kind = ? AND subject_id = ?'
     ).get(
       roomId,
@@ -464,7 +537,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     const current = getMember(roomId, subject);
     if (!current) return null;
     const next = { ...current, ...patch };
-    db.prepare(`
+    prepareStatement(`
       UPDATE room_members SET role = ?, status = ?, membership_revision = ?, removed_at = ?, alias = ?
       WHERE room_id = ? AND subject_kind = ? AND subject_id = ?
     `).run(
@@ -482,15 +555,15 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- sequences ------------------------------------------------------------
   function nextRoomSequence(roomId) {
-    db.prepare('INSERT OR IGNORE INTO room_sequences (room_id, last_sequence) VALUES (?, 0)').run(roomId);
-    db.prepare('UPDATE room_sequences SET last_sequence = last_sequence + 1 WHERE room_id = ?').run(roomId);
-    const row = db.prepare('SELECT last_sequence FROM room_sequences WHERE room_id = ?').get(roomId);
+    prepareStatement('INSERT OR IGNORE INTO room_sequences (room_id, last_sequence) VALUES (?, 0)').run(roomId);
+    prepareStatement('UPDATE room_sequences SET last_sequence = last_sequence + 1 WHERE room_id = ?').run(roomId);
+    const row = prepareStatement('SELECT last_sequence FROM room_sequences WHERE room_id = ?').get(roomId);
     return row.last_sequence;
   }
 
   // -- messages ------------------------------------------------------------
   function insertMessage(message) {
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO room_messages (room_message_id, room_id, thread_id, sender_json, kind, text, reply_to_message_id, context_scope_json, mentions_json, response_policy, source_ref_json, idempotency_key, room_sequence, discussion_epoch, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -514,19 +587,19 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   function getMessageByIdempotency(roomId, idempotencyKey) {
     return mapMessageRow(
-      db.prepare('SELECT * FROM room_messages WHERE room_id = ? AND idempotency_key = ?').get(roomId, idempotencyKey)
+      prepareStatement('SELECT * FROM room_messages WHERE room_id = ? AND idempotency_key = ?').get(roomId, idempotencyKey)
     );
   }
 
   function getMessage(roomId, messageId) {
     return mapMessageRow(
-      db.prepare('SELECT * FROM room_messages WHERE room_id = ? AND room_message_id = ?').get(roomId, messageId)
+      prepareStatement('SELECT * FROM room_messages WHERE room_id = ? AND room_message_id = ?').get(roomId, messageId)
     );
   }
 
   function getMessageById(messageId) {
     return mapMessageRow(
-      db.prepare('SELECT * FROM room_messages WHERE room_message_id = ?').get(messageId)
+      prepareStatement('SELECT * FROM room_messages WHERE room_message_id = ?').get(messageId)
     );
   }
 
@@ -544,7 +617,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   function listMessages(roomId, { afterSequence, beforeSequence, limit } = {}) {
     const hasBounds = afterSequence !== undefined || beforeSequence !== undefined || limit !== undefined;
     if (!hasBounds) {
-      return db.prepare('SELECT * FROM room_messages WHERE room_id = ? ORDER BY room_sequence').all(roomId).map(mapMessageRow);
+      return prepareStatement('SELECT * FROM room_messages WHERE room_id = ? ORDER BY room_sequence').all(roomId).map(mapMessageRow);
     }
 
     const effectiveLimit = normalizeListMessagesLimit(limit);
@@ -560,10 +633,76 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     }
     params.push(effectiveLimit);
 
-    const rows = db.prepare(
+    const rows = prepareStatement(
       `SELECT * FROM room_messages WHERE ${conditions.join(' AND ')} ORDER BY room_sequence LIMIT ?`
     ).all(...params);
     return rows.map(mapMessageRow);
+  }
+
+  function getAuthorizationSubject(roomId, userId) {
+    const row = prepareStatement(`
+      SELECT r.*, m.room_id AS authorization_member_room_id,
+        m.status AS authorization_member_status, m.added_by_json AS authorization_member_added_by_json
+      FROM rooms r LEFT JOIN room_members m
+        ON m.room_id = r.room_id AND m.subject_kind = 'user' AND m.subject_id = ?
+      WHERE r.room_id = ?
+    `).get(userId, roomId);
+    if (!row) return null;
+    return { room: mapRoomRow(row), memberPresent: row.authorization_member_room_id !== null,
+      memberStatus: row.authorization_member_status, memberAddedByJson: row.authorization_member_added_by_json };
+  }
+
+  function getAuthorizationMessage(roomId, messageId) {
+    const row = prepareStatement(`SELECT room_message_id, room_id, context_scope_json FROM room_messages
+      WHERE room_id = ? AND room_message_id = ?`).get(roomId, messageId);
+    return row ? { messageId: row.room_message_id, roomId: row.room_id,
+      contextScope: JSON.parse(row.context_scope_json) ?? { kind: 'room_only' } } : null;
+  }
+
+  function listScopedMessagesPage(roomId, sourceScope, { afterSequence, beforeSequence, limit } = {}) {
+    assertBrokerDatabaseUsable(db);
+    const scopeJson = JSON.stringify(sourceScope ?? { kind: 'room_only' });
+    const previousScope = activeScope;
+    const parsedScope = JSON.parse(scopeJson) ?? { kind: 'room_only' };
+    // Exact encodings are unambiguous. Other encodings retain JSON.parse,
+    // including duplicate keys, whitespace and corrupt data.
+    const canonicalMatch = Number(parsedScope.kind === 'room_only');
+    const scopePredicate = `CASE WHEN context_scope_json IN ('{"kind":"room_only"}', 'null')
+      THEN ? ELSE solpi_room_scope_matches_v1(context_scope_json, ?) END = 1`;
+    const conditions = ['room_id = ?', scopePredicate];
+    const params = [roomId, canonicalMatch, scopeJson];
+    if (Number.isInteger(afterSequence)) {
+      conditions.push('room_sequence > ?');
+      params.push(afterSequence);
+    }
+    if (Number.isInteger(beforeSequence)) {
+      conditions.push('room_sequence < ?');
+      params.push(beforeSequence);
+    }
+    // A deferred read transaction keeps bounds and page on the same snapshot
+    // without taking the writer reservation of BEGIN IMMEDIATE. Never commit
+    // or roll back a transaction owned by the caller.
+    const ownsTransaction = !db.isTransaction;
+    if (ownsTransaction) db.exec('BEGIN');
+    try {
+      activeScope = { json: scopeJson, value: parsedScope };
+      const bounds = prepareStatement(`SELECT COUNT(*) AS total, MIN(room_sequence) AS minSeq,
+        MAX(room_sequence) AS maxSeq FROM room_messages
+        WHERE room_id = ? AND ${scopePredicate}`).get(roomId, canonicalMatch, scopeJson);
+      const messages = prepareStatement(`SELECT * FROM room_messages WHERE ${conditions.join(' AND ')}
+        ORDER BY room_sequence LIMIT ?`).all(...params, normalizeListMessagesLimit(limit)).map(mapMessageRow);
+      if (ownsTransaction) db.exec('COMMIT');
+      return { messages, bounds: {
+        totalMessages: bounds.total,
+        minSequence: bounds.minSeq ?? null,
+        maxSequence: bounds.maxSeq ?? null,
+      } };
+    } catch (error) {
+      if (ownsTransaction) rollback(error);
+      throw error;
+    } finally {
+      activeScope = previousScope;
+    }
   }
 
   function normalizeListMessagesLimit(limit) {
@@ -582,7 +721,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
    * artifact message kind）。
    */
   function getRoomSequenceBounds(roomId) {
-    const row = db.prepare(
+    const row = prepareStatement(
       'SELECT COUNT(*) as total, MIN(room_sequence) as minSeq, MAX(room_sequence) as maxSeq FROM room_messages WHERE room_id = ?'
     ).get(roomId);
     return {
@@ -599,7 +738,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
    * design §6.2：每次 agent history page read 写一条独立审计记录，不含消息
    * 正文，字段严格限定为设计文档冻结清单。
    */
-  function recordRoomHistoryReadAudit({
+  function insertRoomHistoryReadAudit({
     roomId,
     actorParticipantId,
     fromSequence = null,
@@ -608,7 +747,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     resultCount,
     now = Date.now(),
   }) {
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO room_history_read_audits
         (room_id, actor_participant_id, from_sequence, to_sequence, requested_limit, result_count, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -621,7 +760,13 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
       resultCount,
       new Date(now).toISOString()
     );
-    pruneStaleRoomHistoryReadAuditsIfDue(now);
+    return now;
+  }
+
+  // Legacy standalone API: the INSERT commits before best-effort maintenance.
+  function recordRoomHistoryReadAudit(input) {
+    const auditNow = insertRoomHistoryReadAudit(input);
+    pruneStaleRoomHistoryReadAuditsIfDue(auditNow);
   }
 
   /**
@@ -633,19 +778,32 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
    */
   function pruneStaleRoomHistoryReadAuditsIfDue(now = Date.now()) {
     try {
-      const lastCleanupRow = db.prepare(
+      const lastCleanupRow = prepareStatement(
         "SELECT value FROM room_history_read_audit_meta WHERE key = 'last_cleanup_at'"
       ).get();
       const lastCleanupAt = lastCleanupRow ? Number(lastCleanupRow.value) : 0;
       if (now - lastCleanupAt < ROOM_HISTORY_READ_AUDIT_CLEANUP_INTERVAL_MS) return { pruned: 0, skipped: true };
 
       const cutoffIso = new Date(now - ROOM_HISTORY_READ_AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-      const result = db.prepare('DELETE FROM room_history_read_audits WHERE created_at < ?').run(cutoffIso);
-      db.prepare(`
-        INSERT INTO room_history_read_audit_meta (key, value) VALUES ('last_cleanup_at', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(String(now));
-      return { pruned: result.changes ?? 0, skipped: false };
+      // Keep this separate from the already committed audit insert: failed
+      // maintenance must not undo a successful read audit. A savepoint also
+      // preserves a caller-owned transaction when maintenance fails.
+      db.exec('SAVEPOINT room_history_audit_cleanup');
+      try {
+        const result = prepareStatement('DELETE FROM room_history_read_audits WHERE created_at < ?').run(cutoffIso);
+        prepareStatement(`
+          INSERT INTO room_history_read_audit_meta (key, value) VALUES ('last_cleanup_at', ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `).run(String(now));
+        db.exec('RELEASE room_history_audit_cleanup');
+        return { pruned: result.changes ?? 0, skipped: false };
+      } catch (error) {
+        if (db.isTransaction) {
+          db.exec('ROLLBACK TO room_history_audit_cleanup');
+          db.exec('RELEASE room_history_audit_cleanup');
+        }
+        throw error;
+      }
     } catch (err) {
       // 清理失败只记录、不阻断读取/写入路径。
       return { pruned: 0, skipped: false, error: err instanceof Error ? err.message : String(err) };
@@ -653,7 +811,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function listRoomHistoryReadAudits(roomId) {
-    return db.prepare('SELECT * FROM room_history_read_audits WHERE room_id = ? ORDER BY id').all(roomId).map(row => ({
+    return prepareStatement('SELECT * FROM room_history_read_audits WHERE room_id = ? ORDER BY id').all(roomId).map(row => ({
       id: row.id,
       roomId: row.room_id,
       actorParticipantId: row.actor_participant_id,
@@ -667,7 +825,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- deliveries ------------------------------------------------------------
   function insertDelivery(delivery) {
-    db.prepare(`
+    prepareStatement(`
       INSERT OR IGNORE INTO room_message_deliveries (room_message_id, recipient_key, logical_recipient_id, runtime_participant_id_snapshot, visibility_status, wake_status)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
@@ -682,11 +840,11 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   function updateDelivery(roomMessageId, recipientKey, patch) {
     const current = mapDeliveryRow(
-      db.prepare('SELECT * FROM room_message_deliveries WHERE room_message_id = ? AND recipient_key = ?').get(roomMessageId, recipientKey)
+      prepareStatement('SELECT * FROM room_message_deliveries WHERE room_message_id = ? AND recipient_key = ?').get(roomMessageId, recipientKey)
     );
     if (!current) return null;
     const next = { ...current, ...patch };
-    db.prepare(`
+    prepareStatement(`
       UPDATE room_message_deliveries SET visibility_status = ?, wake_status = ?, claim_lease_until = ?, claim_token = ?, runtime_participant_id_snapshot = COALESCE(?, runtime_participant_id_snapshot)
       WHERE room_message_id = ? AND recipient_key = ?
     `).run(
@@ -699,30 +857,30 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
       recipientKey
     );
     return mapDeliveryRow(
-      db.prepare('SELECT * FROM room_message_deliveries WHERE room_message_id = ? AND recipient_key = ?').get(roomMessageId, recipientKey)
+      prepareStatement('SELECT * FROM room_message_deliveries WHERE room_message_id = ? AND recipient_key = ?').get(roomMessageId, recipientKey)
     );
   }
 
   function getDelivery(roomMessageId, recipientKey) {
     return mapDeliveryRow(
-      db.prepare('SELECT * FROM room_message_deliveries WHERE room_message_id = ? AND recipient_key = ?').get(roomMessageId, recipientKey)
+      prepareStatement('SELECT * FROM room_message_deliveries WHERE room_message_id = ? AND recipient_key = ?').get(roomMessageId, recipientKey)
     );
   }
 
   function listDeliveries(roomMessageId) {
-    return db.prepare('SELECT * FROM room_message_deliveries WHERE room_message_id = ? ORDER BY recipient_key')
+    return prepareStatement('SELECT * FROM room_message_deliveries WHERE room_message_id = ? ORDER BY recipient_key')
       .all(roomMessageId)
       .map(mapDeliveryRow);
   }
 
   function listDeliveriesByRecipient({ recipientKey, wakeStatus }) {
-    return db.prepare('SELECT * FROM room_message_deliveries WHERE recipient_key = ? AND wake_status = ?')
+    return prepareStatement('SELECT * FROM room_message_deliveries WHERE recipient_key = ? AND wake_status = ?')
       .all(recipientKey, wakeStatus)
       .map(mapDeliveryRow);
   }
 
   function listClaimedDeliveries(roomId) {
-    return db.prepare(`
+    return prepareStatement(`
       SELECT d.* FROM room_message_deliveries d
       JOIN room_messages m ON m.room_message_id = d.room_message_id
       WHERE m.room_id = ? AND d.wake_status = 'claimed'
@@ -731,7 +889,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- cursors ------------------------------------------------------------
   function getCursor(roomId, recipientKey) {
-    const row = db.prepare('SELECT last_seen_room_sequence FROM room_recipient_cursors WHERE room_id = ? AND recipient_key = ?')
+    const row = prepareStatement('SELECT last_seen_room_sequence FROM room_recipient_cursors WHERE room_id = ? AND recipient_key = ?')
       .get(roomId, recipientKey);
     return { roomId, recipientKey, lastSeenRoomSequence: row?.last_seen_room_sequence ?? 0 };
   }
@@ -739,7 +897,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   function advanceCursor(roomId, recipientKey, roomSequence) {
     const current = getCursor(roomId, recipientKey);
     const next = Math.max(current.lastSeenRoomSequence, roomSequence);
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO room_recipient_cursors (room_id, recipient_key, last_seen_room_sequence)
       VALUES (?, ?, ?)
       ON CONFLICT(room_id, recipient_key) DO UPDATE SET last_seen_room_sequence = excluded.last_seen_room_sequence
@@ -749,7 +907,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- leases ------------------------------------------------------------
   function insertLease(lease) {
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO room_membership_leases (token, room_id, logical_agent_id, operation_id, room_revision, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -764,7 +922,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function getLease(token) {
-    const row = db.prepare('SELECT * FROM room_membership_leases WHERE token = ?').get(token);
+    const row = prepareStatement('SELECT * FROM room_membership_leases WHERE token = ?').get(token);
     if (!row) return null;
     return {
       token: row.token,
@@ -779,7 +937,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- execution audit ------------------------------------------------------------
   function insertAudit(entry) {
-    db.prepare(`
+    prepareStatement(`
       INSERT INTO room_execution_audit (room_id, room_message_id, logical_agent_id, outcome, detail_json, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
@@ -793,7 +951,7 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function listAudit(roomId) {
-    return db.prepare('SELECT * FROM room_execution_audit WHERE room_id = ? ORDER BY id').all(roomId).map((row) => ({
+    return prepareStatement('SELECT * FROM room_execution_audit WHERE room_id = ? ORDER BY id').all(roomId).map((row) => ({
       roomId: row.room_id,
       roomMessageId: row.room_message_id,
       logicalAgentId: row.logical_agent_id,
@@ -804,13 +962,20 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
   }
 
   function close() {
-    db.close();
+    statements.clear();
+    closeBrokerDatabase(lifecycle);
   }
 
-  return {
+  const owner={
     db,
+    // Explicit configured profile; never inferred from mutable PRAGMAs or env.
+    get storageMode() { return storageMode===WAL_STORAGE_MODE?WAL_STORAGE_MODE:'delete'; },
+    prepareStatement,
     migrate,
     getSchemaVersion,
+    getSourceRealm,
+    hasPendingSourceMutation,
+    withReadTransaction,
     getDefaultMigrations: () => steps,
     withTransaction,
     insertRoom,
@@ -829,6 +994,10 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     getMessageById,
     listMessages,
     getRoomSequenceBounds,
+    listScopedMessagesPage,
+    getAuthorizationMessage,
+    getAuthorizationSubject,
+    insertRoomHistoryReadAudit,
     recordRoomHistoryReadAudit,
     pruneStaleRoomHistoryReadAuditsIfDue,
     listRoomHistoryReadAudits,
@@ -846,4 +1015,6 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     listAudit,
     close,
   };
+  inspectBrokerDatabaseConstruction(lifecycle);bindBrokerDatabaseOwner(lifecycle,owner);return owner;
+  }catch(raw){failBrokerDatabaseInitialization(lifecycle,raw);}
 }

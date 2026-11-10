@@ -14,6 +14,11 @@ for (const name of ['xiaok', 'claude-code']) {
     const server = createServer(async (req, res) => {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
+      if(req.method==='GET'){
+        assert.match(req.url,/^\/events\/replay\?after=0&limit=100$/);const original=requests[0].body;
+        res.writeHead(200,{'Content-Type':'application/json'});
+        res.end(JSON.stringify({items:[{eventId:2,kind:'answer_clarification',taskId:original.taskId,threadId:original.threadId,payload:{body:{summary:'Update'}}}]}));return;
+      }
       requests.push({ method: req.method, url: req.url, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ eventId: 1, recipients: ['human.local'], deliveredCount: 1 }));
@@ -45,7 +50,7 @@ for (const name of ['xiaok', 'claude-code']) {
           options: [{ label: 'Update' }, { label: 'Keep' }] }] } }));
       const result = await completion;
       assert.equal(result.code, 0, stderr);
-      assert.equal(requests.length, 1);
+      assert.equal(requests.length, 1); // Exactly one question POST; answer polling is read-only.
       assert.equal(requests[0].url, '/intents');
       assert.equal(requests[0].method, 'POST');
       assert.equal(requests[0].body.kind, 'ask_clarification');
@@ -53,8 +58,10 @@ for (const name of ['xiaok', 'claude-code']) {
       assert.equal(requests[0].body.payload.body.prompt, 'Should the fixture be updated?');
       const output = JSON.parse(stdout);
       const receipt = name === 'xiaok' ? output : output.hookSpecificOutput;
-      assert.match(receipt.additionalContext, /submitted through Intent Broker/);
+      if(name==='xiaok')assert.match(receipt.additionalContext,/submitted through Intent Broker/);
+      else assert.match(receipt.additionalContext,/A user answer was received/);
       assert.doesNotMatch(JSON.stringify(output), /HexDeck/);
+      if(name==='claude-code')assert.match(receipt.permissionDecisionReason,/Update/);
       if (name === 'xiaok') assert.equal(output.preventContinuation, true);
       else assert.equal(receipt.permissionDecision, 'deny');
     } finally {

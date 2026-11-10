@@ -22,10 +22,11 @@ test('syncAgentBridges writes Claude project settings to cwd while commands poin
 
     assert.equal(existsSync(runtimeSettingsPath), true);
     assert.equal(existsSync(repoSettingsPath), false);
-    assert.match(
-      settingsText,
-      new RegExp(path.join(repoRoot, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    );
+    const hooks = JSON.parse(settingsText).hooks;
+    const expectedEntry = path.join(repoRoot, 'adapters', 'claude-code-plugin', 'bin', 'claude-code-broker.js');
+    for (const event of ['SessionStart', 'Stop']) {
+      assert.ok(hooks[event][0].hooks[0].command.includes(expectedEntry));
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

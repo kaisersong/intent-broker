@@ -1,3 +1,4 @@
+import {retainBrokerDatabaseFailure} from '../store/database-lifecycle.js';
 import { reduceEventStream } from '../domain/reducer.js';
 import { validateBrokerIntent } from '../domain/validators.js';
 import { createEventStore } from '../store/event-store.js';
@@ -78,6 +79,7 @@ function buildApprovalListItem(approval, originEvent) {
 
 export function createBrokerService({
   dbPath,
+  storageMode,
   presenceTimeoutMs = 600000,
   presenceSweepIntervalMs = 5000,
   websocketHeartbeatIntervalMs = 30000,
@@ -85,22 +87,38 @@ export function createBrokerService({
   offlineContextSyncEmitter = null,
   onTaskUnacked = null
 }) {
+  const partial={store:null,storeClose:null,roomStore:null,roomStoreClose:null,room:null,roomClose:null,wsNotifier:null,notifierClose:null,timers:new Map(),watchdogs:null};
+  let closeState;
+  function closeAll(){
+    if(closeState){if(closeState.failure)throw closeState.failure.raw;return;}
+    const state={};closeState=state;const errors=[];
+    const attempt=work=>{try{work();}catch(raw){errors.push({raw});}};
+    for(const [timer,kind]of partial.timers)attempt(()=>kind==='interval'?clearInterval(timer):clearTimeout(timer));
+    if(partial.watchdogs){for(const timer of partial.watchdogs.values())attempt(()=>clearTimeout(timer));partial.watchdogs.clear();}
+    if(partial.wsNotifier)attempt(()=>Reflect.apply(partial.notifierClose,partial.wsNotifier,[]));
+    if(partial.room)attempt(()=>Reflect.apply(partial.roomClose,partial.room,[]));else if(partial.roomStore)attempt(()=>Reflect.apply(partial.roomStoreClose,partial.roomStore,[]));
+    if(partial.store)attempt(()=>Reflect.apply(partial.storeClose,partial.store,[]));
+    if(errors.length){state.failure={raw:errors.length===1?errors[0].raw:new AggregateError(errors.map(e=>e.raw),'broker_service_close_failed',{cause:errors[0].raw})};throw state.failure.raw;}
+  }
+  try {
   const participants = new Map();
   const aliases = new Map();
   const logicalParticipants = new Map();
   const workStates = new Map();
-  const store = createEventStore({ dbPath });
+  const store = createEventStore({ dbPath, storageMode });partial.store=store;partial.storeClose=store.close;
   // The broker owns the Room domain on the same durable SQLite file.
   // Room tables are separate from the generic event/inbox surface and are
   // never dual-written by generic intents (design §9.1).
-  const roomStore = createRoomStore({ dbPath });
+  const roomStore = createRoomStore({ dbPath, storageMode });partial.roomStore=roomStore;partial.roomStoreClose=roomStore.close;
   roomStore.migrate();
-  const room = createRoomService({ store: roomStore });
+  const room = createRoomService({ store: roomStore });partial.room=room;partial.roomClose=room.close;
   const presence = createPresenceTracker({ timeoutMs: presenceTimeoutMs, now: presenceNow });
   const wsNotifier = createWebSocketNotifier({
     heartbeatIntervalMs: websocketHeartbeatIntervalMs
   });
+  partial.wsNotifier=wsNotifier;partial.notifierClose=wsNotifier.close;
   let awayMode = false;
+  let closed = false;
 
   function parseEventTime(createdAt) {
     return new Date(createdAt + 'Z').getTime();
@@ -109,7 +127,7 @@ export function createBrokerService({
   const PRUNE_THRESHOLD_MS = Number(process.env.PRUNE_THRESHOLD_MS) || 30 * 60 * 1000;
   const TASK_UNACK_THRESHOLD_MS = 5 * 60 * 1000;
   const TASK_UNACK_DEDUP_MS = 30 * 60 * 1000;
-  const watchdogTimers = new Map();
+  const watchdogTimers = new Map();partial.watchdogs=watchdogTimers;
 
   function scheduleWatchdog(taskId, delayMs) {
     if (watchdogTimers.has(taskId)) return;
@@ -228,8 +246,8 @@ export function createBrokerService({
     }
   }
 
-  const watchdogReconcileTimer = setTimeout(reconcileWatchdogs, 30_000).unref();
-  const watchdogPeriodicTimer = setInterval(reconcileWatchdogs, TASK_UNACK_THRESHOLD_MS).unref();
+  const watchdogReconcileTimer = setTimeout(reconcileWatchdogs, 30_000);partial.timers.set(watchdogReconcileTimer,'timeout');watchdogReconcileTimer.unref();
+  const watchdogPeriodicTimer = setInterval(reconcileWatchdogs, TASK_UNACK_THRESHOLD_MS);partial.timers.set(watchdogPeriodicTimer,'interval');watchdogPeriodicTimer.unref();
 
   // Resolve a single target token into recipient sessionIds.
   // Explicit namespaces remove ambiguity:
@@ -757,6 +775,9 @@ export function createBrokerService({
   }
 
   function sweepStalePresence() {
+    // Reuse the existing owned housekeeping timer; keep cold startup read-only.
+    // The page audit retains the due-maintenance fallback when timers are off.
+    roomStore.pruneStaleRoomHistoryReadAuditsIfDue();
     const now = presenceNow();
     for (const item of presence.listPresence()) {
       const raw = presence.peekPresence(item.participantId);
@@ -799,6 +820,7 @@ export function createBrokerService({
   const presenceSweepTimer = presenceSweepIntervalMs > 0
     ? setInterval(sweepStalePresence, presenceSweepIntervalMs)
     : null;
+  if(presenceSweepTimer)partial.timers.set(presenceSweepTimer,'interval');
   presenceSweepTimer?.unref?.();
 
   function formatMobileNotification(event) {
@@ -1117,18 +1139,21 @@ export function createBrokerService({
     attachWebSocket(httpServer) {
       wsNotifier.attachToServer(httpServer, {
         onConnect: ({ participantId, connectionCount }) => {
+          if (closed) return;
           setPresence(participantId, 'online', {
             transport: 'websocket',
             connectionCount
           });
         },
         onHeartbeat: ({ participantId, connectionCount }) => {
+          if (closed) return;
           setPresence(participantId, 'online', {
             transport: 'websocket',
             connectionCount
           });
         },
         onDisconnect: ({ participantId, connectionCount }) => {
+          if (closed) return;
           setPresence(participantId, 'offline', {
             transport: 'websocket',
             connectionCount
@@ -1192,18 +1217,13 @@ export function createBrokerService({
         return matchesProject && matchesStatus;
       }).map((approval) => buildApprovalListItem(approval, approvalEvents.get(approval.approvalId)));
     },
-    close() {
-      if (presenceSweepTimer) {
-        clearInterval(presenceSweepTimer);
-      }
-      clearTimeout(watchdogReconcileTimer);
-      clearInterval(watchdogPeriodicTimer);
-      for (const timer of watchdogTimers.values()) {
-        clearTimeout(timer);
-      }
-      watchdogTimers.clear();
-      wsNotifier.close();
-      room.close();
-    }
+    close:closeAll
   };
+  }catch(raw){
+    const secondary=[];
+    for(const owner of [partial.roomStore,partial.store])if(owner)try{retainBrokerDatabaseFailure(owner,raw);}catch(error){secondary.push(error);}
+    try{closeAll();}catch(cleanup){secondary.push(cleanup);}
+    if(secondary.length)throw new AggregateError([raw,...secondary],'broker_service_startup_cleanup_failed',{cause:raw});
+    throw raw;
+  }
 }

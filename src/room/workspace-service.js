@@ -30,12 +30,13 @@ function relativePath(value) {
 /** All records share the Room database and sequence allocator. Transport owns
  * authentication; this service never reads actor/host authority from payloads. */
 export function createRoomWorkspaceService({ store, now = () => new Date() }) {
+  const prepare = store.prepareStatement ?? store.db.prepare.bind(store.db);
   const get = (kind, key) => {
-    const row = store.db.prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND record_key=?').get(kind, key);
+    const row = prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND record_key=?').get(kind, key);
     return row ? JSON.parse(row.value_json) : null;
   };
-  const put = (kind, key, roomId, value) => store.db.prepare('INSERT INTO room_workspace_records(kind,record_key,room_id,value_json) VALUES(?,?,?,?) ON CONFLICT(kind,record_key) DO UPDATE SET value_json=excluded.value_json').run(kind,key,roomId,JSON.stringify(value));
-  const list = (kind, roomId) => store.db.prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND room_id=?').all(kind,roomId).map(r=>JSON.parse(r.value_json));
+  const put = (kind, key, roomId, value) => prepare('INSERT INTO room_workspace_records(kind,record_key,room_id,value_json) VALUES(?,?,?,?) ON CONFLICT(kind,record_key) DO UPDATE SET value_json=excluded.value_json').run(kind,key,roomId,JSON.stringify(value));
+  const list = (kind, roomId) => prepare('SELECT value_json FROM room_workspace_records WHERE kind=? AND room_id=?').all(kind,roomId).map(r=>JSON.parse(r.value_json));
   const time = () => now().toISOString();
   const member = (roomId, ctx, owner = false) => {
     const m = store.getMember(roomId,ctx.actor);
@@ -69,11 +70,11 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
     try { return store.withTransaction(()=>{
       if(typeof input?.roomId==='string' && store.getRoomRow(input.roomId)?.deletedAt)reject('room_not_found');
       return {ok:true,...fn(input,ctx)};
-    }); }
+    },{waitForWriter:true}); }
     catch(error) { if(error.workspaceCode)return {ok:false,code:error.workspaceCode}; throw error; }
   };
   const guardedMutation=fn=>action((input,ctx)=>{
-    if(typeof input.roomId==='string'&&store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(input.roomId))reject('disclosure_mutation_pending');
+    if(typeof input.roomId==='string'&&prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(input.roomId))reject('disclosure_mutation_pending');
     return fn(input,ctx);
   });
   const ownClaim = (input,ctx,{valid=true,running=false}={}) => {
@@ -113,24 +114,36 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
     return {url:value.url,model:value.model,protocol:value.protocol};
   };
   const disclosureId=value=>{if(typeof value!=='string'||!/^[A-Za-z0-9_.:-]{1,256}$/.test(value))reject('disclosure_identity_invalid');return value;};
-  const disclosureLease=attemptId=>{const row=store.db.prepare('SELECT payload_json,state FROM room_disclosure_leases WHERE attempt_id=?').get(attemptId);return row?{...JSON.parse(row.payload_json),state:row.state}:null;};
+  const disclosureLease=attemptId=>{const row=prepare('SELECT payload_json,state FROM room_disclosure_leases WHERE attempt_id=?').get(attemptId);return row?{...JSON.parse(row.payload_json),state:row.state}:null;};
   // Used only after the original source mutation has authenticated its caller
   // and validated its complete input, within that same SQLite transaction.
   const deferSourceMutation=(kind,roomId,payload,ctx)=>{
     if(!store.db.isTransaction||ctx.requestSource!=='user')reject('room_actor_forbidden');
     const facts={kind,roomId,payloadDigest:workspaceDigest('disclosure-source-mutation',payload),actor:ctx.actor,requestSource:'user'};
     const mutationId=workspaceDigest('disclosure-authority-mutation',facts);
-    if(store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(roomId,mutationId))reject('disclosure_mutation_conflict');
-    const prior=store.db.prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
+    if(prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(roomId,mutationId))reject('disclosure_mutation_conflict');
+    const prior=prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
     if(prior&&(prior.state!=='PENDING'||prior.payload_json!==JSON.stringify(facts)))reject('disclosure_mutation_conflict');
-    const held=Boolean(store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(roomId));
+    const held=Boolean(prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(roomId));
     if(held&&!prior){
-      if(store.db.prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
-      store.db.prepare("INSERT INTO room_disclosure_mutations VALUES(?,?,'PENDING',?)").run(mutationId,roomId,JSON.stringify(facts));
+      if(prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
+      prepare("INSERT INTO room_disclosure_mutations VALUES(?,?,'PENDING',?)").run(mutationId,roomId,JSON.stringify(facts));
     }
     return {blocked:held,mutationId:held||prior?mutationId:null};
   };
-  const finishSourceMutation=mutation=>{if(mutation.mutationId)store.db.prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutation.mutationId);};
+  const finishSourceMutation=mutation=>{if(mutation.mutationId)prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutation.mutationId);};
+  const authorizeWake = (input,ctx)=>{
+      const r=room(input.roomId);const m=member(input.roomId,ctx);if(ctx.requestSource!=='agent'||ctx.actor.logicalAgentId!==input.logicalAgentId)reject('room_actor_identity_mismatch');
+      const source=store.getMessageById(input.roomMessageId);if(!source||source.roomId!==input.roomId)reject('room_message_not_found');
+      const sourceScope=source.contextScope??{kind:'room_only'};
+      const h=host(ctx);let claim=null;
+      // Project discussion has no filesystem claim. The credential-bearing
+      // main checks KSwarm membership per operation; scope is always taken
+      // from this authoritative message, never a caller-supplied assertion.
+      if(input.discussionOnly===true){scope(sourceScope);}
+      else {claim=ownClaim(input,ctx,{running:true});if(canonicalWorkspaceJSON(claim.contextScope)!==canonicalWorkspaceJSON(sourceScope))reject('room_scope_mismatch');}
+      return {authorization:{roomId:r.roomId,roomMessageId:source.messageId,discussionOnly:input.discussionOnly===true,claimId:claim?.claimId??null,logicalAgentId:ctx.actor.logicalAgentId,membershipRevision:m.membershipRevision,discussionEpoch:r.discussionEpoch,hostPrincipal:ctx.hostPrincipal,hostIncarnation:h.hostIncarnation}};
+  };
   const api = {
     // Internal host API only until authenticated participant/egress transport is
     // installed. These durable held facts are not an OS fence or signed receipt.
@@ -143,43 +156,43 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       const payloadDigest=workspaceDigest('disclosure-mutation-input',input.payload);
       const facts={kind:input.kind,roomId:input.roomId,roomRevision:r.revision,payloadDigest,actor:ctx.actor,requestSource:'user'};
       const mutationId=workspaceDigest('disclosure-authority-mutation',facts);
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(input.roomId,mutationId))reject('disclosure_mutation_conflict');
-      const pending=store.db.prepare("SELECT mutation_id FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING'").all(input.roomId);
+      if(prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(input.roomId,mutationId))reject('disclosure_mutation_conflict');
+      const pending=prepare("SELECT mutation_id FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING'").all(input.roomId);
       if(pending.some(row=>row.mutation_id!==mutationId))reject('disclosure_mutation_conflict');
-      const held=Boolean(store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId));
+      const held=Boolean(prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId));
       if(!held&&!pending.length&&!list('disclosure-grant',input.roomId).length)return {blocked:false,mutationId:null};
-      const prior=store.db.prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
+      const prior=prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
       if(prior&&(prior.state!=='PENDING'||prior.payload_json!==JSON.stringify(facts)))reject('disclosure_mutation_conflict');
-      if(!prior){if(store.db.prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
-        store.db.prepare("INSERT INTO room_disclosure_mutations VALUES(?,?,'PENDING',?)").run(mutationId,input.roomId,JSON.stringify(facts));}
+      if(!prior){if(prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
+        prepare("INSERT INTO room_disclosure_mutations VALUES(?,?,'PENDING',?)").run(mutationId,input.roomId,JSON.stringify(facts));}
       return {blocked:held,mutationId};
     },{independent:true}),
     completeRoomDisclosureMutation(input,ctx){
       const verified=verifyTrustedActorContext(ctx);if(!verified.ok)reject(verified.code);
       if(ctx.requestSource!=='user')reject('room_actor_forbidden');
       if(!store.db.isTransaction)reject('disclosure_commit_transaction_required');
-      const row=store.db.prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(input.mutationId),facts=row&&JSON.parse(row.payload_json);
+      const row=prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(input.mutationId),facts=row&&JSON.parse(row.payload_json);
       if(!facts||row.state!=='PENDING'||facts.kind!==input.kind||!['member-change','discussion-cancel'].includes(facts.kind)||facts.roomId!==input.roomId||facts.roomRevision!==input.expectedRoomRevision||facts.payloadDigest!==workspaceDigest('disclosure-mutation-input',input.payload)||canonicalWorkspaceJSON(facts.actor)!==canonicalWorkspaceJSON(ctx.actor)||room(input.roomId,false).revision!==facts.roomRevision+1)reject('disclosure_mutation_conflict');
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId))reject('disclosure_lease_held');
-      store.db.prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(input.mutationId);
+      if(prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId))reject('disclosure_lease_held');
+      prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(input.mutationId);
     },
     prepareArchiveDisclosure: action((input,ctx)=>{
       if(ctx.requestSource!=='user')reject('room_actor_forbidden');
       disclosureFields(input,['roomId','expectedRoomRevision']);
       const r=room(input.roomId); member(input.roomId,ctx,true);
       if(r.revision!==input.expectedRoomRevision)reject('room_revision_conflict');
-      const held=Boolean(store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId));
+      const held=Boolean(prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId));
       const enrolled=list('disclosure-grant',input.roomId).length>0;
-      const pending=store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(input.roomId);
+      const pending=prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(input.roomId);
       if(!held&&!enrolled&&!pending)return {blocked:false,mutationId:null};
       const facts={kind:'archive',roomId:input.roomId,roomRevision:r.revision,actor:ctx.actor,requestSource:'user'};
       const mutationId=workspaceDigest('disclosure-authority-mutation',facts);
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(input.roomId,mutationId))reject('disclosure_mutation_conflict');
-      const prior=store.db.prepare('SELECT payload_json,state FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
+      if(prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(input.roomId,mutationId))reject('disclosure_mutation_conflict');
+      const prior=prepare('SELECT payload_json,state FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
       if(prior&&(prior.payload_json!==JSON.stringify(facts)||prior.state!=='PENDING'))reject('disclosure_mutation_conflict');
       if(!prior){
-        if(store.db.prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
-        store.db.prepare("INSERT INTO room_disclosure_mutations(mutation_id,room_id,state,payload_json) VALUES(?,?,'PENDING',?)").run(mutationId,input.roomId,JSON.stringify(facts));
+        if(prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
+        prepare("INSERT INTO room_disclosure_mutations(mutation_id,room_id,state,payload_json) VALUES(?,?,'PENDING',?)").run(mutationId,input.roomId,JSON.stringify(facts));
       }
       return {blocked:held,mutationId};
     },{independent:true}),
@@ -190,11 +203,11 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       if(ctx.requestSource!=='user')reject('room_actor_forbidden');
       if(!store.db.isTransaction)reject('disclosure_commit_transaction_required');
       member(input.roomId,ctx,true);
-      const row=store.db.prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(input.mutationId);
+      const row=prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(input.mutationId);
       const facts=row&&JSON.parse(row.payload_json),r=room(input.roomId,false);
       if(!facts||row.state!=='PENDING'||facts.kind!=='archive'||facts.roomId!==input.roomId||facts.roomRevision!==input.expectedRoomRevision||canonicalWorkspaceJSON(facts.actor)!==canonicalWorkspaceJSON(ctx.actor)||r.status!=='archiving')reject('disclosure_mutation_conflict');
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId))reject('disclosure_lease_held');
-      store.db.prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(input.mutationId);
+      if(prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId))reject('disclosure_lease_held');
+      prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(input.mutationId);
     },
     approveDisclosureGrant: guardedMutation((input,ctx)=>{
       disclosureFields(input,['roomId','requestId','logicalAgentId','destination','expiresAt']);
@@ -203,8 +216,8 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       const destination=disclosureDestination(input.destination);if(!Number.isSafeInteger(input.expiresAt)||input.expiresAt<=now().getTime())reject('disclosure_expiry_invalid');
       const requestHash=workspaceDigest('disclosure-grant',{logicalAgentId:input.logicalAgentId,destination,expiresAt:input.expiresAt,bindingId:c.activeBindingId,generation:c.generation,membershipRevision:m.membershipRevision,hostIncarnation:h.hostIncarnation});
       const key=`${input.roomId}:${input.requestId}`,prior=get('disclosure-grant-request',key);if(prior){if(prior.requestHash!==requestHash)reject('workspace_idempotency_conflict');return {grant:get('disclosure-grant',prior.grantId)};}
-      let authority=get('disclosure-authority','singleton');if(!authority){if(store.db.prepare('SELECT 1 FROM room_disclosure_leases LIMIT 1').get())reject('disclosure_authority_unknown');authority={authorityId:`broker-${randomUUID()}`,protocol:'disclosure-lease/v1'};put('disclosure-authority','singleton','',authority);}
-      if(store.db.prepare("SELECT count(*) AS n FROM room_workspace_records WHERE kind='disclosure-grant'").get().n>=256)reject('disclosure_quota');
+      let authority=get('disclosure-authority','singleton');if(!authority){if(prepare('SELECT 1 FROM room_disclosure_leases LIMIT 1').get())reject('disclosure_authority_unknown');authority={authorityId:`broker-${randomUUID()}`,protocol:'disclosure-lease/v1'};put('disclosure-authority','singleton','',authority);}
+      if(prepare("SELECT count(*) AS n FROM room_workspace_records WHERE kind='disclosure-grant'").get().n>=256)reject('disclosure_quota');
       const grant={grantId:`disclosure-grant-${randomUUID()}`,authorityId:authority.authorityId,roomId:input.roomId,logicalAgentId:input.logicalAgentId,membershipRevision:m.membershipRevision,bindingId:c.activeBindingId,generation:c.generation,hostPrincipal:ctx.hostPrincipal,hostIncarnation:h.hostIncarnation,destination,expiresAt:input.expiresAt};
       put('disclosure-grant',grant.grantId,input.roomId,grant);put('disclosure-grant-request',key,input.roomId,{requestHash,grantId:grant.grantId});return {grant};
     }),
@@ -216,29 +229,29 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       const attemptId=disclosureId(input.attemptId),invocationId=disclosureId(input.invocationId),egressId=disclosureId(input.egressId);digest(input.bodySha256);if(!Number.isSafeInteger(input.egressGeneration)||input.egressGeneration<1||typeof input.includeInstructions!=='boolean'||!Array.isArray(input.sourceMessageIds)||input.sourceMessageIds.length>64||new Set(input.sourceMessageIds).size!==input.sourceMessageIds.length)reject('disclosure_input_invalid');
       const requestHash=workspaceDigest('disclosure-request',{attemptId,invocationId,egressId,egressGeneration:input.egressGeneration,bodySha256:input.bodySha256,destination,grantId:grant.grantId,claimId:claim.claimId,sourceMessageIds:input.sourceMessageIds,includeInstructions:input.includeInstructions});
       const previous=disclosureLease(attemptId);if(previous){if(previous.requestHash!==requestHash||previous.hostPrincipal!==ctx.hostPrincipal||previous.logicalAgentId!==ctx.actor.logicalAgentId)reject('workspace_idempotency_conflict');return {lease:previous};}
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE json_extract(payload_json,'$.invocationId')=? LIMIT 1").get(invocationId))reject('disclosure_invocation_already_prepared');
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(input.roomId))reject('disclosure_mutation_pending');
-      if(store.db.prepare('SELECT count(*) AS n FROM room_disclosure_leases').get().n>=256)reject('disclosure_quota');
+      if(prepare("SELECT 1 FROM room_disclosure_leases WHERE json_extract(payload_json,'$.invocationId')=? LIMIT 1").get(invocationId))reject('disclosure_invocation_already_prepared');
+      if(prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' LIMIT 1").get(input.roomId))reject('disclosure_mutation_pending');
+      if(prepare('SELECT count(*) AS n FROM room_disclosure_leases').get().n>=256)reject('disclosure_quota');
       const sources=input.sourceMessageIds.map(id=>{disclosureId(id);const message=store.getMessageById(id);if(!message||message.roomId!==claim.roomId||message.contextScope.kind!=='room_only')reject('disclosure_source_forbidden');return {messageId:id,roomSequence:message.roomSequence,sourceSha256:workspaceDigest('disclosure-source',message)};});
       const instructions=input.includeInstructions?get('instructions',`${claim.roomId}:${claim.instructionsRevision}`):null;if(input.includeInstructions&&(!instructions||instructions.snapshotDigest!==claim.instructionsDigest))reject('disclosure_source_forbidden');
       const lease={protocol:'disclosure-lease/v1',authorityId:grant.authorityId,attemptId,invocationId,bodySha256:input.bodySha256,destination,egressId,egressGeneration:input.egressGeneration,requestHash,roomId:claim.roomId,hostPrincipal:ctx.hostPrincipal,hostIncarnation:claim.hostIncarnation,logicalAgentId:claim.logicalAgentId,expiresAt:grant.expiresAt,grantId:grant.grantId,claim:{claimId:claim.claimId,bindingId:claim.bindingId,generation:claim.generation,membershipRevision:claim.membershipRevision},sources,instructions:instructions?{revision:instructions.revision,snapshotDigest:instructions.snapshotDigest}:null};
-      const payload=JSON.stringify(lease);if(Buffer.byteLength(payload)>32768)reject('disclosure_quota');store.db.prepare("INSERT INTO room_disclosure_leases(attempt_id,room_id,state,payload_json) VALUES(?,?,'PREPARED',?)").run(attemptId,claim.roomId,payload);return {lease:{...lease,state:'PREPARED'}};
+      const payload=JSON.stringify(lease);if(Buffer.byteLength(payload)>32768)reject('disclosure_quota');prepare("INSERT INTO room_disclosure_leases(attempt_id,room_id,state,payload_json) VALUES(?,?,'PREPARED',?)").run(attemptId,claim.roomId,payload);return {lease:{...lease,state:'PREPARED'}};
     }),
     queryDisclosure: action((input,ctx)=>{disclosureFields(input,['roomId','attemptId']);if(ctx.requestSource!=='agent')reject('room_actor_forbidden');const lease=disclosureLease(disclosureId(input.attemptId)),h=host(ctx);if(!lease||lease.roomId!==input.roomId||lease.hostPrincipal!==ctx.hostPrincipal||lease.hostIncarnation!==h.hostIncarnation||lease.logicalAgentId!==ctx.actor.logicalAgentId)reject('disclosure_lease_forbidden');return {lease};}),
     registerHost: action((input,ctx)=>{
       if(ctx.requestSource!=='user'||!nonempty(ctx.hostPrincipal)||!nonempty(input.startupId))reject('room_actor_forbidden');
       const old=get('host',ctx.hostPrincipal);
       if(old?.startupId===input.startupId)return {host:old};
-      const held=store.db.prepare("SELECT room_id FROM room_disclosure_leases WHERE state='PREPARED'").all();
+      const held=prepare("SELECT room_id FROM room_disclosure_leases WHERE state='PREPARED'").all();
       const affected=new Set(held.map(row=>row.room_id));
-      for(const row of store.db.prepare("SELECT room_id,value_json FROM room_workspace_records WHERE kind IN ('config','claim','grant','disclosure-grant')").all()){
+      for(const row of prepare("SELECT room_id,value_json FROM room_workspace_records WHERE kind IN ('config','claim','grant','disclosure-grant')").all()){
         const value=JSON.parse(row.value_json);
         if(value.hostPrincipal===ctx.hostPrincipal||old&&value.originHostId===old.hostId)affected.add(row.room_id);
       }
       const roomIds=[...affected].sort();if(roomIds.length>256)reject('disclosure_quota');
       const facts={kind:'host-incarnation',scope:'broker-global-conservative',hostPrincipal:ctx.hostPrincipal,oldHostDigest:workspaceDigest('disclosure-host',old),startupId:input.startupId,actor:ctx.actor,roomIds};
       const mutationId=workspaceDigest('disclosure-authority-mutation',{...facts,roomIds:[]});
-      const pending=store.db.prepare("SELECT mutation_id,state,payload_json FROM room_disclosure_mutations WHERE state='PENDING'").all();
+      const pending=prepare("SELECT mutation_id,state,payload_json FROM room_disclosure_mutations WHERE state='PENDING'").all();
       if(pending.some(row=>row.mutation_id!==mutationId))reject('disclosure_mutation_conflict');
       const prior=pending.find(row=>row.mutation_id===mutationId);
       if(prior){
@@ -246,14 +259,14 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
         if(!Array.isArray(fixed.roomIds)||fixed.roomIds.length>256||fixed.roomIds.some(id=>typeof id!=='string')||workspaceDigest('disclosure-authority-mutation',{...fixed,roomIds:[]})!==mutationId||roomIds.some(id=>!fixed.roomIds.includes(id)))reject('disclosure_mutation_conflict');
       }
       if(held.length){
-        if(!prior){if(store.db.prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
+        if(!prior){if(prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
           const payload=JSON.stringify(facts);if(Buffer.byteLength(payload)>32768)reject('disclosure_quota');
-          store.db.prepare("INSERT INTO room_disclosure_mutations VALUES(?,'','PENDING',?)").run(mutationId,payload);}
+          prepare("INSERT INTO room_disclosure_mutations VALUES(?,'','PENDING',?)").run(mutationId,payload);}
         return {ok:false,code:'disclosure_revocation_pending',mutationId};
       }
       const h={hostId:old?.hostId??`host-${randomUUID()}`,hostPrincipal:ctx.hostPrincipal,hostIncarnation:(old?.hostIncarnation??0)+1,startupId:input.startupId};
       put('host',ctx.hostPrincipal,'',h);
-      if(prior)store.db.prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutationId);
+      if(prior)prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutationId);
       return {host:h};
     }),
     getState: action((input,ctx)=>{
@@ -375,7 +388,7 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       const c=ownClaim(input,ctx);checkEcho(c,input);
       if(c.executionState==='released')reject('workspace_claim_not_running');
       c.lastHeartbeatAt=time();c.roomSequence=sequence(c.roomId);c.updatedAt=time();
-      const updated=store.db.prepare("UPDATE room_workspace_records SET value_json=? WHERE kind='claim' AND record_key=? AND room_id=?").run(JSON.stringify(c),c.claimId,c.roomId);
+      const updated=prepare("UPDATE room_workspace_records SET value_json=? WHERE kind='claim' AND record_key=? AND room_id=?").run(JSON.stringify(c),c.claimId,c.roomId);
       if(updated.changes!==1)reject('workspace_claim_not_found');return {claim:c};
     }),
     releasingClaim: action((input,ctx)=>{
@@ -503,20 +516,20 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       if(g.revokedSequence)return {grant:g};
       const facts={kind:'revoke-read-grant',roomId:input.roomId,grantId:g.grantId,grantDigest:workspaceDigest('disclosure-revoked-grant',g),actor:ctx.actor,requestSource:'user'};
       const mutationId=workspaceDigest('disclosure-authority-mutation',facts);
-      if(store.db.prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(input.roomId,mutationId))reject('disclosure_mutation_conflict');
-      const prior=store.db.prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
+      if(prepare("SELECT 1 FROM room_disclosure_mutations WHERE (room_id=? OR room_id='') AND state='PENDING' AND mutation_id<>? LIMIT 1").get(input.roomId,mutationId))reject('disclosure_mutation_conflict');
+      const prior=prepare('SELECT state,payload_json FROM room_disclosure_mutations WHERE mutation_id=?').get(mutationId);
       if(prior&&(prior.state!=='PENDING'||prior.payload_json!==JSON.stringify(facts)))reject('disclosure_mutation_conflict');
-      const held=store.db.prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId);
+      const held=prepare("SELECT 1 FROM room_disclosure_leases WHERE room_id=? AND state='PREPARED' LIMIT 1").get(input.roomId);
       if(held){
         if(!prior){
-          if(store.db.prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
-          store.db.prepare("INSERT INTO room_disclosure_mutations(mutation_id,room_id,state,payload_json) VALUES(?,?,'PENDING',?)").run(mutationId,input.roomId,JSON.stringify(facts));
+          if(prepare('SELECT count(*) AS n FROM room_disclosure_mutations').get().n>=256)reject('disclosure_quota');
+          prepare("INSERT INTO room_disclosure_mutations(mutation_id,room_id,state,payload_json) VALUES(?,?,'PENDING',?)").run(mutationId,input.roomId,JSON.stringify(facts));
         }
         // Return, do not throw: this original transaction must commit the intent.
         return {ok:false,code:'disclosure_revocation_pending',mutationId};
       }
       g.revokedSequence=sequence(input.roomId);put('grant',g.grantId,input.roomId,g);
-      if(prior)store.db.prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutationId);
+      if(prior)prepare("UPDATE room_disclosure_mutations SET state='APPLIED' WHERE mutation_id=? AND state='PENDING'").run(mutationId);
       return {grant:g};
     }),
     authorizeRead: action((input,ctx)=>{
@@ -611,19 +624,13 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
       if(!source||source.roomId!==grant.roomId)reject('room_message_not_found');
       return {authorization:grant};
     }),
-    authorizeWake: action((input,ctx)=>{
-      const r=room(input.roomId);const m=member(input.roomId,ctx);if(ctx.requestSource!=='agent'||ctx.actor.logicalAgentId!==input.logicalAgentId)reject('room_actor_identity_mismatch');
-      const source=store.getMessageById(input.roomMessageId);if(!source||source.roomId!==input.roomId)reject('room_message_not_found');
-      const sourceScope=source.contextScope??{kind:'room_only'};
-      const h=host(ctx);let claim=null;
-      // Project discussion has no filesystem claim. The credential-bearing
-      // main checks KSwarm membership per operation; scope is always taken
-      // from this authoritative message, never a caller-supplied assertion.
-      if(input.discussionOnly===true){scope(sourceScope);}
-      else {claim=ownClaim(input,ctx,{running:true});if(canonicalWorkspaceJSON(claim.contextScope)!==canonicalWorkspaceJSON(sourceScope))reject('room_scope_mismatch');}
-      return {authorization:{roomId:r.roomId,roomMessageId:source.messageId,discussionOnly:input.discussionOnly===true,claimId:claim?.claimId??null,logicalAgentId:ctx.actor.logicalAgentId,membershipRevision:m.membershipRevision,discussionEpoch:r.discussionEpoch,hostPrincipal:ctx.hostPrincipal,hostIncarnation:h.hostIncarnation}};
-    }),
+    authorizeWake: action(authorizeWake),
   };
+  // Internal synchronous consumer only: validate current authority and publish
+  // the wake in the same transaction. Standalone authorizeWake keeps its API.
+  api.withAuthorizedWakeClaim=(input,ctx,claim)=>action((input,ctx)=>
+    claim(authorizeWake(input,ctx).authorization)
+  )(input,ctx);
   api.recordWake=(claimToken,authorization)=>put('wake',claimToken,authorization.roomId,authorization);
   api.validateWake=claimToken=>{
     const grant=get('wake',claimToken);if(!grant)return {ok:true};

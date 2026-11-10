@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { waitForAskResponse, extractUserSelectionFromResponse, DEFAULT_POLL_MS, DEFAULT_RESPONSE_TIMEOUT_MS } from './ask-response.js';
 import { MIRRORED_ASK_USER_QUESTION_CONTEXT } from '../session-bridge/question-receipt.js';
 import { fileURLToPath } from 'node:url';
 
@@ -8,6 +9,7 @@ import {
   registerParticipant as registerParticipantDefault,
   sendProgress as sendProgressDefault,
   sendAsk as sendAskDefault,
+  requestJson as requestJsonDefault,
   updateWorkState as updateWorkStateDefault
 } from '../session-bridge/api.js';
 import {
@@ -20,6 +22,7 @@ import {
   resolveSessionCwdFromTranscript as resolveSessionCwdFromTranscriptDefault
 } from '../session-bridge/config.js';
 import { pickRecentContext } from '../session-bridge/recent-context.js';
+import { shouldWaitForAskUserQuestionAnswer } from '../session-bridge/ask-user-question-policy.js';
 import {
   markPendingReplyMirror as markPendingReplyMirrorDefault,
   maybeMirrorPendingReply as maybeMirrorPendingReplyDefault
@@ -310,7 +313,10 @@ export async function runPreToolUseHook(
     homeDir,
     resolveSessionCwdFromTranscript = resolveSessionCwdFromTranscriptDefault,
     savePendingToolUseContext = savePendingToolUseContextDefault,
-    sendAsk = sendAskDefault
+    sendAsk = sendAskDefault,
+    requestJson = requestJsonDefault,
+    pollMs = DEFAULT_POLL_MS,
+    timeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS
   } = {}
 ) {
   if (env.INTENT_BROKER_SKIP_APPROVAL_SYNC === '1') {
@@ -329,7 +335,26 @@ export async function runPreToolUseHook(
     }, { homeDir });
 
     if (askUserQuestionRequest) {
-      await sendAsk(config, askUserQuestionRequest);
+      const sent = await sendAsk(config, askUserQuestionRequest);
+      if (sent && shouldWaitForAskUserQuestionAnswer('claude-code')) {
+        try {
+          const response = await waitForAskResponse({
+            config, intentId: askUserQuestionRequest.intentId,
+            taskId: askUserQuestionRequest.taskId, threadId: askUserQuestionRequest.threadId,
+            afterEventId: sent.eventId ?? sent.event?.eventId ?? 0,
+            requestJson, pollMs, timeoutMs
+          });
+          const selection = extractUserSelectionFromResponse(response);
+          const answer = selection.selectedValue || selection.summary || '';
+          return {
+            permissionDecision: 'deny',
+            permissionDecisionReason: 'The user answered through Intent Broker: "' + answer + '". Use this answer instead of asking again.',
+            additionalContext: 'A user answer was received. Do not open a duplicate prompt or infer a receiving application identity.'
+          };
+        } catch {
+          // A submitted question is never replaced by a duplicate native prompt.
+        }
+      }
       return {
         permissionDecision: 'deny',
         permissionDecisionReason: MIRRORED_ASK_USER_QUESTION_CONTEXT,
@@ -369,7 +394,6 @@ export async function runPermissionRequestHook(
     input,
     !correlated?.sessionId || !sessionId || correlated.sessionId === sessionId ? correlated : null
   );
-  process.stderr.write(`[DEBUG-PRH] toolName=${effectiveTool.toolName} participantId=${config.participantId} brokerUrl=${config.brokerUrl}\n`);
   const result = await requestHookApproval({
     config,
     agentTool: 'claude-code',
@@ -670,7 +694,8 @@ export async function runStopHook(
     const mirroredReply = await maybeMirrorPendingReply(config, {
       toolName: 'claude-code',
       sessionId: currentSessionId,
-      homeDir
+      homeDir,
+      sendProgress
     });
 
     if (
@@ -705,6 +730,8 @@ export async function runStopHook(
       status: 'idle',
       sessionId: currentSessionId,
       turnId: null,
+      taskId: null,
+      threadId: null,
       source: 'stop-hook',
       updatedAt: new Date().toISOString()
     });

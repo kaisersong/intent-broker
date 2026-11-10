@@ -411,6 +411,17 @@ test('Yunzhijia adapter ignores unknown mentions when at least one valid alias i
     sendUrl: yzjSendUrl
   });
 
+  // An inbox row is visible before the real handler finishes its HTTP hint.
+  // Keep the servers alive through that existing production Promise.
+  let resolveHandled, rejectHandled;
+  const handled = new Promise((resolve, reject) => { resolveHandled=resolve; rejectHandled=reject; });
+  const handleMessage=adapter.handleYunzhijiaMessage.bind(adapter);
+  adapter.handleYunzhijiaMessage = message => {
+    const work=handleMessage(message);
+    void work.then(resolveHandled,rejectHandled);
+    return work;
+  };
+
   t.after(async () => {
     adapter.stop();
     await new Promise((resolve) => yzjWss.close(resolve));
@@ -436,6 +447,7 @@ test('Yunzhijia adapter ignores unknown mentions when at least one valid alias i
   );
 
   await waitFor(() => broker.readInbox('codex.a', { after: 0 }).items.some((item) => item.kind === 'ask_clarification'));
+  await handled;
   const codexItems = broker.readInbox('codex.a', { after: 0 }).items.filter((item) => item.kind === 'ask_clarification');
   const claudeItems = broker.readInbox('claude.b', { after: 0 }).items.filter((item) => item.kind === 'ask_clarification');
 
