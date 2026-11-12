@@ -1,0 +1,25 @@
+name: Broker store lifecycle
+on:
+  push:
+    paths: ['src/store/**', 'src/broker/**', 'tests/broker/store-lifecycle.test.js', '.github/workflows/store-lifecycle.yml']
+  pull_request:
+    paths: ['src/store/**', 'src/broker/**', 'tests/broker/store-lifecycle.test.js', '.github/workflows/store-lifecycle.yml']
+permissions:
+  contents: read
+jobs:
+  lifecycle:
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-2022]
+        node: ['22.22.0', '24.16.0']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: node --experimental-sqlite --test tests/broker/store-lifecycle.test.js

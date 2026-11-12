@@ -82,7 +82,8 @@ function serializeContextSyncValue(key, value) {
 
 export function createEventStore({ dbPath }) {
   const db = new DatabaseSync(dbPath);
-  initializeSchema(db);
+  try { initializeSchema(db); } catch (error) { db.close(); throw error; }
+  let closed = false;
 
   function getEventById(eventId) {
     const row = db.prepare(`
@@ -103,6 +104,11 @@ export function createEventStore({ dbPath }) {
   }
 
   return {
+    close() {
+      if (closed) return;
+      db.close();
+      closed = true;
+    },
     appendIntent({ intentId, kind, fromParticipantId, taskId, threadId, payload, recipients }) {
       const targets = [...new Set(recipients)].sort();
       if (targets.some(id => typeof id !== 'string' || !id)) throw new Error('invalid_intent_recipient');

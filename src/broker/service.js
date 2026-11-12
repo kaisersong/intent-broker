@@ -1211,9 +1211,11 @@ export function createBrokerService({
         clearTimeout(timer);
       }
       watchdogTimers.clear();
-      wsNotifier.close();
-      aimp?.close();
-      room.close();
+      const errors = [];
+      for (const close of [() => wsNotifier.close(), () => aimp?.close(), () => room.close(), () => store.close()]) {
+        try { close(); } catch (error) { errors.push(error); }
+      }
+      if (errors.length) throw new AggregateError(errors, 'broker_close_failed');
     }
   };
 }
