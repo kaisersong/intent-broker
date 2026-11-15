@@ -203,7 +203,7 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
   const previous=db.prepare('SELECT value_json FROM aimp_effects WHERE effect_id=?').get(input.effectId);
   const prior=previous?JSON.parse(previous.value_json):null;
   if(prior&&prior.taskRef!==input.taskRef)return failed('aimp_effect_scope_mismatch');
-  if(!['completed','failed','unknown'].includes(input.state)||!prior||!['executing','unknown'].includes(prior.state)){
+  if(!['completed','failed','unknown'].includes(input.state)||!prior||!['executing','unknown'].includes(prior.state)&&!(prior.state==='registered'&&input.state==='failed'&&input.evidence?.kind==='not-applied')){
    const current=checkExecution(input,ctx);if(!current.ok)return current;
   }else if(![task.principal,task.assignee].includes(address(ctx.actor)))return failed('aimp_actor_forbidden');
   return tx(()=>{
