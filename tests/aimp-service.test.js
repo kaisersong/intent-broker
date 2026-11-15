@@ -35,13 +35,18 @@ test('AIMP owner rejects spoofing, fences claims, verifies delivery, keeps unkno
   const effect=aimp.effect({roomId,taskRef,epoch:grant.task.epoch,bindingRevision:1,hostFence:1,effectId:'effect-1',logicalAction:'write:draft.md',clauseVersion:1,state:'registered',externalIdempotencyKey:'effect-1'},agent('a'));
   assert.equal(effect.ok,true);
   assert.equal(aimp.effect({roomId,taskRef,epoch:grant.task.epoch,bindingRevision:1,hostFence:1,effectId:'effect-1',state:'executing'},agent('a')).ok,true);
+  assert.equal(aimp.effect({roomId,taskRef,epoch:grant.task.epoch,bindingRevision:1,hostFence:1,effectId:'registered-only',logicalAction:'staged-never-entered',clauseVersion:1,state:'registered',externalIdempotencyKey:'registered-only'},agent('a')).ok,true);
   assert.equal(grant.task.leaseUntil-now,15*60_000);
   now+=70_000;assert.equal(aimp.checkExecution({roomId,taskRef,epoch:grant.task.epoch,bindingRevision:1,hostFence:1},agent('a')).ok,true);
   const renewed=aimp.heartbeat({roomId,taskRef,epoch:grant.task.epoch,bindingRevision:1,hostFence:1},agent('a'));assert.equal(renewed.task.leaseUntil-now,Math.floor((Date.parse(request.payload.deadline)-now)/4));
   now=renewed.task.leaseUntil+1;aimp.sweep();
   assert.equal(aimp.getTask(taskRef,user).task.state,'result_unknown');
+  assert.equal(aimp.effect({roomId,taskRef,effectId:'registered-only',state:'completed',evidence:{kind:'not-applied'}},agent('a')).ok,false);
+  assert.equal(aimp.effect({roomId,taskRef,effectId:'registered-only',state:'failed',evidence:{kind:'not-applied'}},agent('b')).ok,false);
+  assert.equal(aimp.effect({roomId,taskRef,effectId:'registered-only',state:'failed',evidence:{kind:'not-applied'}},agent('a')).ok,true);
+  assert.equal(aimp.getTask(taskRef,user).task.state,'result_unknown');
   assert.equal(aimp.checkExecution({roomId,taskRef,epoch:grant.task.epoch,bindingRevision:1,hostFence:1},agent('a')).ok,false);
-  assert.equal(aimp.getEffects(taskRef,user).effects[0].state,'unknown');
+  assert.equal(aimp.getEffects(taskRef,user).effects.find(effect=>effect.effectId==='effect-1').state,'unknown');
   aimp.close();aimp=createAimpService({dbPath,roomService:room,now:()=>now});
   now+=600_000;
   assert.equal(aimp.submit(request,user).reused,true,'historical receipt returned before expiry');
@@ -49,7 +54,7 @@ test('AIMP owner rejects spoofing, fences claims, verifies delivery, keeps unkno
   const task=aimp.getTask(taskRef,user).task;
   const stop=aimp.submit({id:'msg_'+'3'.repeat(32),roomId,threadId:'thread-1',taskRef,act:'stop',body:'Stop',payload:{kind:'task.stop@1',must_understand:true,reason:'user stop'},targetEvent:{id:task.headId,hash:task.headHash}},user);
   assert.equal(stop.task.state,'halted');
-  assert.equal(aimp.getEffects(taskRef,user).effects[0].state,'unknown','stop is not proof of physical release');
+  assert.equal(aimp.getEffects(taskRef,user).effects.find(effect=>effect.effectId==='effect-1').state,'unknown','stop is not proof of physical release');
   assert.equal(aimp.verifyThread('thread-1').ok,true);
  }finally{aimp.close();room.close();rmSync(dir,{recursive:true,force:true});}
 });

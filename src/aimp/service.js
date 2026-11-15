@@ -203,7 +203,7 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
   const previous=db.prepare('SELECT value_json FROM aimp_effects WHERE effect_id=?').get(input.effectId);
   const prior=previous?JSON.parse(previous.value_json):null;
   if(prior&&prior.taskRef!==input.taskRef)return failed('aimp_effect_scope_mismatch');
-  if(!['completed','failed','unknown'].includes(input.state)||!prior||!['executing','unknown'].includes(prior.state)){
+  if(!['completed','failed','unknown'].includes(input.state)||!prior||!['executing','unknown'].includes(prior.state)&&!(prior.state==='registered'&&input.state==='failed'&&input.evidence?.kind==='not-applied')){
    const current=checkExecution(input,ctx);if(!current.ok)return current;
   }else if(![task.principal,task.assignee].includes(address(ctx.actor)))return failed('aimp_actor_forbidden');
   return tx(()=>{
@@ -269,7 +269,7 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
   },
   heartbeat(input,ctx){const result=checkExecution(input,ctx);if(!result.ok)return result;return tx(()=>{const task=readTask(input.taskRef);const leaseUntil=executionLeaseUntil(task);if(leaseUntil<=now())return failed('aimp_terms_expired');task.leaseUntil=leaseUntil;return append(eventFor({id:nonce('msg_'),roomId:task.roomId,threadId:task.threadId,taskRef:task.taskRef,act:'sys.lease_renewed',body:'执行主机续租。',targetEvent:{id:task.headId,hash:task.headHash},payload:{kind:'sys.lease_renewed@1',must_understand:true,execution_epoch:task.epoch,lease_until:new Date(task.leaseUntil).toISOString(),purpose:'fulfillment'}},{...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'}}),task,ctx);});},
   getSession(roomId,ctx){const auth=authorization(roomId,ctx);return auth.ok?{ok:true,session:session(roomId)}:auth;},
-  status(){return {ok:true,specification:'3.1',wire:'1.0',profileClaim:null,experimental:true,supportedEvents:Object.keys(schemas)};},
+  status(){return {ok:true,specification:'3.1',wire:'1.0',profileClaim:null,experimental:true,capabilities:['effect-observation-v1','not-applied-terminal-observation-v1'],supportedEvents:Object.keys(schemas)};},
   close(){if(!closed){closed=true;db.close();lock.exec('ROLLBACK');lock.close();}}
  };
 }

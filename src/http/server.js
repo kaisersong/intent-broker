@@ -196,6 +196,7 @@ export function createServer({
             if(operation==='session')result=broker.aimp.getSession(roomId,ctx);
             else if(operation==='tasks')result=broker.aimp.listTasks(roomId,ctx);
             else if(operation==='status')result=broker.aimp.status();
+            else if(operation==='effects'){const taskRef=requestUrl.searchParams.get('taskRef');if(!taskRef||taskRef.length>256){writeJson(res,400,{ok:false,code:'aimp_task_not_found'});return;}const scoped=broker.aimp.getTask(taskRef,ctx);if(!scoped.ok||scoped.task.roomId!==roomId){writeJson(res,403,{ok:false,code:'aimp_effect_scope_mismatch'});return;}result=broker.aimp.getEffects(taskRef,ctx);}
             else {writeJson(res,404,{ok:false,code:'not_found'});return;}
           }else if(req.method==='POST') {
             const input=await readJson(req,{maxBytes:256*1024,strict:true});
