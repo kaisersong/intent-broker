@@ -101,3 +101,21 @@ test('message disclosure is fenced to membership revision for human sends and AI
   const revision=room.getCollaborationRoom({roomId},user).room.revision;assert.equal(room.updateRoomMembers({roomId,addUserIds:['observer']},user).ok,true);assert.equal(room.sendRoomMessage({roomId,text:'private',kind:'text',idempotencyKey:'private',expectedRoomRevision:revision},user).code,'room_revision_conflict');assert.equal(aimp.chat({roomId,taskRef:task.taskRef,epoch:task.epoch,bindingRevision:1,hostFence:1,text:'private answer',expectedRoomRevision:revision},agent('a')).code,'room_revision_conflict');assert.equal(room.getCollaborationRoom({roomId},user).messages.length,0);
  }finally{aimp.close();store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('lease sizing follows remaining deadline, caps at 30 minutes and never revives an expired epoch',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'aimp-lease-bounds-')),dbPath=join(dir,'broker.sqlite'),store=createRoomStore({dbPath});store.migrate();const room=createRoomService({store});const roomId=room.createRoom({title:'lease',memberAgentIds:['a']},user).room.roomId;let now=Date.now();const aimp=createAimpService({dbPath,roomService:room,now:()=>now});
+ let serial=10;const nextId=()=> 'msg_'+String(serial++).padStart(32,'0');
+ try{
+  aimp.configure({roomId,expectedRevision:0,goal:'lease bounds',allowedActions:['discussion'],maxRuns:6},user);
+  for(const duration of [4*3600_000,10_000]){
+   const threadId='lease-'+serial,deadline=now+duration;
+   let task=aimp.submit({id:nextId(),roomId,threadId,act:'request',body:'lease',payload:{kind:'task.request@1',must_understand:true,description:'lease',deadline:new Date(deadline).toISOString(),expires:new Date(now+1000).toISOString(),budget:'none',acceptance:{predicates:['artifact_hash']},assignee:'agent://kteam.local/a',reviewer:'human://kteam.local/user.local'}},user).task;
+   task=aimp.submit({id:nextId(),roomId,threadId,taskRef:task.taskRef,act:'accept',body:'accept',targetEvent:{id:task.headId,hash:task.headHash},payload:{kind:'task.accept@1',must_understand:true,terms_hash:task.termsHash,caveats:[]}},agent('a')).task;
+   const run=aimp.beginExecution({roomId,taskRef:task.taskRef,requestId:'run-'+serial,expectedRevision:task.revision,bindingRevision:1,hostFence:1},agent('a'));
+   assert.equal(run.ok,true);assert.equal(run.task.leaseUntil-now,Math.min(duration/4,30*60_000));
+   now=run.task.leaseUntil+1;
+   assert.equal(aimp.heartbeat({roomId,taskRef:task.taskRef,epoch:run.task.epoch,bindingRevision:1,hostFence:1},agent('a')).ok,false);
+   aimp.sweep();assert.equal(aimp.checkExecution({roomId,taskRef:task.taskRef,epoch:run.task.epoch,bindingRevision:1,hostFence:1},agent('a')).ok,false);
+  }
+ }finally{aimp.close();room.close();rmSync(dir,{recursive:true,force:true});}
+});
