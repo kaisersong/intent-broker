@@ -1,0 +1,12 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createBrokerService} from '../src/broker/service.js';
+import {createServer} from '../src/http/server.js';
+test('authenticated effect observation enforces URL task scope and is read-only',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'effect-http-')),broker=createBrokerService({dbPath:join(dir,'broker.sqlite'),aimpEnabled:true}),server=createServer({broker,roomService:broker.room,roomDesktopToken:'synthetic-test-token'}),user={sessionId:'synthetic',requestSource:'user',actor:{kind:'user',userId:'user.local'},issuedAt:new Date().toISOString()};await server.listen(0,'127.0.0.1');
+ try{const roomId=broker.room.createRoom({title:'Synthetic one',memberAgentIds:['a']},user).room.roomId,other=broker.room.createRoom({title:'Synthetic two',memberAgentIds:['a']},user).room.roomId;broker.aimp.configure({roomId,expectedRevision:0,goal:'Synthetic',allowedActions:['discussion'],maxRuns:6},user);const requested=broker.aimp.submit({id:'msg_'+'1'.repeat(32),roomId,threadId:'synthetic',act:'request',body:'Synthetic',payload:{kind:'task.request@1',must_understand:true,description:'Synthetic',deadline:new Date(Date.now()+3600000).toISOString(),expires:new Date(Date.now()+60000).toISOString(),budget:'none',acceptance:{predicates:['artifact_hash']},assignee:'agent://kteam.local/a',reviewer:'human://kteam.local/user.local'}},user);assert.equal(requested.ok,true);const taskRef=requested.task.taskRef,origin='http://127.0.0.1:'+server.address().port,headers={'x-intent-broker-room-token':'synthetic-test-token'},route=(room,task=taskRef)=>origin+'/rooms/'+room+'/aimp/effects?taskRef='+encodeURIComponent(task),before=JSON.stringify(broker.aimp.getTask(taskRef,user));const result=await fetch(route(roomId),{headers});assert.equal(result.status,200);assert.deepEqual((await result.json()).effects,[]);assert.equal(JSON.stringify(broker.aimp.getTask(taskRef,user)),before);assert.equal((await fetch(route(other),{headers})).status,403);assert.equal((await fetch(route(roomId))).status>=400,true);assert.equal((await fetch(route(roomId,''),{headers})).status,400);assert.equal((await fetch(route(roomId,'missing'),{headers})).status,403);
+ }finally{await server.close();broker.close();rmSync(dir,{recursive:true,force:true});}
+});
