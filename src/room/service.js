@@ -609,7 +609,18 @@ export function createRoomService({
       responsePolicy:'mentioned',idempotencyKey:input.idempotencyKey},
       {...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'},scopes:['room-scheduled-wake-publisher']});
   }
-  function sendRoomMessage(input = {}, ctx = null) {
+  const ownerAgentRelayAuthorization = Symbol('ownerAgentRelayAuthorization');
+  function sendOwnerAgentRelay(input = {}, ctx = null) {
+    const invalid=requireVerifiedCtx(ctx);if(invalid)return invalid;
+    if(ctx.requestSource!=='user'||ctx.actor?.kind!=='user')return fail('room_actor_forbidden');
+    const source=requireRoom(input.sourceRoomId),target=requireRoom(input.roomId);if(source.ok===false)return source;if(target.ok===false)return target;
+    const owns=roomId=>store.listMembers(roomId).some(member=>member.status==='active'&&member.role==='owner'&&member.subject?.kind==='user'&&member.subject.userId===ctx.actor.userId);
+    if(source.status!=='active'||target.status!=='active'||!owns(source.roomId)||!owns(target.roomId)||!store.listMembers(source.roomId).some(member=>member.status==='active'&&member.subject?.logicalAgentId===input.logicalAgentId))return fail('room_actor_forbidden');
+    const {sourceRoomId,logicalAgentId,...message}=input;
+    const actor={...ctx,requestSource:'agent',actor:{kind:'agent',logicalAgentId},allowedLogicalAgentIds:[logicalAgentId]};
+    return sendRoomMessage(message,actor,ownerAgentRelayAuthorization);
+  }
+  function sendRoomMessage(input = {}, ctx = null, relayAuthorization = null) {
     const ctxError = requireVerifiedCtx(ctx);
     if (ctxError) return ctxError;
 
@@ -626,7 +637,7 @@ export function createRoomService({
         || ctx.actor.kind==='system'&&ctx.actor.service==='desktop'&&hasScope(ctx,'room-scheduled-wake-publisher')&&kind==='text'&&input.sourceRef?.kind==='scheduled_task';
       if (!publisherAllowed) return fail('room_actor_forbidden');
     } else {
-      const memberError = requireActiveMember(room.roomId, ctx);
+      const memberError = relayAuthorization===ownerAgentRelayAuthorization?null:requireActiveMember(room.roomId, ctx);
       if (memberError) return memberError;
       if (kind === 'project_event') {
         // users and agents cannot forge project events
@@ -1180,6 +1191,7 @@ export function createRoomService({
     finalizeMemberRemovals,
     acquireMembershipLease,
     sendRoomMessage,
+    sendOwnerAgentRelay,
     sendScheduledRoomWake,
     listRoomMessages,
     listRoomMessagesPage,
