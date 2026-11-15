@@ -179,6 +179,9 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
   if(task.state!=='working'||task.executionFrozen||task.assignee!==address(ctx.actor)||task.epoch!==input.epoch||task.bindingRevision!==input.bindingRevision||task.hostFence!==input.hostFence||task.leaseUntil<=now()||contract.scopeEpoch!==task.scopeEpoch)return failed('aimp_execution_not_current');
   return {ok:true,task};
  }
+ // AIMP §10.2: lease = min(remaining task deadline / 4, 30 minutes).
+ // A short fixed lease makes a healthy desktop lose work during scheduling stalls.
+ const executionLeaseUntil=task=>{const at=now(),remaining=Date.parse(task.terms.deadline)-at;return Number.isFinite(remaining)&&remaining>0?at+Math.min(Math.floor(remaining/4),30*60_000):at;};
  function beginExecution(input,ctx){
   const task=readTask(input.taskRef);if(!task||task.roomId!==input.roomId)return failed('aimp_task_not_found');
   const auth=authorization(task.roomId,ctx);if(!auth.ok)return auth;
@@ -189,7 +192,8 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
    }
    if(current.state!=='committed'||current.executionFrozen||current.assignee!==address(ctx.actor)||current.revision!==input.expectedRevision||contract.scopeEpoch!==current.scopeEpoch)return failed('aimp_execution_not_current');
    if(!Number.isSafeInteger(input.bindingRevision)||input.bindingRevision<1||!Number.isSafeInteger(input.hostFence)||input.hostFence<1)return failed('aimp_binding_required');
-   current.state='working';current.epoch++;current.leaseUntil=now()+60_000;current.bindingRevision=input.bindingRevision;current.hostFence=input.hostFence;current.runId=input.requestId;
+   const leaseUntil=executionLeaseUntil(current);if(leaseUntil<=now())return failed('aimp_terms_expired');
+   current.state='working';current.epoch++;current.leaseUntil=leaseUntil;current.bindingRevision=input.bindingRevision;current.hostFence=input.hostFence;current.runId=input.requestId;
    return append(eventFor({id:nonce('msg_'),roomId:current.roomId,threadId:current.threadId,taskRef:current.taskRef,act:'sys.epoch',body:'工作已认领，开始执行。',targetEvent:{id:current.headId,hash:current.headHash},payload:{kind:'sys.epoch@1',must_understand:true,execution_epoch:current.epoch,lease_until:new Date(current.leaseUntil).toISOString(),purpose:'fulfillment'}},{...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'}}),current,ctx);
   });
  }
@@ -263,7 +267,7 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
    return tx(()=>{const current=readTask(input.taskRef);if(current.revision!==task.revision)return failed('aimp_task_revision_conflict');
     current.artifactVerification={verified:true,kind:'broker-message-bytes',verifiedAt:new Date(now()).toISOString()};saveTask(current);return {ok:true,task:current};});
   },
-  heartbeat(input,ctx){const result=checkExecution(input,ctx);if(!result.ok)return result;return tx(()=>{const task=readTask(input.taskRef);task.leaseUntil=now()+60_000;return append(eventFor({id:nonce('msg_'),roomId:task.roomId,threadId:task.threadId,taskRef:task.taskRef,act:'sys.lease_renewed',body:'执行主机续租。',targetEvent:{id:task.headId,hash:task.headHash},payload:{kind:'sys.lease_renewed@1',must_understand:true,execution_epoch:task.epoch,lease_until:new Date(task.leaseUntil).toISOString(),purpose:'fulfillment'}},{...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'}}),task,ctx);});},
+  heartbeat(input,ctx){const result=checkExecution(input,ctx);if(!result.ok)return result;return tx(()=>{const task=readTask(input.taskRef);const leaseUntil=executionLeaseUntil(task);if(leaseUntil<=now())return failed('aimp_terms_expired');task.leaseUntil=leaseUntil;return append(eventFor({id:nonce('msg_'),roomId:task.roomId,threadId:task.threadId,taskRef:task.taskRef,act:'sys.lease_renewed',body:'执行主机续租。',targetEvent:{id:task.headId,hash:task.headHash},payload:{kind:'sys.lease_renewed@1',must_understand:true,execution_epoch:task.epoch,lease_until:new Date(task.leaseUntil).toISOString(),purpose:'fulfillment'}},{...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'}}),task,ctx);});},
   getSession(roomId,ctx){const auth=authorization(roomId,ctx);return auth.ok?{ok:true,session:session(roomId)}:auth;},
   status(){return {ok:true,specification:'3.1',wire:'1.0',profileClaim:null,experimental:true,supportedEvents:Object.keys(schemas)};},
   close(){if(!closed){closed=true;db.close();lock.exec('ROLLBACK');lock.close();}}
