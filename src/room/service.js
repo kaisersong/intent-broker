@@ -610,6 +610,10 @@ export function createRoomService({
       {...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'},scopes:['room-scheduled-wake-publisher']});
   }
   const ownerAgentRelayAuthorization = Symbol('ownerAgentRelayAuthorization');
+  const aimpArtifactAuthorization = Symbol('aimpArtifactAuthorization');
+  function sendAimpArtifactMessage(input,ctx) {
+    return sendRoomMessage(input,ctx,aimpArtifactAuthorization);
+  }
   function sendOwnerAgentRelay(input = {}, ctx = null) {
     const invalid=requireVerifiedCtx(ctx);if(invalid)return invalid;
     if(ctx.requestSource!=='user'||ctx.actor?.kind!=='user')return fail('room_actor_forbidden');
@@ -649,6 +653,8 @@ export function createRoomService({
     }
 
     const idempotencyKey = input.idempotencyKey;
+    if((input.sourceRef?.artifactFileId!==undefined||typeof idempotencyKey==='string'&&idempotencyKey.startsWith('aimp-artifact:'))
+      &&relayAuthorization!==aimpArtifactAuthorization)return fail('room_actor_forbidden');
     if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim()) {
       return fail('room_input_invalid', { field: 'idempotencyKey' });
     }
@@ -1191,6 +1197,7 @@ export function createRoomService({
     finalizeMemberRemovals,
     acquireMembershipLease,
     sendRoomMessage,
+    sendAimpArtifactMessage,
     sendOwnerAgentRelay,
     sendScheduledRoomWake,
     listRoomMessages,
