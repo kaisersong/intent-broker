@@ -251,6 +251,28 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
  return {configure,submit,beginExecution,checkExecution,effect,sweep,getTask,getEffects,listTasks,publish,verifyThread,
   chat(input,ctx){
    const allowed=checkExecution(input,ctx);if(!allowed.ok)return allowed;
+   if(input.artifact!==undefined){
+    const {artifact,roomId,taskRef,expectedRoomRevision}=input;
+    if(!artifact||typeof artifact!=='object'||Array.isArray(artifact)||Object.keys(artifact).some(key=>!['fileId','replyMessageId'].includes(key))
+     ||!Number.isSafeInteger(expectedRoomRevision)||input.text!==undefined||!/^[a-f0-9]{64}$/.test(artifact.fileId??'')
+     ||typeof artifact.replyMessageId!=='string'||artifact.replyMessageId.length>128)return failed('aimp_input_invalid');
+    const reply=roomService.workspace.getConversationMessage({roomId,messageId:artifact.replyMessageId},ctx).message;
+    if(reply?.sender?.kind!=='agent'||reply.sender.logicalAgentId!==ctx.actor.logicalAgentId||reply.threadId!==allowed.task.threadId
+     ||reply.sourceRef?.kind!=='aimp_reply'||reply.sourceRef.taskRef!==taskRef||reply.sourceRef.artifactFileId)return failed('aimp_artifact_verification_failed');
+    const data=roomService.workspace.getConversationData({roomId},ctx);
+    if(!data.ok)return data;
+    const file=data.library.find(item=>item.fileId===artifact.fileId);
+    if(!file||file.bytes>4*1024*1024)return failed('aimp_artifact_verification_failed');
+    const {fileId,name,bytes,sha256,hostId,extension}=file;
+    const text=JSON.stringify({kind:'kteam_message_with_attachments',version:1,text:'',attachments:[{fileId,name,bytes,sha256,hostId,extension}]});
+    const sourceRef={kind:'aimp_reply',taskRef,artifactFileId:fileId,artifactReplyMessageId:reply.messageId};
+    const result=roomService.sendAimpArtifactMessage({roomId,expectedRoomRevision,threadId:allowed.task.threadId,
+     kind:'text',text,idempotencyKey:'aimp-artifact:'+taskRef+':'+fileId,responsePolicy:'none',
+     contextScope:{kind:'room_only'},sourceRef},ctx);
+    if(result.code==='room_message_duplicate'&&result.message?.text===text&&result.message.sender?.logicalAgentId===ctx.actor.logicalAgentId
+     &&result.message.sourceRef?.artifactReplyMessageId===reply.messageId)return {ok:true,message:result.message,reused:true};
+    return result;
+   }
    if(typeof input.text!=='string'||!input.text.trim()||input.text.length>32768)return failed('aimp_input_invalid');
    return roomService.sendRoomMessage({roomId:input.roomId,expectedRoomRevision:input.expectedRoomRevision,threadId:allowed.task.threadId,kind:'text',text:input.text,idempotencyKey:'aimp-reply:'+input.taskRef,
     responsePolicy:'none',contextScope:{kind:'room_only'},sourceRef:{kind:'aimp_reply',taskRef:input.taskRef,model:input.model??'unknown',usage:input.usage??null}},ctx);
@@ -269,7 +291,7 @@ export function createAimpService({dbPath,roomService,now=Date.now}={}){
   },
   heartbeat(input,ctx){const result=checkExecution(input,ctx);if(!result.ok)return result;return tx(()=>{const task=readTask(input.taskRef);const leaseUntil=executionLeaseUntil(task);if(leaseUntil<=now())return failed('aimp_terms_expired');task.leaseUntil=leaseUntil;return append(eventFor({id:nonce('msg_'),roomId:task.roomId,threadId:task.threadId,taskRef:task.taskRef,act:'sys.lease_renewed',body:'执行主机续租。',targetEvent:{id:task.headId,hash:task.headHash},payload:{kind:'sys.lease_renewed@1',must_understand:true,execution_epoch:task.epoch,lease_until:new Date(task.leaseUntil).toISOString(),purpose:'fulfillment'}},{...ctx,requestSource:'system',actor:{kind:'system',service:'desktop'}}),task,ctx);});},
   getSession(roomId,ctx){const auth=authorization(roomId,ctx);return auth.ok?{ok:true,session:session(roomId)}:auth;},
-  status(){return {ok:true,specification:'3.1',wire:'1.0',profileClaim:null,experimental:true,capabilities:['effect-observation-v1','not-applied-terminal-observation-v1'],supportedEvents:Object.keys(schemas)};},
+  status(){return {ok:true,specification:'3.1',wire:'1.0',profileClaim:null,experimental:true,capabilities:['effect-observation-v1','not-applied-terminal-observation-v1','room-artifact-reply-v1'],supportedEvents:Object.keys(schemas)};},
   close(){if(!closed){closed=true;db.close();lock.exec('ROLLBACK');lock.close();}}
  };
 }

@@ -73,6 +73,26 @@ test('real broker chat bytes require live execution and independent verification
   assert.equal(aimp.chat({...admission,epoch:999,text:'stale'},agent('a')).ok,false);
   const text='真实草稿\n';const sent=aimp.chat({...admission,text},agent('a'));assert.equal(sent.ok,true);
   const artifacts=[{ref:`message://${roomId}/${sent.message.messageId}`,version:1,sha256:sha256(sent.message.text),media_type:'text/markdown'}];
+  const file={fileId:'1'.repeat(64),name:'报告.md',extension:'md',bytes:10,sha256:'2'.repeat(64),hostId:'local-fixture'};
+  const expectedRoomRevision=room.getRoomMembership({roomId},user).room.revision;
+  const register={roomId,operation:'library.register',requestId:'fixture-file',file,expectedRoomRevision};
+  assert.equal(room.workspace.updateConversationData({...register,expectedRoomRevision:expectedRoomRevision+1},user).code,'room_revision_conflict');
+  assert.equal(room.workspace.updateConversationData(register,user).ok,true);
+  const deliverFile={...admission,expectedRoomRevision,artifact:{fileId:file.fileId,replyMessageId:sent.message.messageId}};
+  assert.equal(aimp.chat({...deliverFile,artifact:{...deliverFile.artifact,fileId:'3'.repeat(64)}},agent('a')).ok,false);
+  assert.equal(aimp.chat({...deliverFile,artifact:{...deliverFile.artifact,replyMessageId:'foreign-reply'}},agent('a')).ok,false);
+  assert.equal(aimp.chat({...deliverFile,expectedRoomRevision:expectedRoomRevision+1},agent('a')).ok,false);
+  assert.equal(aimp.chat(deliverFile,agent('b')).ok,false);
+  const deliveredFile=aimp.chat(deliverFile,agent('a'));
+  assert.equal(deliveredFile.ok,true);
+  assert.equal(deliveredFile.message.responsePolicy,'none');
+  assert.equal(deliveredFile.message.sourceRef.artifactReplyMessageId,sent.message.messageId);
+  assert.deepEqual(JSON.parse(deliveredFile.message.text).attachments,[file]);
+  assert.equal(room.sendRoomMessage({
+   roomId,text:deliveredFile.message.text,idempotencyKey:'spoofed-artifact',sourceRef:deliveredFile.message.sourceRef,
+  },agent('a')).code,'room_actor_forbidden');
+  assert.equal(aimp.chat(deliverFile,agent('a')).message.messageId,deliveredFile.message.messageId);
+  artifacts.push({ref:`message://${roomId}/${deliveredFile.message.messageId}`,version:1,sha256:sha256(deliveredFile.message.text),media_type:'text/plain'});
   assert.equal(aimp.submit(next(task,'deliver',{draft:false,caveats:[]},{...admission,epoch:999,artifacts}),agent('a')).ok,false);
   task=aimp.submit(next(task,'deliver',{draft:false,caveats:[]},{...admission,artifacts}),agent('a')).task;
   assert.equal(task.state,'delivered');assert.equal(aimp.chat({...admission,text:'late'},agent('a')).ok,false);
@@ -81,7 +101,7 @@ test('real broker chat bytes require live execution and independent verification
   assert.equal(aimp.verifyDelivery({taskRef:task.taskRef},user).ok,true);
   task=aimp.getTask(task.taskRef,user).task;
   assert.equal(aimp.submit(next(task,'review',{decision:'pass',findings:[],trust_root:task.reviewer}),user).task.state,'accepted');
-  aimp.publish();assert.equal(room.getCollaborationRoom({roomId},user).messages.length,1,'protocol telemetry is not duplicate chat');
+  aimp.publish();assert.equal(room.getCollaborationRoom({roomId},user).messages.length,2,'only the reply and its file appear in chat');
   assert.equal(aimp.verifyThread('thread-2').ok,true);
  }finally{aimp.close();room.close();rmSync(dir,{recursive:true,force:true});}
 });
