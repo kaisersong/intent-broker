@@ -78,6 +78,7 @@ export async function startBrokerApp({
     broker,
     roomService: broker.room,
     roomDesktopToken: env.INTENT_BROKER_DESKTOP_TOKEN,
+    sharedRoomAuthorityKey: env.INTENT_BROKER_SHARED_ROOM_AUTHORITY_KEY ?? null,
     roomKSwarmToken: env.INTENT_BROKER_KSWARM_TOKEN,
     healthProvider: () => {
       const summary = channelHealth.summarize();

@@ -45,7 +45,7 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
     return m;
   };
   const room = (roomId, active = true) => {
-    const r=store.getRoomRow(roomId); if(!r || r.deletedAt) reject('room_not_found');
+    const r=store.getRoomRow(roomId); if(!r || r.deletedAt || r.sharedWorkspaceId) reject('room_not_found');
     if(active && r.status!=='active') reject('room_archived'); return r;
   };
   const host = ctx => {
@@ -68,7 +68,8 @@ export function createRoomWorkspaceService({ store, now = () => new Date() }) {
     if(independent&&store.db.isTransaction)reject('disclosure_independent_transaction_required');
     const verified=verifyTrustedActorContext(ctx); if(!verified.ok)return verified;
     try { return store.withTransaction(()=>{
-      if(typeof input?.roomId==='string' && store.getRoomRow(input.roomId)?.deletedAt)reject('room_not_found');
+      const target = typeof input?.roomId === 'string' ? store.getRoomRow(input.roomId) : null;
+      if (target?.deletedAt || target?.sharedWorkspaceId) reject('room_not_found');
       return {ok:true,...fn(input,ctx)};
     }); }
     catch(error) { if(error.workspaceCode)return {ok:false,code:error.workspaceCode}; throw error; }

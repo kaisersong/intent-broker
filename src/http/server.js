@@ -1,3 +1,5 @@
+import { createSharedRoomAuthenticator } from './shared-room-auth.js';
+import { SHARED_ROOM_CAPABILITIES, SHARED_ROOM_PROTOCOL_VERSION } from '../room/shared-service.js';
 import {sendOwnerAgentRelayMessage} from '../room/owner-agent-relay.js';
 import http from 'node:http';
 import {sendBotPrivateMessage} from '../room/bot-private.js';
@@ -77,6 +79,93 @@ function roomStatus(result, successStatus = 200) {
   return 400;
 }
 
+const sharedPrefix = '/rooms/shared';
+const sharedAssertionHeader = 'x-intent-broker-shared-assertion';
+
+function sharedStatus(result) {
+  switch (result.code) {
+    case 'room_membership_required': return 403;
+    case 'shared_operation_conflict':
+    case 'shared_operation_pending_verification':
+    case 'shared_history_rebuild_required':
+    case 'shared_room_generation_mismatch': return 409;
+    case 'shared_group_protocol_unavailable': return 503;
+    default: return roomStatus(result);
+  }
+}
+
+async function serveSharedRoom(req, res, pathname, shared, authenticate) {
+  if (!authenticate || !shared?.ready()) {
+    writeJson(res, 503, { ok: false, code: 'shared_group_protocol_unavailable' });
+    return;
+  }
+
+  const token = req.headers[sharedAssertionHeader];
+  const authError = () => writeJson(res, 401, { ok: false, code: 'room_authentication_required' });
+  const authenticated = authenticate(token);
+  if (req.headers['x-intent-broker-room-token'] !== undefined || !authenticated) {
+    authError();
+    return;
+  }
+  const route = pathname.slice(sharedPrefix.length).split('/').slice(1);
+  if (req.method === 'GET' && route.length === 1 && route[0] === 'protocol') {
+    writeJson(res, 200, { ok: true, version: SHARED_ROOM_PROTOCOL_VERSION, capabilities: SHARED_ROOM_CAPABILITIES });
+    return;
+  }
+  if (req.method === 'GET' && route.length === 1 && route[0] === 'rooms') {
+    const result = shared.list(authenticated);
+    writeJson(res, sharedStatus(result), result);
+    return;
+  }
+
+  const validRoute = route[0] === 'rooms' && route.length <= 3 && route.slice(1)
+    .every(segment => /^[a-zA-Z0-9_.:-]{1,256}$/.test(segment));
+  if (req.method !== 'POST' || !validRoute) {
+    writeJson(res, 404, { ok: false, code: 'not_found' });
+    return;
+  }
+
+  let input;
+  try {
+    input = await readJson(req, { maxBytes: 256 * 1024, strict: true });
+  } catch (error) {
+    writeJson(res, error.statusCode ?? 400, { ok: false, code: error.code ?? 'room_input_invalid' });
+    return;
+  }
+  // Revalidate after reading the body, immediately before the synchronous
+  // authorization/read or write transaction and response.
+  const session = authenticate(token);
+  if (!session) {
+    authError();
+    return;
+  }
+
+  const [, target = null, command] = route;
+  const createReceipt = target === 'receipt' && command === undefined;
+  const roomId = createReceipt ? null : target;
+  const operation = createReceipt ? 'receipt' : command ?? (roomId === null ? 'create' : '');
+  let result;
+  if (operation === 'history') {
+    result = shared.history(session, roomId, input);
+  } else if (operation === 'receipt') {
+    if (!input || typeof input !== 'object' || Object.keys(input).some(key => !['operation', 'requestId'].includes(key))) {
+      result = { ok: false, code: 'room_input_invalid' };
+    } else {
+      result = shared.receipt(session, roomId, input.operation, input.requestId);
+    }
+  } else if (!['create', 'members', 'metadata', 'message'].includes(operation)) {
+    result = { ok: false, code: 'not_found' };
+  } else if (req.headers['x-intent-broker-shared-version'] !== String(SHARED_ROOM_PROTOCOL_VERSION)) {
+    result = { ok: false, code: 'shared_group_protocol_unavailable' };
+  } else if (req.headers['x-intent-broker-shared-recovery-generation'] !== String(session.recoveryGeneration)
+    || req.headers['x-intent-broker-shared-device-generation'] !== String(session.deviceGeneration)) {
+    result = { ok: false, code: 'shared_room_generation_mismatch' };
+  } else {
+    result = shared.write(session, roomId, operation, input);
+  }
+  writeJson(res, sharedStatus(result), result);
+}
+
 export function createServer({
   broker,
   healthProvider = null,
@@ -84,7 +173,11 @@ export function createServer({
   roomDesktopToken = null,
   roomKSwarmToken = null,
   roomHostPrincipal = null,
+  sharedRoomAuthorityKey = null,
 } = {}) {
+  if (sharedRoomAuthorityKey !== null && (tokenMatches(sharedRoomAuthorityKey, roomDesktopToken)
+    || tokenMatches(sharedRoomAuthorityKey, roomKSwarmToken))) throw new Error('shared_room_authority_key_reused');
+  const authenticateShared = sharedRoomAuthorityKey === null ? null : createSharedRoomAuthenticator(sharedRoomAuthorityKey);
   const getHealth = healthProvider || (() => ({ ok: true }));
   const raw = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url, 'http://127.0.0.1');
@@ -104,6 +197,10 @@ export function createServer({
     }
 
     try {
+      if (pathname === sharedPrefix || pathname.startsWith(sharedPrefix + '/')) {
+        await serveSharedRoom(req, res, pathname, roomService?.shared, authenticateShared);
+        return;
+      }
       if (roomPath) {
         const token = req.headers['x-intent-broker-room-token'];
         const desktopAuthenticated = tokenMatches(token, roomDesktopToken);
@@ -113,7 +210,7 @@ export function createServer({
           return;
         }
         if (req.method === 'GET' && pathname === '/rooms/workspace-protocol' && roomService.workspace) {
-          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','conversation-context','bot-private-messages','owner-agent-relay','execution-claims','commit-tickets','physical-release','read-grants']});
+          writeJson(res,200,{ok:true,protocols:{room_workspace_v1:{contextVersion:1,resultVersion:1,releaseVersion:1}},capabilities:['external-agent-messages','room-metadata-cas','message-revision-cas','workspace-cas','conversation-context','bot-private-messages','owner-agent-relay','execution-claims','commit-tickets','physical-release','read-grants',...(authenticateShared && roomService.shared?.ready() ? SHARED_ROOM_CAPABILITIES : [])]});
           return;
         }
 
@@ -187,6 +284,10 @@ export function createServer({
         const segments = pathname.split('/').filter(Boolean).map(decodeURIComponent);
         const roomId = segments[1];
         const action = segments[2];
+        if (roomId && roomService.isSharedRoom?.(roomId)) {
+          writeJson(res, 404, { ok: false, code: 'room_not_found' });
+          return;
+        }
         let result;
 
         if (roomId && action === 'aimp') {
@@ -614,7 +715,17 @@ export function createServer({
 
   return {
     listen(port, host) {
-      return new Promise((resolve) => raw.listen(port, host, resolve));
+      return new Promise((resolve, reject) => {
+        if (authenticateShared && host !== '127.0.0.1' && host !== '::1') {
+          reject(new Error('shared_room_authority_requires_loopback'));
+          return;
+        }
+        raw.once('error', reject);
+        raw.listen(port, host, () => {
+          raw.off('error', reject);
+          resolve();
+        });
+      });
     },
     close() {
       return new Promise((resolve, reject) => {

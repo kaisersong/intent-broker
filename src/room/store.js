@@ -16,13 +16,14 @@
  * Migrations are ordered and transactional: a failed step rolls back its
  * DDL and the recorded version together (no partial forward progress).
  */
+import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { ROOM_SCHEMA_VERSION } from './constants.js';
 
 function mapRoomRow(row) {
   if (!row) return null;
   return {
     roomId: row.room_id,
+    ...(row.shared_workspace_id ? { sharedWorkspaceId: row.shared_workspace_id } : {}),
     title: row.title,
     description: row.description ?? undefined,
     status: row.status,
@@ -290,6 +291,34 @@ export function getDefaultMigrations() {
     { version: 7, id: 'room_soft_delete', up(db) {
       db.exec('ALTER TABLE rooms ADD COLUMN deleted_at TEXT; ALTER TABLE rooms ADD COLUMN deleted_by_json TEXT');
     } },
+    { version: 8, id: 'shared_room_protocol', up(db) {
+      db.exec(`
+        ALTER TABLE rooms ADD COLUMN shared_workspace_id TEXT;
+        CREATE INDEX rooms_shared_workspace ON rooms(shared_workspace_id);
+        CREATE TABLE shared_room_operations (
+          workspace_id TEXT NOT NULL,
+          principal_id TEXT NOT NULL,
+          operation_scope TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          request_digest TEXT NOT NULL,
+          room_id TEXT NOT NULL,
+          device_id TEXT NOT NULL,
+          device_generation INTEGER NOT NULL,
+          recovery_generation INTEGER NOT NULL,
+          recorded_at INTEGER NOT NULL,
+          receipt_json TEXT,
+          PRIMARY KEY (workspace_id, principal_id, operation_scope, operation, request_id)
+        );
+        CREATE INDEX shared_room_operations_retention ON shared_room_operations(recorded_at)
+          WHERE receipt_json IS NOT NULL;
+        CREATE TABLE shared_room_cursor_key (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          secret BLOB NOT NULL
+        );
+      `);
+      db.prepare('INSERT INTO shared_room_cursor_key VALUES (1, ?)').run(randomBytes(32));
+    } },
   ];
 }
 
@@ -357,8 +386,8 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
     return { schemaVersion: getSchemaVersion() };
   }
 
-  function withTransaction(fn) {
-    db.exec('BEGIN IMMEDIATE');
+  function withTransaction(fn, { readOnly = false } = {}) {
+    db.exec(readOnly ? 'BEGIN' : 'BEGIN IMMEDIATE');
     try {
       const result = fn();
       db.exec('COMMIT');
@@ -370,9 +399,11 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // -- rooms ------------------------------------------------------------
   function insertRoom(room) {
+    const sharedScope = room.sharedWorkspaceId ? [room.sharedWorkspaceId] : [];
     db.prepare(`
-      INSERT INTO rooms (room_id, title, description, status, origin, created_by_json, revision, discussion_epoch, created_at, updated_at, archived_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO rooms (room_id, title, description, status, origin, created_by_json, revision, discussion_epoch, created_at, updated_at, archived_at
+        ${sharedScope.length ? ', shared_workspace_id' : ''})
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? ${sharedScope.length ? ', ?' : ''})
     `).run(
       room.roomId,
       room.title,
@@ -384,7 +415,8 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
       room.discussionEpoch ?? 0,
       room.createdAt,
       room.updatedAt,
-      room.archivedAt ?? null
+      room.archivedAt ?? null,
+      ...sharedScope
     );
   }
 
@@ -420,11 +452,12 @@ export function createRoomStore({ dbPath, migrations, storageBudget } = {}) {
 
   // User-visible summaries, one aggregate query; archive/read timestamps do
   // not count as activity. Raw getRoomRow retains tombstones for audit/CAS.
-  function listRoomSummaries() {
+  function listRoomSummaries(sharedWorkspaceId = null) {
     return db.prepare(`SELECT r.*, COALESCE(m.last_activity_at, r.created_at) AS last_activity_at
       FROM rooms r LEFT JOIN (SELECT room_id, MAX(created_at) AS last_activity_at
       FROM room_messages GROUP BY room_id) m ON m.room_id = r.room_id
-      WHERE r.deleted_at IS NULL ORDER BY last_activity_at DESC, r.room_id ASC`).all().map(mapRoomRow);
+      WHERE r.deleted_at IS NULL AND r.shared_workspace_id IS ?
+      ORDER BY last_activity_at DESC, r.room_id ASC`).all(sharedWorkspaceId).map(mapRoomRow);
   }
 
   // -- members ------------------------------------------------------------
