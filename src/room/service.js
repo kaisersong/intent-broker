@@ -1,3 +1,4 @@
+import { createSharedRoomService } from './shared-service.js';
 /**
  * CollaborationRoom service (design §6, §7, §8, §10).
  *
@@ -52,6 +53,7 @@ export function createRoomService({
   now = () => new Date(),
 } = {}) {
   const workspace = createRoomWorkspaceService({ store, now });
+  const shared = createSharedRoomService({ store, now });
   function requireVerifiedCtx(ctx) {
     const verification = verifyTrustedActorContext(ctx);
     if (!verification.ok) return verification;
@@ -60,7 +62,7 @@ export function createRoomService({
 
   function getRoom(roomId) {
     const room = store.getRoomRow(roomId);
-    if (!room || room.deletedAt) return null;
+    if (!room || room.deletedAt || room.sharedWorkspaceId) return null;
     return room;
   }
 
@@ -141,6 +143,7 @@ export function createRoomService({
     const keyedRoomId = key ? 'room-' + createHash('sha256').update(JSON.stringify([ctx.requestSource,ctx.actor.kind==='user'?ctx.actor.userId:ctx.actor.service,key])).digest('hex').slice(0,32) : null;
     if (keyedRoomId) {
       const prior = store.getRoomRow(keyedRoomId);
+      if (prior?.sharedWorkspaceId) return fail('room_not_found');
       if (prior) {
         const priorAgents = activeMembers(prior.roomId).filter(member=>member.subject.kind==='agent').map(member=>member.subject.logicalAgentId).sort();
         const sameMembers = JSON.stringify(priorAgents) === JSON.stringify([...uniqueAgents].sort());
@@ -313,7 +316,7 @@ export function createRoomService({
     if (ctx.requestSource !== 'user' || ctx.actor.kind !== 'user') return fail('room_actor_forbidden');
     if (typeof roomId !== 'string' || !roomId.trim() || !Number.isSafeInteger(expectedRoomRevision) || expectedRoomRevision < 1) return fail('room_input_invalid');
     const room = store.getRoomRow(roomId);
-    if (!room) return fail('room_not_found');
+    if (!room || room.sharedWorkspaceId) return fail('room_not_found');
     const ownerError = requireActiveOwner(roomId, ctx);
     if (ownerError) return ownerError;
     if (room.deletedAt) {
@@ -868,7 +871,7 @@ export function createRoomService({
     }
 
     const room = store.getRoomRow(sourceMessage.roomId);
-    if (!room || room.deletedAt || room.status !== 'active') {
+    if (!room || room.deletedAt || room.sharedWorkspaceId || room.status !== 'active') {
       return fail('room_archived');
     }
 
@@ -1065,7 +1068,7 @@ export function createRoomService({
         const message = store.getMessageById(delivery.roomMessageId);
         if (!message) return null;
         const room = store.getRoomRow(message.roomId);
-        if (!room || room.deletedAt || room.status !== 'active') return null;
+        if (!room || room.deletedAt || room.sharedWorkspaceId || room.status !== 'active') return null;
         return { roomMessageId: delivery.roomMessageId, roomId: message.roomId, roomSequence: message.roomSequence };
       })
       .filter(Boolean);
@@ -1181,6 +1184,8 @@ export function createRoomService({
   };
   return {
     workspace,
+    shared,
+    isSharedRoom: roomId => Boolean(store.getRoomRow(roomId)?.sharedWorkspaceId),
     getRoomMembership({roomId}={},ctx=null){
       const invalid=requireVerifiedCtx(ctx);if(invalid)return invalid;
       const room=requireRoom(roomId);if(room.ok===false)return room;
